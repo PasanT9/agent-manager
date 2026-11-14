@@ -53,6 +53,10 @@ func RegisterGatewayInternalRoutes(rr *middleware.RouteRegistrar, ctrl controlle
 	// Gateway manifest endpoint
 	rr.HandleFuncWithValidation("POST /gateways/{gatewayId}/manifest", ctrl.PushGatewayManifest)
 
+	// Gateway resource sync: per kind, the complete set of resources the gateway
+	// created through its own API (budgets), mirrored read-only here.
+	rr.HandleFuncWithValidation("POST /gateways/{gatewayId}/resources", ctrl.SyncGatewayResources)
+
 	// LLM Provider endpoints
 	rr.HandleFuncWithValidation("GET /llm-providers/{providerId}", ctrl.GetLLMProvider)
 

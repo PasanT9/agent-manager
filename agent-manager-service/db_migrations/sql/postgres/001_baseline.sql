@@ -210,6 +210,25 @@ CREATE TABLE gateway_tokens (
 );
 CREATE INDEX idx_gateway_tokens_gateway_id_status ON gateway_tokens (gateway_id, status);
 
+CREATE TABLE budgets (
+    id UUID NOT NULL,
+    org_id UUID NOT NULL,
+    name VARCHAR(253) NOT NULL,
+    origin VARCHAR(16) NOT NULL,
+    gateway_id UUID,
+    configuration JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    synced_at TIMESTAMPTZ,
+    CONSTRAINT pk_budgets PRIMARY KEY (id),
+    CONSTRAINT uq_budgets_org_id_name UNIQUE (org_id, name),
+    CONSTRAINT fk_budgets_org_id FOREIGN KEY (org_id) REFERENCES organizations (id),
+    CONSTRAINT fk_budgets_org_id_gateway_id FOREIGN KEY (org_id, gateway_id) REFERENCES gateways (org_id, id) ON DELETE CASCADE,
+    CONSTRAINT ck_budgets_1 CHECK (origin IN ('control_plane', 'gateway_api')),
+    CONSTRAINT ck_budgets_2 CHECK ((origin = 'gateway_api') = (gateway_id IS NOT NULL))
+);
+CREATE INDEX idx_budgets_gateway_id ON budgets (gateway_id);
+
 CREATE TABLE gateway_identity_providers (
     id UUID NOT NULL,
     org_id UUID NOT NULL,

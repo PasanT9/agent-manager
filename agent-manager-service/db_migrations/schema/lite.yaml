@@ -235,6 +235,31 @@ tables:
       - "revoked_at IS NULL OR status = 'revoked'"
     indexes: [[gateway_id, status]]
 
+  # Budgets: spend limits on LLM traffic. Created in the control plane, or by a gateway
+  # through its own API and mirrored here from the gateway's resource sync
+  # (PUT /api/internal/v1/gateways/{gatewayId}/resources), read-only and replaced by each
+  # sync. Names are unique in the organization, whoever created the budget.
+  - name: budgets
+    columns:
+      - {name: id, type: id}
+      - {name: org_id, type: id}
+      - {name: name, type: text, size: 253}
+      - {name: origin, type: text, size: 16}
+      - {name: gateway_id, type: id, nullable: true}
+      - {name: configuration, type: json}
+      - {name: created_at, type: time}
+      - {name: updated_at, type: time}
+      - {name: synced_at, type: time, nullable: true}
+    primary_key: [id]
+    unique: [[org_id, name]]
+    foreign_keys:
+      - {columns: [org_id], references: organizations, ref_columns: [id]}
+      - {columns: [org_id, gateway_id], references: gateways, ref_columns: [org_id, id], on_delete: cascade}
+    checks:
+      - "origin IN ('control_plane', 'gateway_api')"
+      - "(origin = 'gateway_api') = (gateway_id IS NOT NULL)"
+    indexes: [[gateway_id]]
+
   - name: gateway_identity_providers
     columns:
       - {name: id, type: id}

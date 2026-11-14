@@ -121,6 +121,7 @@ var gatewayInternalRoutes = []string{
 	"POST /artifacts/exists",
 	"GET /applications",
 	"POST /gateways/{gatewayId}/manifest",
+	"POST /gateways/{gatewayId}/resources",
 	"GET /llm-providers/{providerId}",
 	"GET /llm-proxies/{proxyId}",
 	"GET /mcp-proxies/{proxyId}",

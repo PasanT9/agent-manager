@@ -360,6 +360,7 @@ var actionOverrides = map[string]Action{
 	// authenticates with an api-key header checked inside each handler — so
 	// each needs an explicit action.
 	"POST /gateways/{gatewayId}/manifest": "gateway:push-manifest",
+	"POST /gateways/{gatewayId}/resources": "gateway:sync-resources",
 	"GET /llm-providers/api-keys":         "api-key:sync",
 	"GET /llm-proxies/api-keys":           "api-key:sync",
 	"GET /apis/api-keys":                  "api-key:sync",

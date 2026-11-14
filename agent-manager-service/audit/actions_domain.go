@@ -137,6 +137,7 @@ const (
 	ActionGatewaySetIdentityProvider    Action = "gateway:set-identity-provider"
 	ActionGatewayRemoveIdentityProvider Action = "gateway:remove-identity-provider"
 	ActionGatewayPushManifest           Action = "gateway:push-manifest"
+	ActionGatewaySyncResources          Action = "gateway:sync-resources"
 
 	// A gateway's startup sync: fetching its deployments, secrets resolved, and
 	// asking which artifacts still exist.
@@ -546,6 +547,14 @@ func init() {
 	Register(ActionGatewayPushManifest, ClassConfig, SeverityInfo)
 	RegisterDetailSchema(ActionGatewayPushManifest, map[string]FieldKind{
 		"policyCount": KindCount,
+	})
+
+	// A gateway mirroring the resources it created through its own API (budgets):
+	// replaces the gateway's copy, so recorded like the manifest.
+	Register(ActionGatewaySyncResources, ClassConfig, SeverityInfo)
+	RegisterDetailSchema(ActionGatewaySyncResources, map[string]FieldKind{
+		"resourceCount": KindCount,
+		"failedCount":   KindCount,
 	})
 
 	// A read of deployment content that carries upstream secrets, so a notice

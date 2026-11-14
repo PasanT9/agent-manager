@@ -9,9 +9,6 @@ package wiring
 import (
 	"context"
 	"fmt"
-	"log/slog"
-	"time"
-
 	"github.com/google/wire"
 	"github.com/wso2/agent-manager/agent-manager-service/audit"
 	"github.com/wso2/agent-manager/agent-manager-service/clients/secretmanagersvc"
@@ -32,6 +29,8 @@ import (
 	"github.com/wso2/agent-manager/agent-manager-service/services/eventdestinations/webhook"
 	"github.com/wso2/agent-manager/agent-manager-service/websocket"
 	"gorm.io/gorm"
+	"log/slog"
+	"time"
 )
 
 // Injectors from wire.go:
@@ -158,7 +157,9 @@ func InitializeAppParamsWithEnvThunderEndpoints(cfg *config.Config, db *gorm.DB,
 	otelIngestPublisher := services.NewOtelIngestPublisher(db, otelIngestKind, artifactRepository, deploymentRepository, core, logger)
 	webSocketController := ProvideWebSocketController(manager, eventHub, platformGatewayService, deploymentAckHandler, otelIngestPublisher, configConfig, logger)
 	gatewayInternalAPIService := services.NewGatewayInternalAPIService(llmProviderRepository, llmProxyRepository, deploymentRepository, artifactRepository, gatewayRepository, infraResourceManager, v, core)
-	gatewayInternalController := controllers.NewGatewayInternalController(platformGatewayService, gatewayInternalAPIService, apiKeyRepository, aiApplicationRepository)
+	budgetRepository := repositories.NewBudgetRepository(db)
+	gatewayResourceSyncService := services.NewGatewayResourceSyncService(gatewayRepository, budgetRepository)
+	gatewayInternalController := controllers.NewGatewayInternalController(platformGatewayService, gatewayInternalAPIService, apiKeyRepository, aiApplicationRepository, gatewayResourceSyncService)
 	monitorController := controllers.NewMonitorController(monitorManagerService)
 	monitorScoresService := services.NewMonitorScoresService(scoreRepository, monitorRepository, logger)
 	monitorScoresController := controllers.NewMonitorScoresController(monitorScoresService)
@@ -377,7 +378,9 @@ func InitializeTestAppParamsWithClientMocks(cfg *config.Config, db *gorm.DB, aut
 	otelIngestPublisher := services.NewOtelIngestPublisher(db, otelIngestKind, artifactRepository, deploymentRepository, core, logger)
 	webSocketController := ProvideWebSocketController(manager, eventHub, platformGatewayService, deploymentAckHandler, otelIngestPublisher, configConfig, logger)
 	gatewayInternalAPIService := services.NewGatewayInternalAPIService(llmProviderRepository, llmProxyRepository, deploymentRepository, artifactRepository, gatewayRepository, infraResourceManager, v, core)
-	gatewayInternalController := controllers.NewGatewayInternalController(platformGatewayService, gatewayInternalAPIService, apiKeyRepository, aiApplicationRepository)
+	budgetRepository := repositories.NewBudgetRepository(db)
+	gatewayResourceSyncService := services.NewGatewayResourceSyncService(gatewayRepository, budgetRepository)
+	gatewayInternalController := controllers.NewGatewayInternalController(platformGatewayService, gatewayInternalAPIService, apiKeyRepository, aiApplicationRepository, gatewayResourceSyncService)
 	monitorController := controllers.NewMonitorController(monitorManagerService)
 	monitorScoresService := services.NewMonitorScoresService(scoreRepository, monitorRepository, logger)
 	monitorScoresController := controllers.NewMonitorScoresController(monitorScoresService)
@@ -491,7 +494,7 @@ var clientProviderSet = wire.NewSet(repositories.NewPlatformRepo, ProvideSecretM
 	ProvideOUHandleLookup, thundersvc.NewProber, services.NewPlatformThunderSecretReader, services.NewPlatformThunderURLReader, ProvideEnvThunderResolverWithEndpoints,
 )
 
-var serviceProviderSet = wire.NewSet(services.NewAgentManagerService, services.NewInfraResourceManager, services.NewAgentTokenManagerService, fileauth.NewService, services.NewMonitorExecutor, services.NewMonitorManagerService, ProvideThunderConfig, services.NewMonitorSchedulerService, services.NewAgentThunderReconcilerService, services.NewA2ACardFetcher, services.NewA2ACardReconcilerService, services.NewConfiguredDeploymentTimeoutSweeper, services.NewA2AAgentCardService, ProvideTxRunner, services.NewAgentExposurePublisher, services.NewA2APublisher, services.NewA2AProxyService, ProvideA2AProxyHooks, services.NewEvaluatorManagerService, services.NewEnvironmentService, ProvidePlatformGatewayService, services.NewLLMProviderTemplateService, services.NewLLMProviderService, services.NewLLMProxyService, services.NewLLMProviderDeploymentService, services.NewLLMProviderAPIKeyService, services.NewLLMProxyAPIKeyService, services.NewAgentAPIKeyService, services.NewLLMProxyDeploymentService, services.NewMCPProxyService, services.NewMCPProxyScopeService, wire.Bind(new(services.MCPProxyRedeployer), new(*services.MCPProxyService)), wire.Bind(new(controllers.MCPResourceServerIdentifierResolver), new(*services.MCPProxyService)), services.NewGatewayInternalAPIService, services.NewMonitorScoresService, services.NewCatalogService, services.NewLLMProxyProvisioner, services.NewAgentConfigurationService, services.NewLLMTemplateStore, services.NewAIApplicationService, ProvideEventBus,
+var serviceProviderSet = wire.NewSet(services.NewAgentManagerService, services.NewInfraResourceManager, services.NewAgentTokenManagerService, fileauth.NewService, services.NewMonitorExecutor, services.NewMonitorManagerService, ProvideThunderConfig, services.NewMonitorSchedulerService, services.NewAgentThunderReconcilerService, services.NewA2ACardFetcher, services.NewA2ACardReconcilerService, services.NewConfiguredDeploymentTimeoutSweeper, services.NewA2AAgentCardService, ProvideTxRunner, services.NewAgentExposurePublisher, services.NewA2APublisher, services.NewA2AProxyService, ProvideA2AProxyHooks, services.NewEvaluatorManagerService, services.NewEnvironmentService, ProvidePlatformGatewayService, services.NewLLMProviderTemplateService, services.NewLLMProviderService, services.NewLLMProxyService, services.NewLLMProviderDeploymentService, services.NewLLMProviderAPIKeyService, services.NewLLMProxyAPIKeyService, services.NewAgentAPIKeyService, services.NewLLMProxyDeploymentService, services.NewMCPProxyService, services.NewMCPProxyScopeService, wire.Bind(new(services.MCPProxyRedeployer), new(*services.MCPProxyService)), wire.Bind(new(controllers.MCPResourceServerIdentifierResolver), new(*services.MCPProxyService)), services.NewGatewayInternalAPIService, services.NewGatewayResourceSyncService, services.NewMonitorScoresService, services.NewCatalogService, services.NewLLMProxyProvisioner, services.NewAgentConfigurationService, services.NewLLMTemplateStore, services.NewAIApplicationService, ProvideEventBus,
 	ProvideEventPublisher, repositories.NewEventOutboxRepository, services.NewMonitorRunEvents, ProvideDestinationDrivers, services.NewEventDestinationService, services.NewEventSubscriptionService, wire.Bind(new(services.EventsCleaner), new(services.EventSubscriptionService)), wire.Bind(new(services.DestinationResolver), new(services.EventDestinationService)), services.NewEventDispatcherService, services.NewMonitorAlertService, services.NewMonitorAlertProcessor,
 )
 
@@ -576,8 +579,7 @@ var loggerProviderSet = wire.NewSet(
 )
 
 var repositoryProviderSet = wire.NewSet(
-	ProvideGatewayRepository,
-	ProvideLLMProviderTemplateRepository,
+	ProvideGatewayRepository, repositories.NewBudgetRepository, ProvideLLMProviderTemplateRepository,
 	ProvideLLMProviderRepository,
 	ProvideLLMProxyRepository,
 	ProvideMCPProxyRepository, repositories.NewMCPProxyEndpointRepository, ProvideDeploymentRepository,

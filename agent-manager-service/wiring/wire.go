@@ -110,6 +110,7 @@ var serviceProviderSet = wire.NewSet(
 	// The agent-identity controller needs only the identifier-derivation surface.
 	wire.Bind(new(controllers.MCPResourceServerIdentifierResolver), new(*services.MCPProxyService)),
 	services.NewGatewayInternalAPIService,
+	services.NewGatewayResourceSyncService,
 	services.NewMonitorScoresService,
 	services.NewCatalogService,
 	services.NewLLMProxyProvisioner,
@@ -248,6 +249,7 @@ var loggerProviderSet = wire.NewSet(
 
 var repositoryProviderSet = wire.NewSet(
 	ProvideGatewayRepository,
+	repositories.NewBudgetRepository,
 	ProvideLLMProviderTemplateRepository,
 	ProvideLLMProviderRepository,
 	ProvideLLMProxyRepository,
