@@ -20,30 +20,53 @@ package repositories
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/wso2/agent-manager/agent-manager-service/db"
 	"github.com/wso2/agent-manager/agent-manager-service/db/dbtest"
 	"github.com/wso2/agent-manager/agent-manager-service/models"
+	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
 
-func budgetRow(ouID string, gatewayID *uuid.UUID, name, spec string) models.Budget {
-	ts := time.Now().UTC().Truncate(time.Microsecond)
-	b := models.Budget{
-		ID: uuid.Must(uuid.NewV7()), OUID: ouID, Name: name, Origin: models.BudgetOriginControlPlane,
-		Configuration: json.RawMessage(`{"kind":"Budget","metadata":{"name":"` + name + `"},"spec":` + spec + `}`),
-		CreatedAt:     ts, UpdatedAt: ts,
+// gatewayBudget builds a budget a gateway pushes.
+func gatewayBudget(ouID string, gatewayID uuid.UUID, name, amount string) models.Budget {
+	return models.Budget{
+		OrgID: ouID, Origin: models.BudgetOriginGateway, GatewayID: &gatewayID,
+		Configuration: budgetConfig(name, amount),
 	}
-	if gatewayID != nil {
-		b.Origin, b.GatewayID, b.SyncedAt = models.BudgetOriginGateway, gatewayID, &ts
+}
+
+func budgetConfig(displayName, amount string) models.BudgetConfig {
+	return models.BudgetConfig{
+		DisplayName: displayName, Status: "active",
+		Limit:     models.BudgetLimit{Amount: amount, Currency: "USD", Period: "month", Action: "allow"},
+		Consumers: []models.BudgetConsumer{}, Exemptions: []models.BudgetExemption{},
 	}
-	return b
+}
+
+// createArtifact stores an artifact of kind with the given handle, and for a budget its
+// control-plane budgets row.
+func createArtifact(t *testing.T, gdb *gorm.DB, ouID, kind, handle string) uuid.UUID {
+	t.Helper()
+	id := uuid.Must(uuid.NewV7())
+	now := time.Now().UTC()
+	require.NoError(t, gdb.Create(&models.Artifact{
+		UUID: id, Handle: handle, Name: handle, Version: models.BudgetVersion, Kind: kind, OUID: ouID,
+		CreatedAt: now, UpdatedAt: now,
+	}).Error)
+	if kind == models.KindBudget {
+		require.NoError(t, gdb.Create(&models.Budget{
+			ID: id, OrgID: ouID, Origin: models.BudgetOriginControlPlane,
+			Configuration: budgetConfig(handle, "1000"),
+		}).Error)
+	}
+	return id
 }
 
 func budgetsByName(t *testing.T, repo BudgetRepository, ouID string) map[string]models.Budget {
@@ -57,6 +80,14 @@ func budgetsByName(t *testing.T, repo BudgetRepository, ouID string) map[string]
 	return out
 }
 
+func keys(m map[string]models.Budget) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 func TestBudgetRepository_GatewayBudgets(t *testing.T) {
 	gdb := db.GetDB()
 	ctx := context.Background()
@@ -64,60 +95,128 @@ func TestBudgetRepository_GatewayBudgets(t *testing.T) {
 	gw := dbtest.Gateway(t, gdb, ou, "egress").UUID
 	other := dbtest.Gateway(t, gdb, ou, "egress").UUID
 	repo := NewBudgetRepository(gdb)
-	save := func(b models.Budget) (models.Budget, bool) {
+	save := func(b models.Budget, name string) (models.Budget, bool) {
 		t.Helper()
-		stored, err := repo.SaveForGateway(ctx, &b)
+		stored, err := repo.SaveForGateway(ctx, &b, name)
 		require.NoError(t, err)
 		return b, stored
 	}
 
-	// A control-plane budget and another gateway's budget share the table.
-	cp := budgetRow(ou, nil, "org-wide", `{"amount":"1000"}`)
-	require.NoError(t, gdb.Create(&cp).Error)
-	_, stored := save(budgetRow(ou, &other, "team-z", `{"amount":"5"}`))
+	// A control-plane budget, another kind's artifact and another gateway's budget.
+	createArtifact(t, gdb, ou, models.KindBudget, "org-wide")
+	createArtifact(t, gdb, ou, models.KindLLMProvider, "openai")
+	_, stored := save(gatewayBudget(ou, other, "team-z", "5"), "team-z")
 	require.True(t, stored)
 
-	a, stored := save(budgetRow(ou, &gw, "team-a", `{"amount":"100"}`))
+	a, stored := save(gatewayBudget(ou, gw, "team-a", "100"), "team-a")
 	require.True(t, stored)
-	_, stored = save(budgetRow(ou, &gw, "team-b", `{"amount":"200"}`))
+	_, stored = save(gatewayBudget(ou, gw, "team-b", "200"), "team-b")
 	require.True(t, stored)
-	_, stored = save(budgetRow(ou, &gw, "org-wide", `{"amount":"1"}`))
-	assert.False(t, stored, "a name the control plane holds is not taken")
-	_, stored = save(budgetRow(ou, &gw, "team-z", `{"amount":"1"}`))
-	assert.False(t, stored, "a name another gateway holds is not taken")
+	for _, taken := range []string{"org-wide", "openai", "team-z"} {
+		_, stored = save(gatewayBudget(ou, gw, taken, "1"), taken)
+		assert.False(t, stored, "%s is another artifact's handle", taken)
+	}
 	all := budgetsByName(t, repo, ou)
-	assert.Len(t, all, 4)
-	assert.JSONEq(t, `{"kind":"Budget","metadata":{"name":"org-wide"},"spec":{"amount":"1000"}}`, string(all["org-wide"].Configuration))
+	assert.ElementsMatch(t, []string{"org-wide", "team-z", "team-a", "team-b"}, keys(all))
+	assert.Equal(t, models.BudgetOriginControlPlane, all["org-wide"].Origin)
+	assert.Equal(t, "1000", all["org-wide"].Configuration.Limit.Amount)
 	assert.Equal(t, other, *all["team-z"].GatewayID)
+	var art models.Artifact
+	require.NoError(t, gdb.Where("id = ?", a.ID).Take(&art).Error)
+	assert.Equal(t, models.KindBudget, art.Kind)
+	assert.Equal(t, "team-a", art.Handle)
+	assert.False(t, art.InCatalog)
 
-	// A later push of team-a, with a fresh ID, updates the stored budget and keeps its ID.
-	again, stored := save(budgetRow(ou, &gw, "team-a", `{"amount":"150"}`))
+	// A later push of team-a updates the stored budget and keeps its ID.
+	again, stored := save(gatewayBudget(ou, gw, "team-a", "150"), "team-a")
 	require.True(t, stored)
 	assert.Equal(t, a.ID, again.ID, "the control plane's ID is kept across pushes")
-	all = budgetsByName(t, repo, ou)
-	assert.Equal(t, a.ID, all["team-a"].ID)
-	assert.JSONEq(t, string(again.Configuration), string(all["team-a"].Configuration))
+	assert.Equal(t, "150", budgetsByName(t, repo, ou)["team-a"].Configuration.Limit.Amount)
 
-	// A deletion removes only that gateway's budget of the name.
+	// A deletion removes only that gateway's budget of the name, artifact and row.
 	require.NoError(t, repo.DeleteForGateway(ctx, ou, other, []string{"team-a"}))
-	require.NoError(t, repo.DeleteForGateway(ctx, ou, gw, []string{"team-b", "unknown"}))
+	require.NoError(t, repo.DeleteForGateway(ctx, ou, gw, []string{"team-b", "unknown", "org-wide"}))
 	all = budgetsByName(t, repo, ou)
-	assert.Contains(t, all, "team-a")
-	assert.NotContains(t, all, "team-b")
+	assert.ElementsMatch(t, []string{"org-wide", "team-z", "team-a"}, keys(all))
+	var count int64
+	require.NoError(t, gdb.Model(&models.Artifact{}).Where("org_id = ? AND handle = ?", ou, "team-b").Count(&count).Error)
+	assert.Zero(t, count, "the artifact goes with the budget")
 
 	// A complete list removes the gateway's budgets it does not name, and nothing else.
-	_, _ = save(budgetRow(ou, &gw, "team-c", `{"amount":"300"}`))
+	_, _ = save(gatewayBudget(ou, gw, "team-c", "300"), "team-c")
 	require.NoError(t, repo.DeleteForGatewayExcept(ctx, ou, gw, []string{"team-c"}))
-	all = budgetsByName(t, repo, ou)
-	assert.ElementsMatch(t, []string{"org-wide", "team-z", "team-c"}, keys(all))
-	require.NoError(t, repo.DeleteForGatewayExcept(ctx, ou, gw, nil))
+	assert.ElementsMatch(t, []string{"org-wide", "team-z", "team-c"}, keys(budgetsByName(t, repo, ou)))
+
+	// Deleting a gateway deletes the budgets it pushed.
+	require.NoError(t, NewGatewayRepo(gdb).Delete(gw.String(), ou))
 	assert.ElementsMatch(t, []string{"org-wide", "team-z"}, keys(budgetsByName(t, repo, ou)))
 }
 
-func keys(m map[string]models.Budget) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+func TestBudgetRepository_CreateForControlPlane(t *testing.T) {
+	gdb := db.GetDB()
+	ctx := context.Background()
+	ou := dbtest.Org(t, gdb)
+	repo := NewBudgetRepository(gdb)
+	createArtifact(t, gdb, ou, models.KindLLMProvider, "openai")
+
+	b := models.Budget{
+		OrgID: ou, Origin: models.BudgetOriginControlPlane, CreatedBy: "alice",
+		Configuration: budgetConfig("Org monthly", "5000"),
 	}
-	return out
+	require.NoError(t, repo.CreateForControlPlane(ctx, &b, "org-monthly"))
+	assert.NotEqual(t, uuid.Nil, b.ID)
+	assert.Equal(t, "org-monthly", b.Name)
+	assert.False(t, b.CreatedAt.IsZero())
+
+	stored := budgetsByName(t, repo, ou)["org-monthly"]
+	assert.Equal(t, b.ID, stored.ID)
+	assert.Equal(t, "alice", stored.CreatedBy)
+	assert.Nil(t, stored.GatewayID)
+	assert.False(t, stored.CreatedAt.IsZero(), "timestamps come from the artifact")
+	assert.Equal(t, b.Configuration, stored.Configuration)
+
+	for _, taken := range []string{"org-monthly", "openai"} {
+		again := models.Budget{OrgID: ou, Origin: models.BudgetOriginControlPlane, Configuration: budgetConfig(taken, "1")}
+		assert.ErrorIs(t, repo.CreateForControlPlane(ctx, &again, taken), utils.ErrBudgetAlreadyExists, taken)
+	}
+	assert.Len(t, budgetsByName(t, repo, ou), 1)
+}
+
+func TestBudgetRepository_GetUpdateDelete(t *testing.T) {
+	gdb := db.GetDB()
+	ctx := context.Background()
+	ou := dbtest.Org(t, gdb)
+	otherOrg := dbtest.Org(t, gdb)
+	repo := NewBudgetRepository(gdb)
+	createArtifact(t, gdb, ou, models.KindLLMProvider, "openai")
+
+	b := models.Budget{OrgID: ou, Origin: models.BudgetOriginControlPlane, Configuration: budgetConfig("Team A", "100")}
+	require.NoError(t, repo.CreateForControlPlane(ctx, &b, "team-a"))
+
+	got, err := repo.Get(ctx, ou, "team-a")
+	require.NoError(t, err)
+	assert.Equal(t, b.ID, got.ID)
+	assert.Equal(t, "team-a", got.Name)
+	assert.Equal(t, "100", got.Configuration.Limit.Amount)
+	for _, missing := range []struct{ org, name string }{{ou, "nope"}, {otherOrg, "team-a"}, {ou, "openai"}} {
+		_, err = repo.Get(ctx, missing.org, missing.name)
+		assert.ErrorIs(t, err, utils.ErrBudgetNotFound, missing.name)
+	}
+
+	got.Configuration.Limit.Amount = "150"
+	time.Sleep(10 * time.Millisecond)
+	require.NoError(t, repo.Update(ctx, got))
+	again, err := repo.Get(ctx, ou, "team-a")
+	require.NoError(t, err)
+	assert.Equal(t, "150", again.Configuration.Limit.Amount)
+	assert.True(t, again.UpdatedAt.After(again.CreatedAt), "the artifact's updated_at moves")
+
+	assert.ErrorIs(t, repo.Delete(ctx, otherOrg, "team-a"), utils.ErrBudgetNotFound)
+	assert.ErrorIs(t, repo.Delete(ctx, ou, "openai"), utils.ErrBudgetNotFound, "only budgets are deleted")
+	require.NoError(t, repo.Delete(ctx, ou, "team-a"))
+	_, err = repo.Get(ctx, ou, "team-a")
+	assert.ErrorIs(t, err, utils.ErrBudgetNotFound)
+	var rows int64
+	require.NoError(t, gdb.Model(&models.Budget{}).Where("id = ?", b.ID).Count(&rows).Error)
+	assert.Zero(t, rows, "the row goes with the artifact")
 }

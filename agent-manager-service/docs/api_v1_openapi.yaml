@@ -6171,6 +6171,313 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /orgs/{orgName}/budgets:
+    get:
+      summary: List budgets
+      description: Lists the organization's budgets, active and inactive, ordered by name.
+      operationId: listBudgets
+      tags:
+        - Budgets
+      parameters:
+        - name: orgName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Organization name
+        - name: filter
+          in: query
+          required: false
+          description: >-
+            type:id, with type project, agent, apiKey, llmProxy or llmProvider: budgets whose
+            resource, consumers or exemptions name it. Repeat for AND.
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 10
+            items:
+              type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        "200":
+          description: A page of budgets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BudgetListResponse"
+        "400":
+          description: Invalid filter, limit or offset (VALIDATION_ERROR)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      summary: Create a budget
+      description: |
+        Creates a spend limit on LLM traffic in the organization. A new budget is active.
+        Budgets created on a gateway are read-only here (origin gateway_api).
+      operationId: createBudget
+      tags:
+        - Budgets
+      parameters:
+        - name: orgName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Organization name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BudgetRequest"
+      responses:
+        "201":
+          description: The budget, with defaults filled in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BudgetResponse"
+        "400":
+          description: >-
+            Invalid payload (VALIDATION_ERROR), or a named provider, project, agent,
+            LLM proxy or environment that does not exist (REFERENCE_NOT_FOUND), or a
+            notification channel not available to the budget (CHANNEL_NOT_AVAILABLE)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The name is already used in the organization (BUDGET_ALREADY_EXISTS)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /orgs/{orgName}/budgets/{budgetName}:
+    get:
+      summary: Get a budget
+      operationId: getBudget
+      tags:
+        - Budgets
+      parameters:
+        - name: orgName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Organization name
+        - name: budgetName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Budget name
+      responses:
+        "200":
+          description: The budget
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BudgetResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: No such budget in the organization (BUDGET_NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      summary: Update a budget
+      description: |
+        Replaces the editable fields; also disables and enables the budget (status).
+        name, currency, period, resource, environments and consumers are fixed after creation:
+        create a new budget instead. Any other field is rejected. Budgets created on a gateway
+        are read-only (BUDGET_READ_ONLY).
+      operationId: updateBudget
+      tags:
+        - Budgets
+      parameters:
+        - name: orgName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Organization name
+        - name: budgetName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Budget name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BudgetUpdateRequest"
+      responses:
+        "200":
+          description: The updated budget
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BudgetResponse"
+        "400":
+          description: Invalid payload (VALIDATION_ERROR), a missing reference (REFERENCE_NOT_FOUND) or channel (CHANNEL_NOT_AVAILABLE)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: No such budget in the organization (BUDGET_NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The budget was created on a gateway (BUDGET_READ_ONLY)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      summary: Delete a budget
+      operationId: deleteBudget
+      tags:
+        - Budgets
+      parameters:
+        - name: orgName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Organization name
+        - name: budgetName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Budget name
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: No such budget in the organization (BUDGET_NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The budget was created on a gateway (BUDGET_READ_ONLY)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /orgs/{orgName}/llm-providers:
     parameters:
       - name: orgName
@@ -16960,6 +17267,265 @@ components:
           description: Number of evaluators to skip
           example: 0
 
+    BudgetRequest:
+      type: object
+      description: A spend limit on LLM traffic
+      required: [name, displayName, limit]
+      properties:
+        name:
+          type: string
+          description: Handle, unique in the organization; cannot change
+          pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+          maxLength: 63
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 1023
+        limit:
+          $ref: "#/components/schemas/BudgetLimit"
+        resource:
+          $ref: "#/components/schemas/BudgetResource"
+        environments:
+          $ref: "#/components/schemas/BudgetEnvironments"
+        consumers:
+          type: array
+          maxItems: 20
+          description: Combined with AND
+          items:
+            $ref: "#/components/schemas/BudgetConsumer"
+        exemptions:
+          type: array
+          maxItems: 100
+          description: Traffic not counted or blocked by this budget
+          items:
+            $ref: "#/components/schemas/BudgetExemption"
+        warnings:
+          $ref: "#/components/schemas/BudgetWarnings"
+    BudgetUpdateRequest:
+      type: object
+      description: The editable fields of a budget; the others are fixed after creation
+      required: [displayName, limit]
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 1023
+        status:
+          type: string
+          enum: [active, inactive]
+          default: active
+        limit:
+          $ref: "#/components/schemas/BudgetUpdateLimit"
+        exemptions:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/BudgetExemption"
+        warnings:
+          $ref: "#/components/schemas/BudgetWarnings"
+    BudgetUpdateLimit:
+      type: object
+      description: The editable part of the limit; currency and period are fixed
+      required: [amount, action]
+      properties:
+        amount:
+          type: string
+          pattern: ^[0-9]+(\.[0-9]{1,2})?$
+          example: "150.00"
+        action:
+          type: string
+          enum: [block, allow]
+        blockAt:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 100
+    BudgetListResponse:
+      type: object
+      required: [budgets, total, limit, offset]
+      properties:
+        budgets:
+          type: array
+          items:
+            $ref: "#/components/schemas/BudgetResponse"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+    BudgetResponse:
+      type: object
+      required: [name, displayName, status, origin, limit, consumers, exemptions, createdAt, updatedAt]
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive]
+        origin:
+          type: string
+          enum: [control_plane, gateway_api]
+          description: "gateway_api: created on a gateway and read-only here"
+        limit:
+          $ref: "#/components/schemas/BudgetLimit"
+        resource:
+          $ref: "#/components/schemas/BudgetResource"
+        environments:
+          $ref: "#/components/schemas/BudgetEnvironments"
+        consumers:
+          type: array
+          items:
+            $ref: "#/components/schemas/BudgetConsumer"
+        exemptions:
+          type: array
+          items:
+            $ref: "#/components/schemas/BudgetExemption"
+        warnings:
+          $ref: "#/components/schemas/BudgetWarnings"
+        currentPeriod:
+          $ref: "#/components/schemas/BudgetCurrentPeriod"
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    BudgetLimit:
+      type: object
+      required: [amount, period, action]
+      properties:
+        amount:
+          type: string
+          pattern: ^[0-9]+(\.[0-9]{1,2})?$
+          description: Above zero, up to 2 decimals; never rounded
+          example: "100.00"
+        currency:
+          type: string
+          enum: [USD]
+          default: USD
+        period:
+          type: string
+          enum: [day, week, month]
+          description: UTC calendar periods; a week starts on Monday
+        action:
+          type: string
+          enum: [block, allow]
+          description: "block: refuses when used up; allow: only counts"
+        blockAt:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 100
+          description: "Block only: refuses once spend reaches this share of the amount"
+    BudgetResource:
+      type: object
+      description: The LLM providers the budget covers; omitted means all providers, shared
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [llmProvider]
+        allocation:
+          type: string
+          enum: [shared, separate]
+          default: shared
+        id:
+          type: string
+          description: Provider handle; only with shared
+    BudgetEnvironments:
+      type: object
+      properties:
+        allocation:
+          type: string
+          enum: [shared, separate]
+          default: shared
+        ids:
+          type: array
+          maxItems: 50
+          description: Environment names; omitted means all, including new ones
+          items:
+            type: string
+    BudgetConsumer:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [project, agent, apiKey, llmProxy, attribute]
+        allocation:
+          type: string
+          enum: [shared, separate]
+          default: shared
+        id:
+          type: string
+          description: Handle, or API key name; required when shared, except for attribute
+        expression:
+          type: string
+          description: "attribute only: CEL, bool when shared, string or list(string) when separate"
+    BudgetExemption:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [project, agent, attribute]
+        id:
+          type: string
+          description: Project or agent handle
+        project:
+          type: string
+          description: The agent's project; agent only
+        expression:
+          type: string
+          description: "attribute only: CEL returning bool"
+    BudgetWarnings:
+      type: object
+      required: [thresholds, channelIds]
+      properties:
+        thresholds:
+          type: array
+          minItems: 1
+          maxItems: 10
+          description: Whole percentages of the amount, 1-1000; each once per allowance per period
+          items:
+            type: integer
+            minimum: 1
+            maximum: 1000
+        channelIds:
+          type: array
+          minItems: 1
+          maxItems: 20
+          description: Notification channel (event destination) IDs available to the budget
+          items:
+            type: string
+            format: uuid
+    BudgetCurrentPeriod:
+      type: object
+      description: Spend in the current period
+      required: [periodStart, spent, unpricedRequests]
+      properties:
+        periodStart:
+          type: string
+          format: date
+        spent:
+          type: string
+          description: Total across the budget's allowances
+          example: "312.40"
+        unpricedRequests:
+          type: integer
     ErrorResponse:
       type: object
       properties:

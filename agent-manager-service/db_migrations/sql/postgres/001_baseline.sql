@@ -210,25 +210,6 @@ CREATE TABLE gateway_tokens (
 );
 CREATE INDEX idx_gateway_tokens_gateway_id_status ON gateway_tokens (gateway_id, status);
 
-CREATE TABLE budgets (
-    id UUID NOT NULL,
-    org_id UUID NOT NULL,
-    name VARCHAR(253) NOT NULL,
-    origin VARCHAR(16) NOT NULL,
-    gateway_id UUID,
-    configuration JSONB NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL,
-    synced_at TIMESTAMPTZ,
-    CONSTRAINT pk_budgets PRIMARY KEY (id),
-    CONSTRAINT uq_budgets_org_id_name UNIQUE (org_id, name),
-    CONSTRAINT fk_budgets_org_id FOREIGN KEY (org_id) REFERENCES organizations (id),
-    CONSTRAINT fk_budgets_org_id_gateway_id FOREIGN KEY (org_id, gateway_id) REFERENCES gateways (org_id, id) ON DELETE CASCADE,
-    CONSTRAINT ck_budgets_1 CHECK (origin IN ('control_plane', 'gateway_api')),
-    CONSTRAINT ck_budgets_2 CHECK ((origin = 'gateway_api') = (gateway_id IS NOT NULL))
-);
-CREATE INDEX idx_budgets_gateway_id ON budgets (gateway_id);
-
 CREATE TABLE gateway_identity_providers (
     id UUID NOT NULL,
     org_id UUID NOT NULL,
@@ -288,7 +269,7 @@ CREATE TABLE artifacts (
     CONSTRAINT uq_artifacts_org_id_name_version UNIQUE (org_id, name, version),
     CONSTRAINT uq_artifacts_org_id_id UNIQUE (org_id, id),
     CONSTRAINT fk_artifacts_org_id FOREIGN KEY (org_id) REFERENCES organizations (id),
-    CONSTRAINT ck_artifacts_1 CHECK (kind IN ('RestApi', 'WebSubAPI', 'LlmProvider', 'LlmProxy', 'Agent', 'McpProxy', 'McpProxyMapping', 'OtelIngest'))
+    CONSTRAINT ck_artifacts_1 CHECK (kind IN ('RestApi', 'WebSubAPI', 'LlmProvider', 'LlmProxy', 'Agent', 'McpProxy', 'McpProxyMapping', 'OtelIngest', 'Budget'))
 );
 
 CREATE TABLE artifact_deployments (
@@ -371,6 +352,21 @@ CREATE TABLE llm_providers (
 );
 CREATE INDEX idx_llm_providers_template_handle ON llm_providers (template_handle);
 CREATE INDEX idx_llm_providers_upstream_secret_id ON llm_providers (upstream_secret_id);
+
+CREATE TABLE budgets (
+    id UUID NOT NULL,
+    org_id UUID NOT NULL,
+    origin VARCHAR(16) NOT NULL,
+    gateway_id UUID,
+    configuration JSONB NOT NULL,
+    created_by VARCHAR(255),
+    CONSTRAINT pk_budgets PRIMARY KEY (id),
+    CONSTRAINT fk_budgets_org_id_id FOREIGN KEY (org_id, id) REFERENCES artifacts (org_id, id) ON DELETE CASCADE,
+    CONSTRAINT fk_budgets_org_id_gateway_id FOREIGN KEY (org_id, gateway_id) REFERENCES gateways (org_id, id),
+    CONSTRAINT ck_budgets_1 CHECK (origin IN ('control_plane', 'gateway_api')),
+    CONSTRAINT ck_budgets_2 CHECK ((origin = 'gateway_api') = (gateway_id IS NOT NULL))
+);
+CREATE INDEX idx_budgets_gateway_id ON budgets (gateway_id);
 
 CREATE TABLE llm_proxies (
     id UUID NOT NULL,

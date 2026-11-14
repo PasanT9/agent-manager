@@ -17,17 +17,29 @@ import (
 //
 //		// make and configure a mocked repositories.BudgetRepository
 //		mockedBudgetRepository := &BudgetRepositoryMock{
+//			CreateForControlPlaneFunc: func(ctx context.Context, budget *models.Budget, name string) error {
+//				panic("mock out the CreateForControlPlane method")
+//			},
+//			DeleteFunc: func(ctx context.Context, ouID string, name string) error {
+//				panic("mock out the Delete method")
+//			},
 //			DeleteForGatewayFunc: func(ctx context.Context, ouID string, gatewayID uuid.UUID, names []string) error {
 //				panic("mock out the DeleteForGateway method")
 //			},
 //			DeleteForGatewayExceptFunc: func(ctx context.Context, ouID string, gatewayID uuid.UUID, keep []string) error {
 //				panic("mock out the DeleteForGatewayExcept method")
 //			},
+//			GetFunc: func(ctx context.Context, ouID string, name string) (*models.Budget, error) {
+//				panic("mock out the Get method")
+//			},
 //			ListFunc: func(ctx context.Context, ouID string) ([]models.Budget, error) {
 //				panic("mock out the List method")
 //			},
-//			SaveForGatewayFunc: func(ctx context.Context, budget *models.Budget) (bool, error) {
+//			SaveForGatewayFunc: func(ctx context.Context, budget *models.Budget, name string) (bool, error) {
 //				panic("mock out the SaveForGateway method")
+//			},
+//			UpdateFunc: func(ctx context.Context, budget *models.Budget) error {
+//				panic("mock out the Update method")
 //			},
 //		}
 //
@@ -36,20 +48,50 @@ import (
 //
 //	}
 type BudgetRepositoryMock struct {
+	// CreateForControlPlaneFunc mocks the CreateForControlPlane method.
+	CreateForControlPlaneFunc func(ctx context.Context, budget *models.Budget, name string) error
+
+	// DeleteFunc mocks the Delete method.
+	DeleteFunc func(ctx context.Context, ouID string, name string) error
+
 	// DeleteForGatewayFunc mocks the DeleteForGateway method.
 	DeleteForGatewayFunc func(ctx context.Context, ouID string, gatewayID uuid.UUID, names []string) error
 
 	// DeleteForGatewayExceptFunc mocks the DeleteForGatewayExcept method.
 	DeleteForGatewayExceptFunc func(ctx context.Context, ouID string, gatewayID uuid.UUID, keep []string) error
 
+	// GetFunc mocks the Get method.
+	GetFunc func(ctx context.Context, ouID string, name string) (*models.Budget, error)
+
 	// ListFunc mocks the List method.
 	ListFunc func(ctx context.Context, ouID string) ([]models.Budget, error)
 
 	// SaveForGatewayFunc mocks the SaveForGateway method.
-	SaveForGatewayFunc func(ctx context.Context, budget *models.Budget) (bool, error)
+	SaveForGatewayFunc func(ctx context.Context, budget *models.Budget, name string) (bool, error)
+
+	// UpdateFunc mocks the Update method.
+	UpdateFunc func(ctx context.Context, budget *models.Budget) error
 
 	// calls tracks calls to the methods.
 	calls struct {
+		// CreateForControlPlane holds details about calls to the CreateForControlPlane method.
+		CreateForControlPlane []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// Budget is the budget argument value.
+			Budget *models.Budget
+			// Name is the name argument value.
+			Name string
+		}
+		// Delete holds details about calls to the Delete method.
+		Delete []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// OuID is the ouID argument value.
+			OuID string
+			// Name is the name argument value.
+			Name string
+		}
 		// DeleteForGateway holds details about calls to the DeleteForGateway method.
 		DeleteForGateway []struct {
 			// Ctx is the ctx argument value.
@@ -72,6 +114,15 @@ type BudgetRepositoryMock struct {
 			// Keep is the keep argument value.
 			Keep []string
 		}
+		// Get holds details about calls to the Get method.
+		Get []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// OuID is the ouID argument value.
+			OuID string
+			// Name is the name argument value.
+			Name string
+		}
 		// List holds details about calls to the List method.
 		List []struct {
 			// Ctx is the ctx argument value.
@@ -85,12 +136,105 @@ type BudgetRepositoryMock struct {
 			Ctx context.Context
 			// Budget is the budget argument value.
 			Budget *models.Budget
+			// Name is the name argument value.
+			Name string
+		}
+		// Update holds details about calls to the Update method.
+		Update []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// Budget is the budget argument value.
+			Budget *models.Budget
 		}
 	}
+	lockCreateForControlPlane  sync.RWMutex
+	lockDelete                 sync.RWMutex
 	lockDeleteForGateway       sync.RWMutex
 	lockDeleteForGatewayExcept sync.RWMutex
+	lockGet                    sync.RWMutex
 	lockList                   sync.RWMutex
 	lockSaveForGateway         sync.RWMutex
+	lockUpdate                 sync.RWMutex
+}
+
+// CreateForControlPlane calls CreateForControlPlaneFunc.
+func (mock *BudgetRepositoryMock) CreateForControlPlane(ctx context.Context, budget *models.Budget, name string) error {
+	if mock.CreateForControlPlaneFunc == nil {
+		panic("BudgetRepositoryMock.CreateForControlPlaneFunc: method is nil but BudgetRepository.CreateForControlPlane was just called")
+	}
+	callInfo := struct {
+		Ctx    context.Context
+		Budget *models.Budget
+		Name   string
+	}{
+		Ctx:    ctx,
+		Budget: budget,
+		Name:   name,
+	}
+	mock.lockCreateForControlPlane.Lock()
+	mock.calls.CreateForControlPlane = append(mock.calls.CreateForControlPlane, callInfo)
+	mock.lockCreateForControlPlane.Unlock()
+	return mock.CreateForControlPlaneFunc(ctx, budget, name)
+}
+
+// CreateForControlPlaneCalls gets all the calls that were made to CreateForControlPlane.
+// Check the length with:
+//
+//	len(mockedBudgetRepository.CreateForControlPlaneCalls())
+func (mock *BudgetRepositoryMock) CreateForControlPlaneCalls() []struct {
+	Ctx    context.Context
+	Budget *models.Budget
+	Name   string
+} {
+	var calls []struct {
+		Ctx    context.Context
+		Budget *models.Budget
+		Name   string
+	}
+	mock.lockCreateForControlPlane.RLock()
+	calls = mock.calls.CreateForControlPlane
+	mock.lockCreateForControlPlane.RUnlock()
+	return calls
+}
+
+// Delete calls DeleteFunc.
+func (mock *BudgetRepositoryMock) Delete(ctx context.Context, ouID string, name string) error {
+	if mock.DeleteFunc == nil {
+		panic("BudgetRepositoryMock.DeleteFunc: method is nil but BudgetRepository.Delete was just called")
+	}
+	callInfo := struct {
+		Ctx  context.Context
+		OuID string
+		Name string
+	}{
+		Ctx:  ctx,
+		OuID: ouID,
+		Name: name,
+	}
+	mock.lockDelete.Lock()
+	mock.calls.Delete = append(mock.calls.Delete, callInfo)
+	mock.lockDelete.Unlock()
+	return mock.DeleteFunc(ctx, ouID, name)
+}
+
+// DeleteCalls gets all the calls that were made to Delete.
+// Check the length with:
+//
+//	len(mockedBudgetRepository.DeleteCalls())
+func (mock *BudgetRepositoryMock) DeleteCalls() []struct {
+	Ctx  context.Context
+	OuID string
+	Name string
+} {
+	var calls []struct {
+		Ctx  context.Context
+		OuID string
+		Name string
+	}
+	mock.lockDelete.RLock()
+	calls = mock.calls.Delete
+	mock.lockDelete.RUnlock()
+	return calls
 }
 
 // DeleteForGateway calls DeleteForGatewayFunc.
@@ -181,6 +325,46 @@ func (mock *BudgetRepositoryMock) DeleteForGatewayExceptCalls() []struct {
 	return calls
 }
 
+// Get calls GetFunc.
+func (mock *BudgetRepositoryMock) Get(ctx context.Context, ouID string, name string) (*models.Budget, error) {
+	if mock.GetFunc == nil {
+		panic("BudgetRepositoryMock.GetFunc: method is nil but BudgetRepository.Get was just called")
+	}
+	callInfo := struct {
+		Ctx  context.Context
+		OuID string
+		Name string
+	}{
+		Ctx:  ctx,
+		OuID: ouID,
+		Name: name,
+	}
+	mock.lockGet.Lock()
+	mock.calls.Get = append(mock.calls.Get, callInfo)
+	mock.lockGet.Unlock()
+	return mock.GetFunc(ctx, ouID, name)
+}
+
+// GetCalls gets all the calls that were made to Get.
+// Check the length with:
+//
+//	len(mockedBudgetRepository.GetCalls())
+func (mock *BudgetRepositoryMock) GetCalls() []struct {
+	Ctx  context.Context
+	OuID string
+	Name string
+} {
+	var calls []struct {
+		Ctx  context.Context
+		OuID string
+		Name string
+	}
+	mock.lockGet.RLock()
+	calls = mock.calls.Get
+	mock.lockGet.RUnlock()
+	return calls
+}
+
 // List calls ListFunc.
 func (mock *BudgetRepositoryMock) List(ctx context.Context, ouID string) ([]models.Budget, error) {
 	if mock.ListFunc == nil {
@@ -218,21 +402,23 @@ func (mock *BudgetRepositoryMock) ListCalls() []struct {
 }
 
 // SaveForGateway calls SaveForGatewayFunc.
-func (mock *BudgetRepositoryMock) SaveForGateway(ctx context.Context, budget *models.Budget) (bool, error) {
+func (mock *BudgetRepositoryMock) SaveForGateway(ctx context.Context, budget *models.Budget, name string) (bool, error) {
 	if mock.SaveForGatewayFunc == nil {
 		panic("BudgetRepositoryMock.SaveForGatewayFunc: method is nil but BudgetRepository.SaveForGateway was just called")
 	}
 	callInfo := struct {
 		Ctx    context.Context
 		Budget *models.Budget
+		Name   string
 	}{
 		Ctx:    ctx,
 		Budget: budget,
+		Name:   name,
 	}
 	mock.lockSaveForGateway.Lock()
 	mock.calls.SaveForGateway = append(mock.calls.SaveForGateway, callInfo)
 	mock.lockSaveForGateway.Unlock()
-	return mock.SaveForGatewayFunc(ctx, budget)
+	return mock.SaveForGatewayFunc(ctx, budget, name)
 }
 
 // SaveForGatewayCalls gets all the calls that were made to SaveForGateway.
@@ -242,13 +428,51 @@ func (mock *BudgetRepositoryMock) SaveForGateway(ctx context.Context, budget *mo
 func (mock *BudgetRepositoryMock) SaveForGatewayCalls() []struct {
 	Ctx    context.Context
 	Budget *models.Budget
+	Name   string
+} {
+	var calls []struct {
+		Ctx    context.Context
+		Budget *models.Budget
+		Name   string
+	}
+	mock.lockSaveForGateway.RLock()
+	calls = mock.calls.SaveForGateway
+	mock.lockSaveForGateway.RUnlock()
+	return calls
+}
+
+// Update calls UpdateFunc.
+func (mock *BudgetRepositoryMock) Update(ctx context.Context, budget *models.Budget) error {
+	if mock.UpdateFunc == nil {
+		panic("BudgetRepositoryMock.UpdateFunc: method is nil but BudgetRepository.Update was just called")
+	}
+	callInfo := struct {
+		Ctx    context.Context
+		Budget *models.Budget
+	}{
+		Ctx:    ctx,
+		Budget: budget,
+	}
+	mock.lockUpdate.Lock()
+	mock.calls.Update = append(mock.calls.Update, callInfo)
+	mock.lockUpdate.Unlock()
+	return mock.UpdateFunc(ctx, budget)
+}
+
+// UpdateCalls gets all the calls that were made to Update.
+// Check the length with:
+//
+//	len(mockedBudgetRepository.UpdateCalls())
+func (mock *BudgetRepositoryMock) UpdateCalls() []struct {
+	Ctx    context.Context
+	Budget *models.Budget
 } {
 	var calls []struct {
 		Ctx    context.Context
 		Budget *models.Budget
 	}
-	mock.lockSaveForGateway.RLock()
-	calls = mock.calls.SaveForGateway
-	mock.lockSaveForGateway.RUnlock()
+	mock.lockUpdate.RLock()
+	calls = mock.calls.Update
+	mock.lockUpdate.RUnlock()
 	return calls
 }

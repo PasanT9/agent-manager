@@ -216,6 +216,15 @@ resources:
       - { name: Execute, handle: execute, description: "Start, stop, and rerun monitors" }
       - { name: Read Score, handle: score-read, description: "View scores, breakdowns, and timeseries" }
       - { name: Publish Score, handle: score-publish, description: "Publish monitor scores (internal/system use)" }
+  - name: Budget
+    handle: budget
+    parent: amp
+    description: Spend limits on LLM traffic
+    actions:
+      - { name: Create, handle: create, description: "Create a budget" }
+      - { name: Read, handle: read, description: "View budgets" }
+      - { name: Update, handle: update, description: "Update, disable and enable a budget" }
+      - { name: Delete, handle: delete, description: "Delete a budget" }
   - name: Events
     handle: events
     parent: amp

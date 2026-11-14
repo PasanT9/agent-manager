@@ -220,6 +220,14 @@ const (
 	MonitorScorePublish Permission = "monitor:score-publish"
 )
 
+// Budget permissions — spend limits on LLM traffic.
+const (
+	BudgetCreate Permission = "budget:create"
+	BudgetRead   Permission = "budget:read"
+	BudgetUpdate Permission = "budget:update"
+	BudgetDelete Permission = "budget:delete"
+)
+
 // Events permissions — event destinations, org subscriptions and the org's
 // delivery log, granted to Admin only. Project and agent subscriptions are
 // part of the project or agent and use their read and update permissions.

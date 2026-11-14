@@ -111,6 +111,7 @@ var serviceProviderSet = wire.NewSet(
 	wire.Bind(new(controllers.MCPResourceServerIdentifierResolver), new(*services.MCPProxyService)),
 	services.NewGatewayInternalAPIService,
 	services.NewGatewayResourceSyncService,
+	services.NewBudgetService,
 	services.NewMonitorScoresService,
 	services.NewCatalogService,
 	services.NewLLMProxyProvisioner,
@@ -158,6 +159,7 @@ var controllerProviderSet = wire.NewSet(
 	controllers.NewMCPProxyScopeController,
 	controllers.NewAgentIdentityController,
 	controllers.NewEventsController,
+	controllers.NewBudgetController,
 	controllers.NewMonitorAlertController,
 )
 

@@ -359,11 +359,11 @@ var actionOverrides = map[string]Action{
 	// Internal gateway server. These carry no rbac.Permission — the gateway
 	// authenticates with an api-key header checked inside each handler — so
 	// each needs an explicit action.
-	"POST /gateways/{gatewayId}/manifest": "gateway:push-manifest",
+	"POST /gateways/{gatewayId}/manifest":  "gateway:push-manifest",
 	"POST /gateways/{gatewayId}/resources": "gateway:sync-resources",
-	"GET /llm-providers/api-keys":         "api-key:sync",
-	"GET /llm-proxies/api-keys":           "api-key:sync",
-	"GET /apis/api-keys":                  "api-key:sync",
+	"GET /llm-providers/api-keys":          "api-key:sync",
+	"GET /llm-proxies/api-keys":            "api-key:sync",
+	"GET /apis/api-keys":                   "api-key:sync",
 	// The gateway's startup sync. Reads expressed as POST because the ids go in
 	// the body; the batch carries the same resolved secrets as the per-artifact
 	// pulls.

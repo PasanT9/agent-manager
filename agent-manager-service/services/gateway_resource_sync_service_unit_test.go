@@ -70,11 +70,12 @@ func TestGatewayResourceSync_SavesDeletesAndReportsEachOne(t *testing.T) {
 	var saved []models.Budget
 	var deleted []string
 	repo := &repomocks.BudgetRepositoryMock{
-		SaveForGatewayFunc: func(_ context.Context, b *models.Budget) (bool, error) {
-			if b.Name == "org-wide" {
+		SaveForGatewayFunc: func(_ context.Context, b *models.Budget, name string) (bool, error) {
+			if name == "org-wide" {
 				return false, nil // the control plane holds the name
 			}
 			b.ID = cpID
+			b.Name = name
 			saved = append(saved, *b)
 			return true, nil
 		},
@@ -117,7 +118,6 @@ func TestGatewayResourceSync_SavesDeletesAndReportsEachOne(t *testing.T) {
 	assert.Equal(t, "team-a", b.Name)
 	assert.Equal(t, models.BudgetOriginGateway, b.Origin)
 	assert.Equal(t, resourceSyncGateway, *b.GatewayID)
-	assert.NotNil(t, b.SyncedAt)
 }
 
 func TestGatewayResourceSync_ACompletePushRemovesWhatItDoesNotList(t *testing.T) {
@@ -125,7 +125,7 @@ func TestGatewayResourceSync_ACompletePushRemovesWhatItDoesNotList(t *testing.T)
 	var keep []string
 	kept := false
 	repo := &repomocks.BudgetRepositoryMock{
-		SaveForGatewayFunc: func(_ context.Context, b *models.Budget) (bool, error) { return b.Name != "org-wide", nil },
+		SaveForGatewayFunc: func(_ context.Context, _ *models.Budget, name string) (bool, error) { return name != "org-wide", nil },
 		DeleteForGatewayExceptFunc: func(_ context.Context, _ string, _ uuid.UUID, names []string) error {
 			keep, kept = names, true
 			return nil
@@ -151,7 +151,7 @@ func TestGatewayResourceSync_StoreFailureIsAnError(t *testing.T) {
 	gw := &models.Gateway{UUID: resourceSyncGateway, OUID: resourceSyncOrg}
 	dbDown := errors.New("db down")
 	repo := &repomocks.BudgetRepositoryMock{
-		SaveForGatewayFunc: func(context.Context, *models.Budget) (bool, error) { return false, dbDown },
+		SaveForGatewayFunc: func(context.Context, *models.Budget, string) (bool, error) { return false, dbDown },
 	}
 	svc := NewGatewayResourceSyncService(gatewayRepoFor(gw, nil), repo)
 	_, err := svc.Sync(context.Background(), resourceSyncGateway.String(), resourceSyncOrg, models.GatewayResourcesRequest{

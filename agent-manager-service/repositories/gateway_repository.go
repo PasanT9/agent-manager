@@ -287,10 +287,13 @@ func (r *GatewayRepo) buildFilterQuery(filters GatewayFilterOptions) *gorm.DB {
 }
 
 // Delete removes a gateway with organization isolation. Its environment links, tokens, identity providers and event
-// state cascade; its deployment status rows and deployments are removed here first, because their foreign keys to
-// the gateway take no action (schema rule 7).
+// state cascade; its deployment status rows, deployments and the budgets it pushed are removed here first, because
+// their foreign keys to the gateway take no action (schema rule 7).
 func (r *GatewayRepo) Delete(gatewayID, ouID string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := DeleteGatewayBudgets(tx, ouID, gatewayID); err != nil {
+			return err
+		}
 		if err := tx.Where("gateway_id = ? AND org_id = ?", gatewayID, ouID).
 			Delete(&models.DeploymentStatusRecord{}).Error; err != nil {
 			return err

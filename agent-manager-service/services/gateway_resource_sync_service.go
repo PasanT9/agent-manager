@@ -22,9 +22,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/wso2/agent-manager/agent-manager-service/models"
 	"github.com/wso2/agent-manager/agent-manager-service/repositories"
@@ -36,8 +33,8 @@ const (
 	GatewayResourceErrInvalid       = "INVALID_RESOURCE"
 	GatewayResourceErrUnsupported   = "UNSUPPORTED_KIND"
 	GatewayResourceErrDuplicateName = "DUPLICATE_NAME"
-	// BudgetErrAlreadyExists: another budget (the control plane's or another gateway's)
-	// holds the name.
+	// BudgetErrAlreadyExists: the name is taken by another artifact: a control-plane
+	// budget, another gateway's, or another kind.
 	BudgetErrAlreadyExists = "BUDGET_ALREADY_EXISTS"
 )
 
@@ -204,13 +201,11 @@ func sortedKinds[T any](m map[string]T) []string {
 // gatewayBudgetSyncer stores the budgets a gateway created through its own API as
 // gateway-origin budgets owned by that gateway.
 type gatewayBudgetSyncer struct {
-	repo  repositories.BudgetRepository
-	now   func() time.Time
-	newID func() uuid.UUID
+	repo repositories.BudgetRepository
 }
 
 func newGatewayBudgetSyncer(repo repositories.BudgetRepository) *gatewayBudgetSyncer {
-	return &gatewayBudgetSyncer{repo: repo, now: time.Now, newID: uuid.New}
+	return &gatewayBudgetSyncer{repo: repo}
 }
 
 func (b *gatewayBudgetSyncer) Kind() string { return models.GatewayResourceKindBudget }
@@ -218,14 +213,16 @@ func (b *gatewayBudgetSyncer) Kind() string { return models.GatewayResourceKindB
 func (b *gatewayBudgetSyncer) Save(ctx context.Context, gateway *models.Gateway, name string,
 	item models.GatewayResourceItem,
 ) (string, string, error) {
-	gatewayID := gateway.UUID
-	syncedAt := b.now().UTC()
-	budget := &models.Budget{
-		ID: b.newID(), OUID: gateway.OUID, Name: name, Origin: models.BudgetOriginGateway, GatewayID: &gatewayID,
-		Configuration: item.Configuration,
-		CreatedAt:     item.CreatedAt.UTC(), UpdatedAt: item.UpdatedAt.UTC(), SyncedAt: &syncedAt,
+	cfg, err := gatewayBudgetConfig(name, item.Configuration)
+	if err != nil {
+		return "", GatewayResourceErrInvalid, nil //nolint:nilerr // a bad document fails the item, not the push
 	}
-	stored, err := b.repo.SaveForGateway(ctx, budget)
+	gatewayID := gateway.UUID
+	budget := &models.Budget{
+		OrgID: gateway.OUID, Origin: models.BudgetOriginGateway, GatewayID: &gatewayID,
+		Configuration: cfg,
+	}
+	stored, err := b.repo.SaveForGateway(ctx, budget, name)
 	if err != nil {
 		return "", "", err
 	}
@@ -241,4 +238,44 @@ func (b *gatewayBudgetSyncer) Delete(ctx context.Context, gateway *models.Gatewa
 
 func (b *gatewayBudgetSyncer) Keep(ctx context.Context, gateway *models.Gateway, names []string) error {
 	return b.repo.DeleteForGatewayExcept(ctx, gateway.OUID, gateway.UUID, names)
+}
+
+// gatewayBudgetConfig maps a pushed Budget kind onto the stored model: its spec, with the
+// defaults the REST API fills in. A gateway budget has no display name, so its name is
+// shown (Interfaces 1.1).
+func gatewayBudgetConfig(name string, raw json.RawMessage) (models.BudgetConfig, error) {
+	var doc struct {
+		Spec models.BudgetConfig `json:"spec"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return models.BudgetConfig{}, err
+	}
+	cfg := doc.Spec
+	if cfg.DisplayName == "" {
+		cfg.DisplayName = name
+	}
+	if cfg.Status == "" {
+		cfg.Status = budgetStatusActive
+	}
+	if cfg.Limit.Currency == "" {
+		cfg.Limit.Currency = budgetCurrencyUSD
+	}
+	if cfg.Resource != nil && cfg.Resource.Allocation == "" {
+		cfg.Resource.Allocation = budgetAllocationShared
+	}
+	if cfg.Environments != nil && cfg.Environments.Allocation == "" {
+		cfg.Environments.Allocation = budgetAllocationShared
+	}
+	for i := range cfg.Consumers {
+		if cfg.Consumers[i].Allocation == "" {
+			cfg.Consumers[i].Allocation = budgetAllocationShared
+		}
+	}
+	if cfg.Consumers == nil {
+		cfg.Consumers = []models.BudgetConsumer{}
+	}
+	if cfg.Exemptions == nil {
+		cfg.Exemptions = []models.BudgetExemption{}
+	}
+	return cfg, nil
 }

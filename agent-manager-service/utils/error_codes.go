@@ -47,9 +47,16 @@ const (
 	ErrCodeNotImplemented     = "NOT_IMPLEMENTED"
 
 	// Resource-specific error codes
-	ErrCodeAgentNotFound           = "AGENT_NOT_FOUND"
-	ErrCodeAgentAlreadyExists      = "AGENT_ALREADY_EXISTS"
-	ErrCodeProjectNotFound         = "PROJECT_NOT_FOUND"
+	ErrCodeAgentNotFound      = "AGENT_NOT_FOUND"
+	ErrCodeAgentAlreadyExists = "AGENT_ALREADY_EXISTS"
+	ErrCodeProjectNotFound    = "PROJECT_NOT_FOUND"
+
+	// Budget errors (Interfaces 2.3)
+	ErrCodeReferenceNotFound       = "REFERENCE_NOT_FOUND"
+	ErrCodeChannelNotAvailable     = "CHANNEL_NOT_AVAILABLE"
+	ErrCodeBudgetAlreadyExists     = "BUDGET_ALREADY_EXISTS"
+	ErrCodeBudgetNotFound          = "BUDGET_NOT_FOUND"
+	ErrCodeBudgetReadOnly          = "BUDGET_READ_ONLY"
 	ErrCodeProjectAlreadyExists    = "PROJECT_ALREADY_EXISTS"
 	ErrCodeOrganizationNotFound    = "ORGANIZATION_NOT_FOUND"
 	ErrCodeEnvironmentNotFound     = "ENVIRONMENT_NOT_FOUND"

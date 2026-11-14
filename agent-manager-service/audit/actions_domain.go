@@ -157,6 +157,9 @@ const (
 	ActionMonitorRerun   Action = "monitor:rerun"
 	ActionMonitorRunFail Action = "monitor:run-failed"
 
+	// Budgets: spend limits on LLM traffic. Deleting one stops it limiting spend.
+	ActionBudgetDelete Action = "budget:delete"
+
 	// System-initiated work. Recorded when it changes state, not on every tick.
 	ActionSystemAgentIdentityProvisioned Action = "system:agent-identity-provisioned"
 	ActionSystemAgentIdentityExhausted   Action = "system:agent-identity-exhausted"
@@ -589,6 +592,8 @@ func init() {
 	RegisterDetailSchema(ActionMonitorUpdate, monitorFields)
 	Register(ActionMonitorDelete, ClassConfig, SeverityNotice)
 	RegisterDetailSchema(ActionMonitorDelete, monitorFields)
+	Register(ActionBudgetDelete, ClassConfig, SeverityNotice)
+	RegisterDetailSchema(ActionBudgetDelete, map[string]FieldKind{"budgetName": KindName})
 	// Start and stop decide whether an evaluation keeps spending against the
 	// org's LLM provider, so they rank above ordinary configuration edits.
 	Register(ActionMonitorStart, ClassConfig, SeverityNotice)

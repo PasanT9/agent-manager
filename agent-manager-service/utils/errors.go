@@ -111,6 +111,8 @@ var (
 	ErrProjectHasAssociatedAgents     = errors.New("project has associated agents")
 	ErrMonitorNotFound                = errors.New("monitor not found")
 	ErrMonitorAlreadyExists           = errors.New("monitor already exists")
+	ErrBudgetAlreadyExists            = errors.New("budget already exists")
+	ErrBudgetNotFound                 = errors.New("budget not found")
 	ErrMonitorRunNotFound             = errors.New("monitor run not found")
 	ErrMonitorAlreadyStopped          = errors.New("monitor already stopped")
 	ErrMonitorAlreadyActive           = errors.New("monitor already active")
