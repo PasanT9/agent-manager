@@ -40,6 +40,7 @@ func RegisterGatewayInternalRoutes(rr *middleware.RouteRegistrar, ctrl controlle
 
 	// Subscription plans endpoint
 	rr.HandleFuncWithValidation("GET /subscription-plans", ctrl.GetSubscriptionPlans)
+	rr.HandleFuncWithValidation("GET /budgets", ctrl.GetBudgets)
 
 	// Startup sync: the gateway lists what it should hold, fetches what it is
 	// missing, and checks which artifacts it would delete still exist.

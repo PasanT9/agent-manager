@@ -50,6 +50,7 @@ type GatewayInternalController interface {
 	GetApplications(w http.ResponseWriter, r *http.Request)
 	PushGatewayManifest(w http.ResponseWriter, r *http.Request)
 	SyncGatewayResources(w http.ResponseWriter, r *http.Request)
+	GetBudgets(w http.ResponseWriter, r *http.Request)
 }
 
 type gatewayInternalController struct {
@@ -58,6 +59,7 @@ type gatewayInternalController struct {
 	apiKeyRepo             repositories.APIKeyRepository
 	aiApplicationRepo      repositories.AIApplicationRepository
 	resourceSyncService    *services.GatewayResourceSyncService
+	budgetGateways         *services.BudgetGateways
 }
 
 // NewGatewayInternalController creates a new gateway internal controller
@@ -67,6 +69,7 @@ func NewGatewayInternalController(
 	apiKeyRepo repositories.APIKeyRepository,
 	aiApplicationRepo repositories.AIApplicationRepository,
 	resourceSyncService *services.GatewayResourceSyncService,
+	budgetGateways *services.BudgetGateways,
 ) GatewayInternalController {
 	return &gatewayInternalController{
 		gatewayService:         gatewayService,
@@ -74,7 +77,31 @@ func NewGatewayInternalController(
 		apiKeyRepo:             apiKeyRepo,
 		aiApplicationRepo:      aiApplicationRepo,
 		resourceSyncService:    resourceSyncService,
+		budgetGateways:         budgetGateways,
 	}
+}
+
+// GetBudgets handles GET /api/internal/v1/budgets: the control-plane budgets the
+// authenticated gateway enforces, in the form budget events carry (Interfaces 4.1). The
+// gateway calls it on connect, saves newer budgets and drops the control-plane budgets
+// not listed.
+func (c *gatewayInternalController) GetBudgets(w http.ResponseWriter, r *http.Request) {
+	log := logger.GetLogger(r.Context())
+	identity, ok := c.authenticateGateway(w, r, "internal-read")
+	if !ok {
+		return
+	}
+	budgets, err := c.budgetGateways.ForGatewayID(r.Context(), identity.OUID, identity.ID)
+	if err != nil {
+		if errors.Is(err, utils.ErrGatewayNotFound) {
+			http.Error(w, "Gateway not found", http.StatusNotFound)
+			return
+		}
+		log.Error("Failed to list budgets for gateway", "gatewayId", identity.ID, "error", err)
+		http.Error(w, "Failed to list budgets", http.StatusInternalServerError)
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, budgets)
 }
 
 // GetLLMProvider handles GET /api/internal/v1/llm-providers/:providerId

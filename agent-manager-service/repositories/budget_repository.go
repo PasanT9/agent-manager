@@ -40,10 +40,11 @@ type BudgetRepository interface {
 	// utils.ErrBudgetAlreadyExists when another artifact holds the name.
 	CreateForControlPlane(ctx context.Context, budget *models.Budget, name string) error
 	// SaveForGateway stores a budget a gateway pushed, matched by name (the artifact
-	// handle): it updates the gateway's earlier copy, keeping its ID, or creates the
-	// artifact and the row. budget.ID is set to the stored budget's ID. It reports false,
-	// storing nothing, when the name is taken by another artifact (a control-plane
-	// budget, another gateway's, or another kind).
+	// handle): it updates the gateway's earlier copy, keeping its ID and the fields
+	// Agent Manager owns (display name, description, warnings), or creates the artifact
+	// and the row. budget.ID is set to the stored budget's ID. It reports false, storing
+	// nothing, when the name is taken by another artifact (a control-plane budget,
+	// another gateway's, or another kind).
 	SaveForGateway(ctx context.Context, budget *models.Budget, name string) (bool, error)
 	// DeleteForGateway deletes the gateway's budgets with the given names.
 	DeleteForGateway(ctx context.Context, ouID string, gatewayID uuid.UUID, names []string) error
@@ -119,12 +120,12 @@ func (r *budgetRepository) SaveForGateway(ctx context.Context, budget *models.Bu
 			return nil
 		}
 
-		// The name is taken: update it only if it is this gateway's budget.
+		// The name is taken: update it only if it is this gateway's budget. A control-plane
+		// budget, another gateway's or another kind holding the name refuses it.
 		var existing models.Budget
 		err = tx.Table("budgets").Select("budgets.*").
 			Joins("JOIN artifacts ON artifacts.id = budgets.id AND artifacts.org_id = budgets.org_id").
 			Where("artifacts.org_id = ? AND artifacts.handle = ? AND artifacts.kind = ?", budget.OrgID, name, models.KindBudget).
-			Where("budgets.origin = ? AND budgets.gateway_id = ?", models.BudgetOriginGateway, budget.GatewayID).
 			Take(&existing).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
@@ -132,6 +133,14 @@ func (r *budgetRepository) SaveForGateway(ctx context.Context, budget *models.Bu
 		if err != nil {
 			return fmt.Errorf("failed to read budget %q: %w", name, err)
 		}
+		if existing.Origin != models.BudgetOriginGateway || existing.GatewayID == nil || budget.GatewayID == nil || *existing.GatewayID != *budget.GatewayID {
+			return nil
+		}
+		// The gateway owns what it enforces; Agent Manager owns what gateways never get,
+		// so its display name, description and warnings are kept (Interfaces 4.3).
+		budget.Configuration.DisplayName = existing.Configuration.DisplayName
+		budget.Configuration.Description = existing.Configuration.Description
+		budget.Configuration.Warnings = existing.Configuration.Warnings
 		if err := tx.Model(&models.Budget{}).Where("id = ? AND org_id = ?", existing.ID, budget.OrgID).
 			Update("configuration", dbx.JSON(budget.Configuration)).Error; err != nil {
 			return fmt.Errorf("failed to update budget %q: %w", name, err)

@@ -42,12 +42,15 @@ type LLMProxyKind struct {
 	deploymentRepo repositories.DeploymentRepository
 	load           func(ctx context.Context, artifact models.ArtifactRef) (*models.LLMProxy, *models.LLMProvider, error)
 	vhostOf        func(tx *gorm.DB, artifact models.ArtifactRef) string
+	// annotationsOf finds a proxy's deployment annotations; when unset, the stored ones are used.
+	annotationsOf func(ctx context.Context, proxy *models.LLMProxy) (map[string]string, error)
 }
 
 // NewLLMProxyKind reads proxies and their providers through the request's transaction when there is one.
 func NewLLMProxyKind(gatewayRepo repositories.GatewayRepository, deploymentRepo repositories.DeploymentRepository) *LLMProxyKind {
 	return &LLMProxyKind{
 		gatewayRepo: gatewayRepo, deploymentRepo: deploymentRepo, load: loadLLMProxy, vhostOf: proxyEventVhost,
+		annotationsOf: agentAnnotations,
 	}
 }
 
@@ -82,11 +85,36 @@ func (k *LLMProxyKind) Render(ctx context.Context, artifact models.ArtifactRef) 
 	if err != nil {
 		return reconcile.Rendered{}, err
 	}
-	content, err := renderLLMProxy(proxy, provider)
+	annotations := proxy.Configuration.Annotations
+	if k.annotationsOf != nil {
+		if annotations, err = k.annotationsOf(ctx, proxy); err != nil {
+			return reconcile.Rendered{}, err
+		}
+	}
+	content, err := renderLLMProxy(proxy, provider, annotations)
 	if err != nil {
 		return reconcile.Rendered{}, reconcile.Permanent(fmt.Errorf("%w: invalid LLM proxy configuration: %w", utils.ErrInvalidInput, err))
 	}
 	return renderedDeployment(artifact.Handle, []byte(content)), nil
+}
+
+// agentAnnotations are the annotations of an LLM proxy's deployment: those stored with it
+// (an agent's hidden proxy names its project and agent), or, for a hidden proxy created
+// before they were stored, its agent read in the request's transaction. nil for a proxy no
+// single agent uses (a public or a monitor's proxy).
+func agentAnnotations(ctx context.Context, proxy *models.LLMProxy) (map[string]string, error) {
+	if len(proxy.Configuration.Annotations) > 0 {
+		return proxy.Configuration.Annotations, nil
+	}
+	consumers, err := repositories.NewEnvAgentModelMappingRepository(db.DB(ctx)).
+		ListAgentConsumersByProxyUUIDs(ctx, []uuid.UUID{proxy.UUID})
+	if err != nil {
+		return nil, fmt.Errorf("failed to find the agent of LLM proxy %s: %w", proxy.UUID, err)
+	}
+	if len(consumers) != 1 || consumers[0].ProjectName == "" || consumers[0].AgentID == "" {
+		return nil, nil //nolint:nilnil // no single agent: nothing to annotate
+	}
+	return agentProxyAnnotations(consumers[0].ProjectName, consumers[0].AgentID), nil
 }
 
 // proxyEventVhost is the vhost a proxy's events carry: the proxy row's, read in the event's transaction.

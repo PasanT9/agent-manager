@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -52,7 +53,6 @@ const (
 	budgetTypeProject     = "project"
 	budgetTypeAgent       = "agent"
 	budgetTypeAPIKey      = "apiKey"
-	budgetTypeLLMProxy    = "llmProxy"
 	budgetTypeAttribute   = "attribute"
 
 	maxBudgetDisplayName  = 255
@@ -65,11 +65,17 @@ const (
 	maxBudgetChannels     = 20
 )
 
+// gatewayConsumerTypes are the consumer and exemption types gateways can identify: token
+// claims (attribute); the project and agent of an agent's hidden LLM proxy, from its
+// annotations; and the API key a request authenticated with. A type not listed here is
+// refused (UNSUPPORTED_CONSUMER).
+var gatewayConsumerTypes = []string{budgetTypeAttribute, budgetTypeProject, budgetTypeAgent, budgetTypeAPIKey}
+
 var (
 	budgetNamePattern   = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	budgetAmountPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]{1,2})?$`)
 	budgetPeriods       = []string{"day", "week", "month"}
-	budgetConsumerTypes = []string{budgetTypeProject, budgetTypeAgent, budgetTypeAPIKey, budgetTypeLLMProxy, budgetTypeAttribute}
+	budgetConsumerTypes = []string{budgetTypeProject, budgetTypeAgent, budgetTypeAPIKey, budgetTypeAttribute}
 )
 
 // BudgetError is a budget request the service refuses: Code is the ErrorResponse code,
@@ -86,6 +92,13 @@ func invalidBudget(field, format string, args ...any) error {
 	return &BudgetError{Code: utils.ErrCodeValidation, Message: fmt.Sprintf(format, args...), Field: field}
 }
 
+func unsupportedConsumer(field, typ string) error {
+	return &BudgetError{
+		Code: utils.ErrCodeUnsupportedConsumer, Field: field,
+		Message: fmt.Sprintf("Gateways cannot identify %s consumers yet; use an attribute (token claim) instead.", typ),
+	}
+}
+
 func budgetReferenceNotFound(field, format string, args ...any) error {
 	return &BudgetError{Code: utils.ErrCodeReferenceNotFound, Message: fmt.Sprintf(format, args...), Field: field}
 }
@@ -98,7 +111,8 @@ type BudgetService interface {
 	Get(ctx context.Context, ouID, name string) (*spec.BudgetResponse, error)
 	// List returns a page of the organization's budgets matching every filter (type:id).
 	List(ctx context.Context, ouID string, filters []string, limit, offset int32) (*spec.BudgetListResponse, error)
-	// Update replaces a control-plane budget's editable fields.
+	// Update replaces a budget's editable fields. A gateway's budget changes only in the
+	// fields gateways never get (displayName, description, warnings).
 	Update(ctx context.Context, ouID, name string, req spec.BudgetUpdateRequest) (*spec.BudgetResponse, error)
 	// Delete deletes a control-plane budget.
 	Delete(ctx context.Context, ouID, name string) error
@@ -109,16 +123,19 @@ type budgetService struct {
 	artifactRepo repositories.ArtifactRepository
 	platform     repositories.PlatformRepository
 	eventRepo    repositories.EventRepository
+	gateways     BudgetGatewaySender
 }
 
-// NewBudgetService creates a BudgetService.
+// NewBudgetService creates a BudgetService. gateways sends budgets to the gateways that
+// enforce them.
 func NewBudgetService(
 	budgetRepo repositories.BudgetRepository,
 	artifactRepo repositories.ArtifactRepository,
 	platform repositories.PlatformRepository,
 	eventRepo repositories.EventRepository,
+	gateways BudgetGatewaySender,
 ) BudgetService {
-	return &budgetService{budgetRepo: budgetRepo, artifactRepo: artifactRepo, platform: platform, eventRepo: eventRepo}
+	return &budgetService{budgetRepo: budgetRepo, artifactRepo: artifactRepo, platform: platform, eventRepo: eventRepo, gateways: gateways}
 }
 
 // BudgetKind is the Budget kind (Interfaces 3): what gateways receive and what pipelines
@@ -136,10 +153,33 @@ type BudgetKindMetadata struct {
 }
 
 // BuildBudgetKind wraps a stored budget in the Budget kind. For a gateway it leaves out
-// what gateways never get: displayName, description and warnings (Interfaces 3).
+// what gateways never get: displayName, description and warnings (Interfaces 3), and the
+// environments, which only choose the gateways.
 func BuildBudgetKind(name string, cfg models.BudgetConfig, forGateway bool) BudgetKind {
 	if forGateway {
-		cfg.DisplayName, cfg.Description, cfg.Warnings = "", nil, nil
+		// A gateway names an agent with its project (agent names are unique per project);
+		// the budget's project consumer is the project of a named agent.
+		project := ""
+		for _, c := range cfg.Consumers {
+			if c.Type == budgetTypeProject && c.ID != nil {
+				project = *c.ID
+			}
+		}
+		consumers := make([]models.BudgetConsumer, len(cfg.Consumers))
+		for i, c := range cfg.Consumers {
+			if c.Type == budgetTypeAgent && c.ID != nil && project != "" {
+				p := project
+				c.Project = &p
+			}
+			consumers[i] = c
+		}
+		cfg.Consumers = consumers
+		// The gateway kind has no environments: they only choose the gateways it goes to.
+		cfg.DisplayName, cfg.Description, cfg.Warnings, cfg.Environments = "", nil, nil, nil
+		if cfg.Resource == nil {
+			// No resource covers every provider, shared; the gateway kind names it.
+			cfg.Resource = &models.BudgetResource{Type: budgetTypeLLMProvider, Allocation: budgetAllocationShared}
+		}
 	}
 	return BudgetKind{APIVersion: budgetAPIVersion, Kind: models.KindBudget, Metadata: BudgetKindMetadata{Name: name}, Spec: cfg}
 }
@@ -167,6 +207,7 @@ func (s *budgetService) Create(ctx context.Context, ouID, createdBy string, req 
 		}
 		return nil, err
 	}
+	s.gateways.SendBudget(ctx, budget, true)
 	return BudgetResponse(budget), nil
 }
 
@@ -244,7 +285,7 @@ func (s *budgetService) List(ctx context.Context, ouID string, filters []string,
 }
 
 func (s *budgetService) Update(ctx context.Context, ouID, name string, req spec.BudgetUpdateRequest) (*spec.BudgetResponse, error) {
-	b, err := s.writableBudget(ctx, ouID, name)
+	b, err := s.getBudget(ctx, ouID, name)
 	if err != nil {
 		return nil, err
 	}
@@ -279,19 +320,49 @@ func (s *budgetService) Update(ctx context.Context, ouID, name string, req spec.
 	if err != nil {
 		return nil, err
 	}
+	if b.Origin != models.BudgetOriginControlPlane && !gatewayFieldsUnchanged(&cfg, status, limit, exemptions) {
+		// A gateway's budget: the gateway owns what it enforces; only Agent Manager's
+		// fields, which gateways never get, change here (Interfaces 4.3).
+		return nil, &BudgetError{
+			Code: utils.ErrCodeBudgetReadOnly,
+			Message: fmt.Sprintf("Budget %s was created on a gateway: status, limit and exemptions can be changed only "+
+				"there. displayName, description and warnings can be changed here.", name),
+		}
+	}
 	cfg.DisplayName, cfg.Description, cfg.Status = displayName, req.Description, status
 	cfg.Limit, cfg.Exemptions, cfg.Warnings = limit, exemptions, warnings
 	if err := s.checkEditableReferences(ctx, ouID, &cfg); err != nil {
 		return nil, err
 	}
 	b.Configuration = cfg
+	// A gateway's budget changes only in fields gateways never get: nothing to send.
+	sendToGateways := b.Origin == models.BudgetOriginControlPlane
 	if err := s.budgetRepo.Update(ctx, b); err != nil {
 		if errors.Is(err, utils.ErrBudgetNotFound) {
 			return nil, budgetNotFound(name)
 		}
 		return nil, err
 	}
+	if sendToGateways {
+		s.gateways.SendBudget(ctx, b, false)
+	}
 	return BudgetResponse(b), nil
+}
+
+// gatewayFieldsUnchanged reports whether an update leaves a budget's enforced fields
+// (status, limit, exemptions) as stored. A stored block limit with no blockAt blocks at 100%.
+func gatewayFieldsUnchanged(stored *models.BudgetConfig, status string, limit models.BudgetLimit, exemptions []models.BudgetExemption) bool {
+	storedLimit := stored.Limit
+	if storedLimit.Action == budgetActionBlock && storedLimit.BlockAt == nil {
+		blockAt := int32(budgetDefaultBlockAt)
+		storedLimit.BlockAt = &blockAt
+	}
+	storedStatus := stored.Status
+	if storedStatus == "" {
+		storedStatus = budgetStatusActive
+	}
+	return storedStatus == status && reflect.DeepEqual(storedLimit, limit) &&
+		len(stored.Exemptions) == len(exemptions) && (len(exemptions) == 0 || reflect.DeepEqual(stored.Exemptions, exemptions))
 }
 
 func (s *budgetService) Delete(ctx context.Context, ouID, name string) error {
@@ -305,6 +376,7 @@ func (s *budgetService) Delete(ctx context.Context, ouID, name string) error {
 		}
 		return err
 	}
+	s.gateways.SendBudgetDeleted(ctx, b)
 	audit.Record(
 		ctx, audit.ActionBudgetDelete,
 		audit.Org(ouID),
@@ -315,7 +387,7 @@ func (s *budgetService) Delete(ctx context.Context, ouID, name string) error {
 }
 
 // budgetFilterTypes are the types a list filter can name.
-var budgetFilterTypes = []string{budgetTypeProject, budgetTypeAgent, budgetTypeAPIKey, budgetTypeLLMProxy, budgetTypeLLMProvider}
+var budgetFilterTypes = []string{budgetTypeProject, budgetTypeAgent, budgetTypeAPIKey, budgetTypeLLMProvider}
 
 type budgetFilter struct{ typ, id string }
 
@@ -326,7 +398,7 @@ func parseBudgetFilters(filters []string) ([]budgetFilter, error) {
 		typ, id, ok := strings.Cut(f, ":")
 		if !ok || id == "" || !containsString(budgetFilterTypes, typ) {
 			return nil, invalidBudget(fmt.Sprintf("filter[%d]", i),
-				"filter must be type:id, with type project, agent, apiKey, llmProxy or llmProvider.")
+				"filter must be type:id, with type project, agent, apiKey or llmProvider.")
 		}
 		out = append(out, budgetFilter{typ: typ, id: id})
 	}
@@ -496,7 +568,10 @@ func normalizeBudgetConsumers(in []spec.BudgetConsumer) ([]models.BudgetConsumer
 	for i, c := range in {
 		field := fmt.Sprintf("consumers[%d]", i)
 		if !containsString(budgetConsumerTypes, c.Type) {
-			return nil, invalidBudget(field+".type", "Consumer type must be project, agent, apiKey, llmProxy or attribute.")
+			return nil, invalidBudget(field+".type", "Consumer type must be project, agent, apiKey or attribute.")
+		}
+		if !containsString(gatewayConsumerTypes, c.Type) {
+			return nil, unsupportedConsumer(field+".type", c.Type)
 		}
 		if c.Type != budgetTypeAttribute {
 			if seen[c.Type] {
@@ -548,6 +623,10 @@ func normalizeBudgetExemptions(in []spec.BudgetExemption) ([]models.BudgetExempt
 	empty := func(p *string) bool { return p == nil || *p == "" }
 	for i, e := range in {
 		field := fmt.Sprintf("exemptions[%d]", i)
+		if containsString([]string{budgetTypeProject, budgetTypeAgent, budgetTypeAttribute}, e.Type) &&
+			!containsString(gatewayConsumerTypes, e.Type) {
+			return nil, unsupportedConsumer(field+".type", e.Type)
+		}
 		switch e.Type {
 		case budgetTypeProject:
 			if empty(e.Id) || e.Project != nil || e.Expression != nil {
@@ -632,8 +711,6 @@ func (s *budgetService) checkReferences(ctx context.Context, ouID string, b *mod
 			err = s.checkProject(ctx, ouID, *c.ID, field)
 		case budgetTypeAgent:
 			err = s.checkAgent(ctx, ouID, project, *c.ID, field)
-		case budgetTypeLLMProxy:
-			err = s.checkArtifact(ouID, models.KindLLMProxy, *c.ID, field, "LLM proxy")
 		}
 		if err != nil {
 			return err

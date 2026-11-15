@@ -112,6 +112,8 @@ var serviceProviderSet = wire.NewSet(
 	services.NewGatewayInternalAPIService,
 	services.NewGatewayResourceSyncService,
 	services.NewBudgetService,
+	services.NewBudgetGateways,
+	wire.Bind(new(services.BudgetGatewaySender), new(*services.BudgetGateways)),
 	services.NewMonitorScoresService,
 	services.NewCatalogService,
 	services.NewLLMProxyProvisioner,

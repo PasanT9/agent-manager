@@ -6189,7 +6189,7 @@ paths:
           in: query
           required: false
           description: >-
-            type:id, with type project, agent, apiKey, llmProxy or llmProvider: budgets whose
+            type:id, with type project, agent, apiKey or llmProvider: budgets whose
             resource, consumers or exemptions name it. Repeat for AND.
           style: form
           explode: true
@@ -6360,8 +6360,9 @@ paths:
       description: |
         Replaces the editable fields; also disables and enables the budget (status).
         name, currency, period, resource, environments and consumers are fixed after creation:
-        create a new budget instead. Any other field is rejected. Budgets created on a gateway
-        are read-only (BUDGET_READ_ONLY).
+        create a new budget instead. Any other field is rejected. A budget created on a
+        gateway takes only displayName, description and warnings, which gateways never get;
+        its status, limit and exemptions must be sent unchanged (BUDGET_READ_ONLY otherwise).
       operationId: updateBudget
       tags:
         - Budgets
@@ -6416,7 +6417,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: The budget was created on a gateway (BUDGET_READ_ONLY)
+          description: The budget was created on a gateway and that change belongs there (BUDGET_READ_ONLY)
           content:
             application/json:
               schema:
@@ -17464,7 +17465,7 @@ components:
       properties:
         type:
           type: string
-          enum: [project, agent, apiKey, llmProxy, attribute]
+          enum: [project, agent, apiKey, attribute]
         allocation:
           type: string
           enum: [shared, separate]

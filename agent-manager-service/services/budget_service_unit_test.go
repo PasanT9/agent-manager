@@ -43,6 +43,28 @@ var (
 
 func budgetI32(v int32) *int32 { return &v }
 
+// Gateways identify consumers by token claims (attributes) today.
+const (
+	budgetGroupExpr = `'research' in request.Auth.Claims["groups"]`
+	budgetEmailExpr = `request.Auth.Claims["email"]`
+	budgetAdminExpr = `request.Auth.Claims["role"] == "admin"`
+)
+
+// recordingSender records the budgets sent to gateways.
+type recordingSender struct{ sent []string }
+
+func (r *recordingSender) SendBudget(_ context.Context, b *models.Budget, created bool) {
+	event := "updated"
+	if created {
+		event = "created"
+	}
+	r.sent = append(r.sent, event+":"+b.Name+":"+b.Configuration.Status)
+}
+
+func (r *recordingSender) SendBudgetDeleted(_ context.Context, b *models.Budget) {
+	r.sent = append(r.sent, "deleted:"+b.Name)
+}
+
 // budgetTestRequest is the design's example payload (Interfaces 2.2).
 func budgetTestRequest() spec.BudgetRequest {
 	return spec.BudgetRequest{
@@ -53,11 +75,11 @@ func budgetTestRequest() spec.BudgetRequest {
 		Resource:     &spec.BudgetResource{Type: "llmProvider", Id: strPtr("openai")},
 		Environments: &spec.BudgetEnvironments{Ids: []string{"default"}},
 		Consumers: []spec.BudgetConsumer{
-			{Type: "project", Id: strPtr("api-platform")},
-			{Type: "agent", Allocation: strPtr("separate")},
+			{Type: "attribute", Expression: strPtr(budgetGroupExpr)},
+			{Type: "attribute", Allocation: strPtr("separate"), Expression: strPtr(budgetEmailExpr)},
 		},
-		Exemptions: []spec.BudgetExemption{{Type: "agent", Project: strPtr("api-platform"), Id: strPtr("hotel-booking")}},
-		Warnings:   &spec.BudgetWarnings{Thresholds: []int32{80, 100}, ChannelIds: []string{budgetOrgChannel, budgetProjectChannel}},
+		Exemptions: []spec.BudgetExemption{{Type: "attribute", Expression: strPtr(budgetAdminExpr)}},
+		Warnings:   &spec.BudgetWarnings{Thresholds: []int32{80, 100}, ChannelIds: []string{budgetOrgChannel}},
 	}
 }
 
@@ -66,6 +88,7 @@ type budgetTestEnv struct {
 	budgets *repomocks.BudgetRepositoryMock
 	created []models.Budget
 	store   map[string]models.Budget
+	sender  *recordingSender
 }
 
 // newBudgetTestEnv has: provider openai, proxy support-proxy, project api-platform with
@@ -73,7 +96,7 @@ type budgetTestEnv struct {
 // project api-platform only.
 func newBudgetTestEnv(t *testing.T) *budgetTestEnv {
 	t.Helper()
-	env := &budgetTestEnv{store: map[string]models.Budget{}}
+	env := &budgetTestEnv{store: map[string]models.Budget{}, sender: &recordingSender{}}
 	env.budgets = &repomocks.BudgetRepositoryMock{
 		CreateForControlPlaneFunc: func(_ context.Context, b *models.Budget, name string) error {
 			if name == "taken" {
@@ -112,8 +135,7 @@ func newBudgetTestEnv(t *testing.T) *budgetTestEnv {
 	}
 	artifacts := &repomocks.ArtifactRepositoryMock{
 		ExistsFunc: func(kind, handle, _ string) (bool, error) {
-			return (kind == models.KindLLMProvider && handle == "openai") ||
-				(kind == models.KindLLMProxy && handle == "support-proxy"), nil
+			return kind == models.KindLLMProvider && handle == "openai", nil
 		},
 	}
 	platform := &repomocks.PlatformRepositoryMock{
@@ -146,7 +168,7 @@ func newBudgetTestEnv(t *testing.T) *budgetTestEnv {
 			return nil, gorm.ErrRecordNotFound
 		},
 	}
-	env.svc = NewBudgetService(env.budgets, artifacts, platform, events)
+	env.svc = NewBudgetService(env.budgets, artifacts, platform, events, env.sender)
 	return env
 }
 
@@ -171,11 +193,11 @@ func TestBudgetService_CreateStoresTheBudgetKindWithDefaults(t *testing.T) {
 		"resource": {"type": "llmProvider", "allocation": "shared", "id": "openai"},
 		"environments": {"allocation": "shared", "ids": ["default"]},
 		"consumers": [
-			{"type": "project", "allocation": "shared", "id": "api-platform"},
-			{"type": "agent", "allocation": "separate"}
+			{"type": "attribute", "allocation": "shared", "expression": "'research' in request.Auth.Claims[\"groups\"]"},
+			{"type": "attribute", "allocation": "separate", "expression": "request.Auth.Claims[\"email\"]"}
 		],
-		"exemptions": [{"type": "agent", "project": "api-platform", "id": "hotel-booking"}],
-		"warnings": {"thresholds": [80, 100], "channelIds": ["`+budgetOrgChannel+`", "`+budgetProjectChannel+`"]}
+		"exemptions": [{"type": "attribute", "expression": "request.Auth.Claims[\"role\"] == \"admin\""}],
+		"warnings": {"thresholds": [80, 100], "channelIds": ["`+budgetOrgChannel+`"]}
 	}`, string(stored), "the kind's spec, without apiVersion, kind and metadata")
 
 	assert.Equal(t, "api-platform-per-agent-openai", resp.Name)
@@ -227,20 +249,35 @@ func TestBudgetService_CreateRefusesInvalidPayloads(t *testing.T) {
 		{"duplicate environment", func(r *spec.BudgetRequest) {
 			r.Environments.Ids = []string{"default", "default"}
 		}, utils.ErrCodeValidation, "environments.ids[1]"},
-		{"consumer type twice", func(r *spec.BudgetRequest) {
-			r.Consumers = append(r.Consumers, spec.BudgetConsumer{Type: "agent", Allocation: strPtr("separate")})
-		}, utils.ErrCodeValidation, "consumers[2].type"},
-		{"shared consumer without id", func(r *spec.BudgetRequest) {
-			r.Consumers[0].Id = nil
-		}, utils.ErrCodeValidation, "consumers[0].id"},
-		{"named agent without project", func(r *spec.BudgetRequest) {
+		{"unknown project", func(r *spec.BudgetRequest) {
+			r.Consumers = append(r.Consumers, spec.BudgetConsumer{Type: "project", Id: strPtr("other")})
+		}, utils.ErrCodeReferenceNotFound, "consumers[2].id"},
+		{"named agent without its project", func(r *spec.BudgetRequest) {
 			r.Consumers = []spec.BudgetConsumer{{Type: "agent", Id: strPtr("hotel-booking")}}
 		}, utils.ErrCodeValidation, "consumers[0].id"},
+		{"unknown agent", func(r *spec.BudgetRequest) {
+			r.Consumers = []spec.BudgetConsumer{{Type: "project", Id: strPtr("api-platform")}, {Type: "agent", Id: strPtr("nope")}}
+		}, utils.ErrCodeReferenceNotFound, "consumers[1].id"},
+		{"shared api key without its name", func(r *spec.BudgetRequest) {
+			r.Consumers = []spec.BudgetConsumer{{Type: "apiKey"}}
+		}, utils.ErrCodeValidation, "consumers[0].id"},
+		{"project used twice", func(r *spec.BudgetRequest) {
+			r.Consumers = []spec.BudgetConsumer{{Type: "project", Id: strPtr("api-platform")}, {Type: "project", Allocation: strPtr("separate")}}
+		}, utils.ErrCodeValidation, "consumers[1].type"},
+		{"unknown consumer type", func(r *spec.BudgetRequest) {
+			r.Consumers = []spec.BudgetConsumer{{Type: "team"}}
+		}, utils.ErrCodeValidation, "consumers[0].type"},
 		{"attribute without expression", func(r *spec.BudgetRequest) {
 			r.Consumers = append(r.Consumers, spec.BudgetConsumer{Type: "attribute"})
 		}, utils.ErrCodeValidation, "consumers[2].expression"},
-		{"agent exemption without project", func(r *spec.BudgetRequest) {
-			r.Exemptions[0].Project = nil
+		{"attribute with id", func(r *spec.BudgetRequest) {
+			r.Consumers[0].Id = strPtr("x")
+		}, utils.ErrCodeValidation, "consumers[0].id"},
+		{"unknown exempt agent", func(r *spec.BudgetRequest) {
+			r.Exemptions = []spec.BudgetExemption{{Type: "agent", Project: strPtr("api-platform"), Id: strPtr("nope")}}
+		}, utils.ErrCodeReferenceNotFound, "exemptions[0].id"},
+		{"attribute exemption without expression", func(r *spec.BudgetRequest) {
+			r.Exemptions = []spec.BudgetExemption{{Type: "attribute"}}
 		}, utils.ErrCodeValidation, "exemptions[0]"},
 		{"threshold out of range", func(r *spec.BudgetRequest) {
 			r.Warnings.Thresholds = []int32{1001}
@@ -252,20 +289,12 @@ func TestBudgetService_CreateRefusesInvalidPayloads(t *testing.T) {
 		{"unknown environment", func(r *spec.BudgetRequest) {
 			r.Environments.Ids = []string{"production"}
 		}, utils.ErrCodeReferenceNotFound, "environments.ids[0]"},
-		{"unknown project", func(r *spec.BudgetRequest) { r.Consumers[0].Id = strPtr("other") }, utils.ErrCodeReferenceNotFound, "consumers[0].id"},
-		{"unknown proxy", func(r *spec.BudgetRequest) {
-			r.Consumers = append(r.Consumers, spec.BudgetConsumer{Type: "llmProxy", Id: strPtr("missing-proxy")})
-		}, utils.ErrCodeReferenceNotFound, "consumers[2].id"},
-		{"unknown exempt agent", func(r *spec.BudgetRequest) {
-			r.Exemptions[0].Id = strPtr("other-agent")
-		}, utils.ErrCodeReferenceNotFound, "exemptions[0].id"},
 		{"unknown channel", func(r *spec.BudgetRequest) {
 			r.Warnings.ChannelIds = []string{uuid.NewString()}
 		}, utils.ErrCodeChannelNotAvailable, "warnings.channelIds[0]"},
 		{"project channel without that project", func(r *spec.BudgetRequest) {
-			r.Consumers = []spec.BudgetConsumer{{Type: "project", Allocation: strPtr("separate")}}
-			r.Exemptions = nil
-		}, utils.ErrCodeChannelNotAvailable, "warnings.channelIds[1]"},
+			r.Warnings.ChannelIds = []string{budgetProjectChannel}
+		}, utils.ErrCodeChannelNotAvailable, "warnings.channelIds[0]"},
 		{"name taken", func(r *spec.BudgetRequest) { r.Name = "taken" }, utils.ErrCodeBudgetAlreadyExists, "name"},
 	}
 	for _, tt := range tests {
@@ -281,6 +310,7 @@ func TestBudgetService_CreateRefusesInvalidPayloads(t *testing.T) {
 			if tt.code != utils.ErrCodeBudgetAlreadyExists {
 				assert.Empty(t, env.created, "nothing is stored")
 			}
+			assert.Empty(t, env.sender.sent, "nothing is sent to gateways")
 		})
 	}
 }
@@ -400,8 +430,8 @@ func TestBudgetService_ListFiltersAndPages(t *testing.T) {
 
 	for filter, want := range map[string]int{
 		"llmProvider:openai":   2,
-		"project:api-platform": 2,
-		"agent:hotel-booking":  2,
+		"project:api-platform": 0,
+		"agent:hotel-booking":  0,
 		"llmProvider:other":    0,
 	} {
 		page, err = env.svc.List(context.Background(), budgetTestOrg, []string{filter}, 20, 0)
@@ -513,4 +543,114 @@ func TestBudgetService_DeleteRemovesControlPlaneBudgetsOnly(t *testing.T) {
 	dbDown := errors.New("db down")
 	env.budgets.GetFunc = func(context.Context, string, string) (*models.Budget, error) { return nil, dbDown }
 	assert.ErrorIs(t, env.svc.Delete(auditableCtx(t), budgetTestOrg, "x"), dbDown, "a real error is not masked as not found")
+}
+
+func TestBudgetService_SendsBudgetsToGateways(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	createTestBudget(t, env, "team-a")
+	inactive := "inactive"
+	_, err := env.svc.Update(context.Background(), budgetTestOrg, "team-a", spec.BudgetUpdateRequest{
+		DisplayName: "Team A", Status: &inactive, Limit: spec.BudgetUpdateLimit{Amount: "150.00", Action: "block"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, env.svc.Delete(auditableCtx(t), budgetTestOrg, "team-a"))
+	assert.Equal(t, []string{"created:team-a:active", "updated:team-a:inactive", "deleted:team-a"}, env.sender.sent,
+		"disabling is an update")
+
+	_, err = env.svc.Update(context.Background(), budgetTestOrg, "team-a", spec.BudgetUpdateRequest{
+		DisplayName: "x", Limit: spec.BudgetUpdateLimit{Amount: "1", Action: "allow"},
+	})
+	require.Error(t, err)
+	assert.Len(t, env.sender.sent, 3, "a refused request sends nothing")
+}
+
+func TestBuildBudgetKind_ForGatewayNamesAResourceAndNoEnvironments(t *testing.T) {
+	cfg := models.BudgetConfig{
+		DisplayName: "Org", Status: "active",
+		Limit:        models.BudgetLimit{Amount: "10", Currency: "USD", Period: "day", Action: "allow"},
+		Environments: &models.BudgetEnvironments{Allocation: "shared", IDs: []string{"default"}},
+		Consumers:    []models.BudgetConsumer{}, Exemptions: []models.BudgetExemption{},
+	}
+	gw, err := json.Marshal(BuildBudgetKind("org", cfg, true))
+	require.NoError(t, err)
+	assert.Contains(t, string(gw), `"resource":{"type":"llmProvider","allocation":"shared"}`, "every provider, shared")
+	assert.NotContains(t, string(gw), "environments")
+	assert.Nil(t, cfg.Resource, "the stored budget is not changed")
+}
+
+func TestBudgetService_GatewayBudgetsTakeOnlyAgentManagerFields(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	gw := uuid.New()
+	env.store["from-gateway"] = models.Budget{
+		ID: uuid.New(), Name: "from-gateway", OrgID: budgetTestOrg, Origin: models.BudgetOriginGateway, GatewayID: &gw,
+		Configuration: models.BudgetConfig{
+			DisplayName: "from-gateway", Status: "active",
+			// As a gateway pushes it: no blockAt means block at 100%.
+			Limit:      models.BudgetLimit{Amount: "500.00", Currency: "USD", Period: "month", Action: "block"},
+			Consumers:  []models.BudgetConsumer{{Type: "attribute", Allocation: "shared", Expression: strPtr(budgetGroupExpr)}},
+			Exemptions: []models.BudgetExemption{},
+		},
+	}
+	same := func() spec.BudgetUpdateRequest {
+		return spec.BudgetUpdateRequest{
+			DisplayName: "Research, monthly", Description: strPtr("Set on the research gateway."),
+			Limit:    spec.BudgetUpdateLimit{Amount: "500.00", Action: "block"},
+			Warnings: &spec.BudgetWarnings{Thresholds: []int32{80, 100}, ChannelIds: []string{budgetOrgChannel}},
+		}
+	}
+
+	resp, err := env.svc.Update(context.Background(), budgetTestOrg, "from-gateway", same())
+	require.NoError(t, err)
+	assert.Equal(t, "Research, monthly", resp.DisplayName)
+	assert.Equal(t, "Set on the research gateway.", *resp.Description)
+	require.NotNil(t, resp.Warnings)
+	assert.Equal(t, "gateway_api", resp.Origin)
+	stored := env.store["from-gateway"]
+	assert.Equal(t, models.BudgetOriginGateway, stored.Origin)
+	assert.Equal(t, "Research, monthly", stored.Configuration.DisplayName)
+	assert.Empty(t, env.sender.sent, "fields gateways never get: nothing is sent")
+
+	for name, edit := range map[string]func(*spec.BudgetUpdateRequest){
+		"amount":  func(r *spec.BudgetUpdateRequest) { r.Limit.Amount = "600.00" },
+		"blockAt": func(r *spec.BudgetUpdateRequest) { r.Limit.BlockAt = budgetI32(90) },
+		"action":  func(r *spec.BudgetUpdateRequest) { r.Limit.Action = "allow" },
+		"status":  func(r *spec.BudgetUpdateRequest) { r.Status = strPtr("inactive") },
+		"exemptions": func(r *spec.BudgetUpdateRequest) {
+			r.Exemptions = []spec.BudgetExemption{{Type: "attribute", Expression: strPtr(budgetAdminExpr)}}
+		},
+	} {
+		req := same()
+		edit(&req)
+		_, err := env.svc.Update(context.Background(), budgetTestOrg, "from-gateway", req)
+		assert.Equal(t, utils.ErrCodeBudgetReadOnly, budgetErrorCode(t, err), name)
+	}
+	assert.Equal(t, "500.00", env.store["from-gateway"].Configuration.Limit.Amount)
+
+	err = env.svc.Delete(auditableCtx(t), budgetTestOrg, "from-gateway")
+	assert.Equal(t, utils.ErrCodeBudgetReadOnly, budgetErrorCode(t, err), "only the gateway deletes its budget")
+}
+
+func TestBudgetService_ProjectAgentAndAPIKeyBudgets(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	req := budgetTestRequest()
+	req.Consumers = []spec.BudgetConsumer{
+		{Type: "project", Id: strPtr("api-platform")},
+		{Type: "agent", Id: strPtr("hotel-booking")},
+		{Type: "apiKey", Allocation: strPtr("separate")},
+	}
+	req.Exemptions = []spec.BudgetExemption{{Type: "attribute", Expression: strPtr(budgetAdminExpr)}}
+	resp, err := env.svc.Create(context.Background(), budgetTestOrg, "alice", req)
+	require.NoError(t, err)
+	require.Len(t, resp.Consumers, 3)
+	assert.Nil(t, env.created[0].Configuration.Consumers[1].Project, "the stored agent names no project: the project consumer does")
+
+	kind := BuildBudgetKind(resp.Name, env.created[0].Configuration, true)
+	agent := kind.Spec.Consumers[1]
+	require.NotNil(t, agent.Project, "gateways get the agent with its project")
+	assert.Equal(t, "api-platform", *agent.Project)
+	assert.Equal(t, "hotel-booking", *agent.ID)
+
+	page, err := env.svc.List(context.Background(), budgetTestOrg, []string{"agent:hotel-booking", "project:api-platform"}, 20, 0)
+	require.NoError(t, err)
+	assert.Len(t, page.Budgets, 1)
 }

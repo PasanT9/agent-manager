@@ -499,7 +499,7 @@ type ApiListBudgetsRequest struct {
 	offset     *int32
 }
 
-// type:id, with type project, agent, apiKey, llmProxy or llmProvider: budgets whose resource, consumers or exemptions name it. Repeat for AND.
+// type:id, with type project, agent, apiKey or llmProvider: budgets whose resource, consumers or exemptions name it. Repeat for AND.
 func (r ApiListBudgetsRequest) Filter(filter []string) ApiListBudgetsRequest {
 	r.filter = &filter
 	return r
@@ -695,8 +695,9 @@ UpdateBudget Update a budget
 
 Replaces the editable fields; also disables and enables the budget (status).
 name, currency, period, resource, environments and consumers are fixed after creation:
-create a new budget instead. Any other field is rejected. Budgets created on a gateway
-are read-only (BUDGET_READ_ONLY).
+create a new budget instead. Any other field is rejected. A budget created on a
+gateway takes only displayName, description and warnings, which gateways never get;
+its status, limit and exemptions must be sent unchanged (BUDGET_READ_ONLY otherwise).
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param orgName Organization name

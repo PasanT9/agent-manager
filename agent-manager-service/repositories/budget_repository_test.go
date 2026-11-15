@@ -127,11 +127,21 @@ func TestBudgetRepository_GatewayBudgets(t *testing.T) {
 	assert.Equal(t, "team-a", art.Handle)
 	assert.False(t, art.InCatalog)
 
+	// Agent Manager's fields of a gateway budget survive the gateway's next push.
+	named, err := repo.Get(ctx, ou, "team-a")
+	require.NoError(t, err)
+	named.Configuration.DisplayName = "Team A, monthly"
+	named.Configuration.Warnings = &models.BudgetWarnings{Thresholds: []int32{80}, ChannelIDs: []string{"3f2b8c1e-5a7d-4e9b-8c21-6d0f4a9e7b13"}}
+	require.NoError(t, repo.Update(ctx, named))
+
 	// A later push of team-a updates the stored budget and keeps its ID.
 	again, stored := save(gatewayBudget(ou, gw, "team-a", "150"), "team-a")
 	require.True(t, stored)
 	assert.Equal(t, a.ID, again.ID, "the control plane's ID is kept across pushes")
-	assert.Equal(t, "150", budgetsByName(t, repo, ou)["team-a"].Configuration.Limit.Amount)
+	pushed := budgetsByName(t, repo, ou)["team-a"]
+	assert.Equal(t, "150", pushed.Configuration.Limit.Amount)
+	assert.Equal(t, "Team A, monthly", pushed.Configuration.DisplayName, "Agent Manager's display name is kept")
+	require.NotNil(t, pushed.Configuration.Warnings, "Agent Manager's warnings are kept")
 
 	// A deletion removes only that gateway's budget of the name, artifact and row.
 	require.NoError(t, repo.DeleteForGateway(ctx, ou, other, []string{"team-a"}))
