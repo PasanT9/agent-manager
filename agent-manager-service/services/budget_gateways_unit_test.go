@@ -87,7 +87,7 @@ func budgetConfigForTest(displayName string) models.BudgetConfig {
 		Limit:      models.BudgetLimit{Amount: "5000", Currency: "USD", Period: "month", Action: "block", BlockAt: budgetI32(100)},
 		Consumers:  []models.BudgetConsumer{{Type: "attribute", Allocation: "shared", Expression: strPtr(budgetGroupExpr)}},
 		Exemptions: []models.BudgetExemption{},
-		Warnings:   &models.BudgetWarnings{Thresholds: []int32{80}, ChannelIDs: []string{budgetOrgChannel}},
+		Warnings:   &models.BudgetWarnings{Thresholds: []int32{80}, Channels: []string{"finance-email"}},
 	}
 }
 

@@ -127,10 +127,11 @@ func createControlPlaneBudget(tx *gorm.DB, budget *models.Budget, name string) e
 	if !inserted {
 		return &BudgetNameTakenError{Name: name}
 	}
+	budget.Name = name // the stored kind is named after it
 	if err := tx.Create(budget).Error; err != nil {
 		return fmt.Errorf("failed to create budget %q: %w", name, err)
 	}
-	budget.Name, budget.CreatedAt, budget.UpdatedAt = name, now, now
+	budget.CreatedAt, budget.UpdatedAt = now, now
 	return nil
 }
 
@@ -164,6 +165,7 @@ func (r *budgetRepository) SaveForGateway(ctx context.Context, budget *models.Bu
 		if err != nil {
 			return fmt.Errorf("failed to create budget artifact %q: %w", name, err)
 		}
+		budget.Name = name // the stored kind is named after it
 		if inserted {
 			if err := tx.Create(budget).Error; err != nil {
 				return fmt.Errorf("failed to create budget %q: %w", name, err)
@@ -194,7 +196,9 @@ func (r *budgetRepository) SaveForGateway(ctx context.Context, budget *models.Bu
 		budget.Configuration.Description = existing.Configuration.Description
 		budget.Configuration.Warnings = existing.Configuration.Warnings
 		if err := tx.Model(&models.Budget{}).Where("id = ? AND org_id = ?", existing.ID, budget.OrgID).
-			Updates(map[string]any{"configuration": dbx.JSON(budget.Configuration), "project_id": budget.ProjectID}).Error; err != nil {
+			Updates(map[string]any{
+				"configuration": dbx.JSON(models.NewBudgetDocument(name, budget.ProjectName, budget.Configuration)), "project_id": budget.ProjectID,
+			}).Error; err != nil {
 			return fmt.Errorf("failed to update budget %q: %w", name, err)
 		}
 		if err := NewArtifactRepo(tx).Update(tx, &models.Artifact{UUID: existing.ID, OUID: budget.OrgID}); err != nil {
@@ -338,7 +342,7 @@ func (r *budgetRepository) Update(ctx context.Context, budget *models.Budget) er
 // updateBudget replaces a budget's configuration and touches its artifact in tx.
 func updateBudget(tx *gorm.DB, budget *models.Budget) error {
 	res := tx.Model(&models.Budget{}).Where("id = ? AND org_id = ?", budget.ID, budget.OrgID).
-		Update("configuration", dbx.JSON(budget.Configuration))
+		Update("configuration", dbx.JSON(models.NewBudgetDocument(budget.Name, budget.ProjectName, budget.Configuration)))
 	if res.Error != nil {
 		return fmt.Errorf("failed to update budget %q: %w", budget.Name, res.Error)
 	}

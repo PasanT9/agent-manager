@@ -25,6 +25,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/wso2/agent-manager/agent-manager-service/middleware"
 	"github.com/wso2/agent-manager/agent-manager-service/middleware/jwtassertion"
 	"github.com/wso2/agent-manager/agent-manager-service/middleware/logger"
@@ -61,11 +63,8 @@ func NewBudgetController(budgets services.BudgetService) BudgetController {
 
 // CreateBudget handles POST /orgs/{orgName}/budgets.
 func (c *budgetController) CreateBudget(w http.ResponseWriter, r *http.Request) {
-	var req spec.BudgetRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBudgetRequestBytes))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		utils.WriteErrorResponseWithReason(w, http.StatusBadRequest, "Invalid budget request.", err.Error(), utils.ErrCodeValidation)
+	req, ok := decodeBudgetKind(w, r)
+	if !ok {
 		return
 	}
 	createdBy := ""
@@ -181,16 +180,11 @@ func (c *budgetController) GetBudgetUsage(w http.ResponseWriter, r *http.Request
 	utils.WriteSuccessResponse(w, http.StatusOK, resp)
 }
 
-// UpdateBudget handles PUT /orgs/{orgName}/budgets/{budgetName}. Fixed and unknown fields
-// are rejected.
+// UpdateBudget handles PUT /orgs/{orgName}/budgets/{budgetName}: the whole Budget kind,
+// with the fields fixed after creation unchanged. Unknown fields are rejected.
 func (c *budgetController) UpdateBudget(w http.ResponseWriter, r *http.Request) {
-	var req spec.BudgetUpdateRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBudgetRequestBytes))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		utils.WriteErrorResponseWithReason(w, http.StatusBadRequest,
-			"Invalid budget update. Only displayName, description, status, limit (amount, action, blockAt), exemptions and warnings can change.",
-			err.Error(), utils.ErrCodeValidation)
+	req, ok := decodeBudgetKind(w, r)
+	if !ok {
 		return
 	}
 	resp, err := c.budgets.Update(r.Context(), middleware.OUIDFromRequest(r), r.PathValue(PathParamBudgetName), req)
@@ -230,4 +224,49 @@ func writeBudgetError(w http.ResponseWriter, r *http.Request, err error, fallbac
 	}
 	logger.GetLogger(r.Context()).Error(fallback, "error", err)
 	utils.WriteErrorResponseWithReason(w, http.StatusInternalServerError, fallback, "", utils.ErrCodeInternalError)
+}
+
+// decodeBudgetKind reads the Budget kind of a create or update, as JSON or, like the
+// gateway's API, as YAML (application/yaml). Unknown fields are rejected; status is ignored.
+func decodeBudgetKind(w http.ResponseWriter, r *http.Request) (spec.Budget, bool) {
+	var kind spec.Budget
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBudgetRequestBytes))
+	if err != nil {
+		utils.WriteErrorResponseWithReason(w, http.StatusBadRequest, "The budget must be at most 1 MB.", err.Error(), utils.ErrCodeValidation)
+		return kind, false
+	}
+	if isYAMLRequest(r) {
+		// YAML is read into plain values and re-encoded, so the JSON field names and checks apply.
+		var doc any
+		if err := yaml.Unmarshal(body, &doc); err != nil {
+			utils.WriteErrorResponseWithReason(w, http.StatusBadRequest, "Invalid budget: the YAML cannot be read.", err.Error(), utils.ErrCodeValidation)
+			return kind, false
+		}
+		if body, err = json.Marshal(doc); err != nil {
+			utils.WriteErrorResponseWithReason(w, http.StatusBadRequest, "Invalid budget: the YAML cannot be read.", err.Error(), utils.ErrCodeValidation)
+			return kind, false
+		}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&kind); err != nil {
+		utils.WriteErrorResponseWithReason(w, http.StatusBadRequest,
+			"Invalid budget. Send a Budget kind: apiVersion, kind, metadata and spec.", err.Error(), utils.ErrCodeValidation)
+		return kind, false
+	}
+	kind.Status = nil
+	return kind, true
+}
+
+// isYAMLRequest reports whether the request body is YAML.
+func isYAMLRequest(r *http.Request) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		return false
+	}
+	switch mediaType {
+	case "application/yaml", "application/x-yaml", "text/yaml":
+		return true
+	}
+	return false
 }

@@ -815,18 +815,18 @@ func TestEventDispatcherPruneFailsLostDeliveries(t *testing.T) {
 
 func TestEventDispatcher_BudgetWarningDeliveryEligibility(t *testing.T) {
 	project := "payments"
-	active := func(channel uuid.UUID) *models.BudgetConfig {
+	active := func(channel string) *models.BudgetConfig {
 		return &models.BudgetConfig{
 			Status:    budgetStatusActive,
 			Consumers: []models.BudgetConsumer{{Type: budgetTypeProject, Allocation: "shared", ID: &project}},
-			Warnings:  &models.BudgetWarnings{Thresholds: []int32{80}, ChannelIDs: []string{channel.String()}},
+			Warnings:  &models.BudgetWarnings{Thresholds: []int32{80}, Channels: []string{channel}},
 		}
 	}
 	for _, tc := range []struct {
 		name         string
 		availability string
 		projects     []string
-		config       func(channel uuid.UUID) *models.BudgetConfig
+		config       func(channel string) *models.BudgetConfig
 		lookupErr    error
 		outcome      string
 		sends        int
@@ -835,13 +835,13 @@ func TestEventDispatcher_BudgetWarningDeliveryEligibility(t *testing.T) {
 		{name: "org-wide channel", availability: models.DestinationAvailableOrg, config: active, outcome: "ack", sends: 1},
 		{name: "channel of the budget's project", availability: models.DestinationAvailableProjects, projects: []string{project}, config: active, outcome: "ack", sends: 1},
 		{name: "channel no longer available to the project", availability: models.DestinationAvailableProjects, projects: []string{"other"}, config: active, outcome: "drop"},
-		{name: "channel removed from the budget", availability: models.DestinationAvailableAll, config: func(uuid.UUID) *models.BudgetConfig { return active(uuid.New()) }, outcome: "drop"},
-		{name: "budget disabled", availability: models.DestinationAvailableAll, config: func(c uuid.UUID) *models.BudgetConfig {
+		{name: "channel removed from the budget", availability: models.DestinationAvailableAll, config: func(string) *models.BudgetConfig { return active("another-channel") }, outcome: "drop"},
+		{name: "budget disabled", availability: models.DestinationAvailableAll, config: func(c string) *models.BudgetConfig {
 			cfg := active(c)
 			cfg.Status = budgetStatusInactive
 			return cfg
 		}, outcome: "drop"},
-		{name: "budget deleted", availability: models.DestinationAvailableAll, config: func(uuid.UUID) *models.BudgetConfig { return nil }, outcome: "drop"},
+		{name: "budget deleted", availability: models.DestinationAvailableAll, config: func(string) *models.BudgetConfig { return nil }, outcome: "drop"},
 		{name: "budget lookup fails", availability: models.DestinationAvailableAll, config: active, lookupErr: errors.New("database unavailable"), outcome: "retry"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -860,7 +860,7 @@ func TestEventDispatcher_BudgetWarningDeliveryEligibility(t *testing.T) {
 			f.repo.BudgetConfigFunc = func(_ context.Context, ouID string, got uuid.UUID) (*models.BudgetConfig, error) {
 				assert.Equal(t, dest.OUID, ouID)
 				assert.Equal(t, budgetID, got)
-				return tc.config(dest.ID), tc.lookupErr
+				return tc.config(dest.Name), tc.lookupErr
 			}
 			f.repo.SubscriptionsByIDFunc = nil
 			msg := &answeredMessage{data: body, attempt: 1}

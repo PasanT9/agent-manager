@@ -34,7 +34,7 @@ import (
 // importCSV is the design's example (Interfaces 2.5), in the test environment's names.
 const importCSV = `name,projectId,displayName,amount,period,action,blockAt,provider,providerAllocation,project,agentAllocation,apiKey,attributes,exemptions,thresholds,channels
 wso2-monthly,,WSO2 monthly ceiling,10000,month,block,99,,,,,,,"[{""type"": ""project"", ""id"": ""api-platform""}]",50;80;100,finance-email
-api-platform-agents,api-platform,"API Platform, per agent",100,month,block,,openai,,,separate,,,"[{""type"": ""agent"", ""project"": ""api-platform"", ""id"": ""hotel-booking""}]",80;100,platform-slack
+api-platform-agents,api-platform,"API Platform, per agent",100,month,block,,openai,,api-platform,separate,,,"[{""type"": ""agent"", ""project"": ""api-platform"", ""id"": ""hotel-booking""}]",80;100,platform-slack
 api-platform-cap,,API Platform cap,500,month,block,,,separate,api-platform,,,,,80,finance-email
 rnd-per-user,,"R&D, per user",20,day,block,,,,,,,"[{""expression"": ""'research' in request.Auth.Claims[\""groups\""]""}, {""allocation"": ""separate"", ""expression"": ""request.Auth.Claims[\""email\""]""}]",,80;100,finance-email
 ci-key-daily,,,20,day,block,,,,,,ci-pipeline,,,,
@@ -70,7 +70,7 @@ func TestBudgetImport_CreatesEveryRow(t *testing.T) {
 	org := byName["wso2-monthly"].Configuration
 	assert.Equal(t, int32(99), *org.Limit.BlockAt)
 	assert.Equal(t, []int32{50, 80, 100}, org.Warnings.Thresholds)
-	assert.Equal(t, []string{budgetOrgChannel}, org.Warnings.ChannelIDs, "channels are named in the file and stored by ID")
+	assert.Equal(t, []string{"finance-email"}, org.Warnings.Channels, "channels are named in the file and stored by name")
 	assert.Nil(t, byName["wso2-monthly"].ProjectID)
 
 	agents := byName["api-platform-agents"]
@@ -79,9 +79,9 @@ func TestBudgetImport_CreatesEveryRow(t *testing.T) {
 	stored, err := json.Marshal(agents.Configuration.Consumers)
 	require.NoError(t, err)
 	assert.JSONEq(t, `[
-		{"type": "agent", "allocation": "separate"},
-		{"type": "project", "allocation": "shared", "id": "api-platform"}
-	]`, string(stored), "agentAllocation, and the implied project")
+		{"type": "project", "allocation": "shared", "id": "api-platform"},
+		{"type": "agent", "allocation": "separate"}
+	]`, string(stored), "the project and agentAllocation columns, as given")
 	assert.Equal(t, "openai", *agents.Configuration.Resource.ID)
 	assert.Equal(t, "hotel-booking", *agents.Configuration.Exemptions[0].ID)
 
@@ -216,15 +216,15 @@ func TestBudgetService_DisplayNameDefaultsToTheName(t *testing.T) {
 	env := newBudgetTestEnv(t)
 	req := budgetTestRequest()
 	req.DisplayName = nil
-	resp, err := env.svc.Create(context.Background(), budgetTestOrg, "alice", req)
+	resp, err := env.create(context.Background(), budgetTestOrg, "alice", req)
 	require.NoError(t, err)
-	assert.Equal(t, req.Name, resp.DisplayName)
+	assert.Equal(t, req.Name, *resp.Spec.DisplayName)
 
-	updated, err := env.svc.Update(context.Background(), budgetTestOrg, req.Name, spec.BudgetUpdateRequest{
-		DisplayName: strPtr(" "), Limit: spec.BudgetUpdateLimit{Amount: "100.00", Action: "block"},
+	updated, err := env.update(context.Background(), budgetTestOrg, req.Name, budgetUpdateRequest{
+		DisplayName: strPtr(" "), Limit: budgetUpdateLimit{Amount: "100.00", Action: "block"},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, req.Name, updated.DisplayName)
+	assert.Equal(t, req.Name, *updated.Spec.DisplayName)
 }
 
 // existingBudgetEnv has a control-plane budget "team-a" ($100 a month, project api-platform
@@ -232,8 +232,8 @@ func TestBudgetService_DisplayNameDefaultsToTheName(t *testing.T) {
 func existingBudgetEnv(t *testing.T) *budgetTestEnv {
 	t.Helper()
 	env := newBudgetTestEnv(t)
-	_, err := env.svc.Create(context.Background(), budgetTestOrg, "alice", spec.BudgetRequest{
-		Name: "team-a", OrgId: budgetTestOrgName, DisplayName: strPtr("Team A"),
+	_, err := env.create(context.Background(), budgetTestOrg, "alice", budgetRequest{
+		Name: "team-a", DisplayName: strPtr("Team A"),
 		Limit:     spec.BudgetLimit{Amount: "100", Period: "month", Action: "block"},
 		Consumers: []spec.BudgetConsumer{{Type: "project", Id: strPtr("api-platform")}},
 	})
@@ -285,7 +285,7 @@ func TestBudgetImport_UpdateReplacesTheEditableFields(t *testing.T) {
 	assert.Equal(t, "250", updated.Limit.Amount)
 	assert.Equal(t, "allow", updated.Limit.Action)
 	assert.Equal(t, "Team A (raised)", updated.DisplayName)
-	assert.Equal(t, []string{budgetOrgChannel}, updated.Warnings.ChannelIDs)
+	assert.Equal(t, []string{"finance-email"}, updated.Warnings.Channels)
 	assert.Equal(t, "active", updated.Status, "the status stays")
 	assert.ElementsMatch(t, []string{"updated:team-a:active", "created:new-one:active"}, env.sender.sent)
 }

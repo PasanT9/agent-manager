@@ -24,26 +24,26 @@ import (
 type BudgetsAPIService service
 
 type ApiCreateBudgetRequest struct {
-	ctx           context.Context
-	ApiService    *BudgetsAPIService
-	orgName       string
-	budgetRequest *BudgetRequest
+	ctx        context.Context
+	ApiService *BudgetsAPIService
+	orgName    string
+	budget     *Budget
 }
 
-func (r ApiCreateBudgetRequest) BudgetRequest(budgetRequest BudgetRequest) ApiCreateBudgetRequest {
-	r.budgetRequest = &budgetRequest
+func (r ApiCreateBudgetRequest) Budget(budget Budget) ApiCreateBudgetRequest {
+	r.budget = &budget
 	return r
 }
 
-func (r ApiCreateBudgetRequest) Execute() (*BudgetResponse, *http.Response, error) {
+func (r ApiCreateBudgetRequest) Execute() (*Budget, *http.Response, error) {
 	return r.ApiService.CreateBudgetExecute(r)
 }
 
 /*
 CreateBudget Create a budget
 
-Creates a spend limit on LLM traffic in the organization. A new budget is active.
-Budgets created on a gateway are read-only here (origin gateway_api).
+Creates a spend limit on LLM traffic in the organization from a Budget kind (JSON or YAML),
+the same kind the gateway's API accepts. A new budget is active unless spec.status says otherwise.
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param orgName Organization name
@@ -59,13 +59,13 @@ func (a *BudgetsAPIService) CreateBudget(ctx context.Context, orgName string) Ap
 
 // Execute executes the request
 //
-//	@return BudgetResponse
-func (a *BudgetsAPIService) CreateBudgetExecute(r ApiCreateBudgetRequest) (*BudgetResponse, *http.Response, error) {
+//	@return Budget
+func (a *BudgetsAPIService) CreateBudgetExecute(r ApiCreateBudgetRequest) (*Budget, *http.Response, error) {
 	var (
 		localVarHTTPMethod  = http.MethodPost
 		localVarPostBody    interface{}
 		formFiles           []formFile
-		localVarReturnValue *BudgetResponse
+		localVarReturnValue *Budget
 	)
 
 	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "BudgetsAPIService.CreateBudget")
@@ -79,12 +79,12 @@ func (a *BudgetsAPIService) CreateBudgetExecute(r ApiCreateBudgetRequest) (*Budg
 	localVarHeaderParams := make(map[string]string)
 	localVarQueryParams := url.Values{}
 	localVarFormParams := url.Values{}
-	if r.budgetRequest == nil {
-		return localVarReturnValue, nil, reportError("budgetRequest is required and must be specified")
+	if r.budget == nil {
+		return localVarReturnValue, nil, reportError("budget is required and must be specified")
 	}
 
 	// to determine the Content-Type header
-	localVarHTTPContentTypes := []string{"application/json"}
+	localVarHTTPContentTypes := []string{"application/json", "application/yaml"}
 
 	// set Content-Type header
 	localVarHTTPContentType := selectHeaderContentType(localVarHTTPContentTypes)
@@ -101,7 +101,7 @@ func (a *BudgetsAPIService) CreateBudgetExecute(r ApiCreateBudgetRequest) (*Budg
 		localVarHeaderParams["Accept"] = localVarHTTPHeaderAccept
 	}
 	// body params
-	localVarPostBody = r.budgetRequest
+	localVarPostBody = r.budget
 	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
 	if err != nil {
 		return localVarReturnValue, nil, err
@@ -348,7 +348,7 @@ type ApiGetBudgetRequest struct {
 	budgetName string
 }
 
-func (r ApiGetBudgetRequest) Execute() (*BudgetResponse, *http.Response, error) {
+func (r ApiGetBudgetRequest) Execute() (*Budget, *http.Response, error) {
 	return r.ApiService.GetBudgetExecute(r)
 }
 
@@ -371,13 +371,13 @@ func (a *BudgetsAPIService) GetBudget(ctx context.Context, orgName string, budge
 
 // Execute executes the request
 //
-//	@return BudgetResponse
-func (a *BudgetsAPIService) GetBudgetExecute(r ApiGetBudgetRequest) (*BudgetResponse, *http.Response, error) {
+//	@return Budget
+func (a *BudgetsAPIService) GetBudgetExecute(r ApiGetBudgetRequest) (*Budget, *http.Response, error) {
 	var (
 		localVarHTTPMethod  = http.MethodGet
 		localVarPostBody    interface{}
 		formFiles           []formFile
-		localVarReturnValue *BudgetResponse
+		localVarReturnValue *Budget
 	)
 
 	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "BudgetsAPIService.GetBudget")
@@ -1045,30 +1045,31 @@ func (a *BudgetsAPIService) ListBudgetsExecute(r ApiListBudgetsRequest) (*Budget
 }
 
 type ApiUpdateBudgetRequest struct {
-	ctx                 context.Context
-	ApiService          *BudgetsAPIService
-	orgName             string
-	budgetName          string
-	budgetUpdateRequest *BudgetUpdateRequest
+	ctx        context.Context
+	ApiService *BudgetsAPIService
+	orgName    string
+	budgetName string
+	budget     *Budget
 }
 
-func (r ApiUpdateBudgetRequest) BudgetUpdateRequest(budgetUpdateRequest BudgetUpdateRequest) ApiUpdateBudgetRequest {
-	r.budgetUpdateRequest = &budgetUpdateRequest
+func (r ApiUpdateBudgetRequest) Budget(budget Budget) ApiUpdateBudgetRequest {
+	r.budget = &budget
 	return r
 }
 
-func (r ApiUpdateBudgetRequest) Execute() (*BudgetResponse, *http.Response, error) {
+func (r ApiUpdateBudgetRequest) Execute() (*Budget, *http.Response, error) {
 	return r.ApiService.UpdateBudgetExecute(r)
 }
 
 /*
 UpdateBudget Update a budget
 
-Replaces the editable fields; also disables and enables the budget (status).
-name, currency, period, resource, environments and consumers are fixed after creation:
-create a new budget instead. Any other field is rejected. A budget created on a
-gateway takes only displayName, description and warnings, which gateways never get;
-its status, limit and exemptions must be sent unchanged (BUDGET_READ_ONLY otherwise).
+Replaces the budget with the Budget kind sent (JSON or YAML); also disables and enables it
+(spec.status). metadata.name must be the path's budget. The project annotation, currency,
+period, resource and consumers are fixed after creation and must be sent unchanged
+(VALIDATION_ERROR otherwise): create a new budget instead. A budget created on a gateway
+takes only displayName, description and warnings, which gateways never get; its status,
+limit and exemptions must be sent unchanged (BUDGET_READ_ONLY otherwise).
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param orgName Organization name
@@ -1086,13 +1087,13 @@ func (a *BudgetsAPIService) UpdateBudget(ctx context.Context, orgName string, bu
 
 // Execute executes the request
 //
-//	@return BudgetResponse
-func (a *BudgetsAPIService) UpdateBudgetExecute(r ApiUpdateBudgetRequest) (*BudgetResponse, *http.Response, error) {
+//	@return Budget
+func (a *BudgetsAPIService) UpdateBudgetExecute(r ApiUpdateBudgetRequest) (*Budget, *http.Response, error) {
 	var (
 		localVarHTTPMethod  = http.MethodPut
 		localVarPostBody    interface{}
 		formFiles           []formFile
-		localVarReturnValue *BudgetResponse
+		localVarReturnValue *Budget
 	)
 
 	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "BudgetsAPIService.UpdateBudget")
@@ -1107,12 +1108,12 @@ func (a *BudgetsAPIService) UpdateBudgetExecute(r ApiUpdateBudgetRequest) (*Budg
 	localVarHeaderParams := make(map[string]string)
 	localVarQueryParams := url.Values{}
 	localVarFormParams := url.Values{}
-	if r.budgetUpdateRequest == nil {
-		return localVarReturnValue, nil, reportError("budgetUpdateRequest is required and must be specified")
+	if r.budget == nil {
+		return localVarReturnValue, nil, reportError("budget is required and must be specified")
 	}
 
 	// to determine the Content-Type header
-	localVarHTTPContentTypes := []string{"application/json"}
+	localVarHTTPContentTypes := []string{"application/json", "application/yaml"}
 
 	// set Content-Type header
 	localVarHTTPContentType := selectHeaderContentType(localVarHTTPContentTypes)
@@ -1129,7 +1130,7 @@ func (a *BudgetsAPIService) UpdateBudgetExecute(r ApiUpdateBudgetRequest) (*Budg
 		localVarHeaderParams["Accept"] = localVarHTTPHeaderAccept
 	}
 	// body params
-	localVarPostBody = r.budgetUpdateRequest
+	localVarPostBody = r.budget
 	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
 	if err != nil {
 		return localVarReturnValue, nil, err

@@ -30,7 +30,6 @@ import (
 	"github.com/wso2/agent-manager/agent-manager-service/models"
 	"github.com/wso2/agent-manager/agent-manager-service/repositories/repomocks"
 	"github.com/wso2/agent-manager/agent-manager-service/services/eventdestinations"
-	"github.com/wso2/agent-manager/agent-manager-service/spec"
 	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
 
@@ -51,13 +50,13 @@ func newWarningsEnv(t *testing.T) *warningsEnv {
 	project := "api-platform"
 	env := &warningsEnv{rows: map[uuid.UUID]models.BudgetUsage{}, bus: &queueBus{enqueued: map[string][]byte{}}}
 	env.channels = []models.EventDestination{
-		{ID: uuid.New(), OUID: budgetTestOrg, Availability: models.DestinationAvailableAll},
-		{ID: uuid.New(), OUID: budgetTestOrg, Availability: models.DestinationAvailableOrg},
-		{ID: uuid.New(), OUID: budgetTestOrg, Availability: models.DestinationAvailableProjects, Projects: []string{"other"}},
+		{ID: uuid.New(), OUID: budgetTestOrg, Name: "all-email", Availability: models.DestinationAvailableAll},
+		{ID: uuid.New(), OUID: budgetTestOrg, Name: "org-slack", Availability: models.DestinationAvailableOrg},
+		{ID: uuid.New(), OUID: budgetTestOrg, Name: "other-webhook", Availability: models.DestinationAvailableProjects, Projects: []string{"other"}},
 	}
-	ids := []string{}
+	names := []string{}
 	for _, c := range env.channels {
-		ids = append(ids, c.ID.String())
+		names = append(names, c.Name)
 	}
 	env.budget = &models.Budget{
 		ID: uuid.MustParse("0193f1c2-0000-7000-8000-0000000000b1"), Name: "per-agent", OrgID: budgetTestOrg,
@@ -69,7 +68,7 @@ func newWarningsEnv(t *testing.T) *warningsEnv {
 				{Type: budgetTypeProject, Allocation: "shared", ID: &project},
 				{Type: budgetTypeAgent, Allocation: "separate"},
 			},
-			Warnings: &models.BudgetWarnings{Thresholds: []int32{80, 100}, ChannelIDs: ids},
+			Warnings: &models.BudgetWarnings{Thresholds: []int32{80, 100}, Channels: names},
 		},
 	}
 	budgets := &repomocks.BudgetRepositoryMock{
@@ -103,10 +102,11 @@ func newWarningsEnv(t *testing.T) *warningsEnv {
 		},
 	}
 	eventRepo := &repomocks.EventRepositoryMock{
-		DestinationsByIDFunc: func(_ context.Context, ouID string, ids []uuid.UUID) ([]models.EventDestination, error) {
+		ListDestinationsFunc: func(_ context.Context, ouID string) ([]models.EventDestination, error) {
 			assert.Equal(t, budgetTestOrg, ouID)
-			assert.Len(t, ids, len(env.channels))
-			return append([]models.EventDestination{}, env.channels...), nil
+			// The organization's other channels are not the budget's.
+			return append([]models.EventDestination{{ID: uuid.New(), OUID: ouID, Name: "unused", Availability: models.DestinationAvailableAll}},
+				env.channels...), nil
 		},
 	}
 	gateways := &repomocks.GatewayRepositoryMock{
@@ -218,17 +218,17 @@ func (w *recordingWarner) CheckBudget(_ context.Context, b *models.Budget) {
 
 func TestBudgetService_UpdateChecksWarnings(t *testing.T) {
 	env := newBudgetTestEnv(t)
-	resp, err := env.svc.Create(context.Background(), budgetTestOrg, "alice", budgetTestRequest())
+	resp, err := env.create(context.Background(), budgetTestOrg, "alice", budgetTestRequest())
 	require.NoError(t, err)
 	warner := &recordingWarner{}
 	env.svc.(*budgetService).warner = warner
 
-	_, err = env.svc.Update(context.Background(), budgetTestOrg, resp.Name, spec.BudgetUpdateRequest{
-		DisplayName: &resp.DisplayName, Status: strPtr("active"),
-		Limit: spec.BudgetUpdateLimit{Amount: "50.00", Action: "block"},
+	_, err = env.update(context.Background(), budgetTestOrg, resp.Metadata.Name, budgetUpdateRequest{
+		DisplayName: resp.Spec.DisplayName, Status: strPtr("active"),
+		Limit: budgetUpdateLimit{Amount: "50.00", Action: "block"},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, []string{resp.Name}, warner.checked)
+	assert.Equal(t, []string{resp.Metadata.Name}, warner.checked)
 }
 
 // usageRecorder records the usage messages the gateway message handler passes on.

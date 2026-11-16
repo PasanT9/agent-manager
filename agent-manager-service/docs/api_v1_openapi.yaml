@@ -6253,8 +6253,8 @@ paths:
     post:
       summary: Create a budget
       description: |
-        Creates a spend limit on LLM traffic in the organization. A new budget is active.
-        Budgets created on a gateway are read-only here (origin gateway_api).
+        Creates a spend limit on LLM traffic in the organization from a Budget kind (JSON or YAML),
+        the same kind the gateway's API accepts. A new budget is active unless spec.status says otherwise.
       operationId: createBudget
       tags:
         - Budgets
@@ -6270,14 +6270,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/BudgetRequest"
+              $ref: "#/components/schemas/Budget"
+          application/yaml:
+            schema:
+              $ref: "#/components/schemas/Budget"
       responses:
         "201":
           description: The budget, with defaults filled in
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/BudgetResponse"
+                $ref: "#/components/schemas/Budget"
         "400":
           description: >-
             Invalid payload (VALIDATION_ERROR), or a named provider, project, agent,
@@ -6413,7 +6416,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/BudgetResponse"
+                $ref: "#/components/schemas/Budget"
         "401":
           description: Unauthorized
           content:
@@ -6441,11 +6444,12 @@ paths:
     put:
       summary: Update a budget
       description: |
-        Replaces the editable fields; also disables and enables the budget (status).
-        name, currency, period, resource, environments and consumers are fixed after creation:
-        create a new budget instead. Any other field is rejected. A budget created on a
-        gateway takes only displayName, description and warnings, which gateways never get;
-        its status, limit and exemptions must be sent unchanged (BUDGET_READ_ONLY otherwise).
+        Replaces the budget with the Budget kind sent (JSON or YAML); also disables and enables it
+        (spec.status). metadata.name must be the path's budget. The project annotation, currency,
+        period, resource and consumers are fixed after creation and must be sent unchanged
+        (VALIDATION_ERROR otherwise): create a new budget instead. A budget created on a gateway
+        takes only displayName, description and warnings, which gateways never get; its status,
+        limit and exemptions must be sent unchanged (BUDGET_READ_ONLY otherwise).
       operationId: updateBudget
       tags:
         - Budgets
@@ -6467,14 +6471,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/BudgetUpdateRequest"
+              $ref: "#/components/schemas/Budget"
+          application/yaml:
+            schema:
+              $ref: "#/components/schemas/Budget"
       responses:
         "200":
           description: The updated budget
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/BudgetResponse"
+                $ref: "#/components/schemas/Budget"
         "400":
           description: Invalid payload (VALIDATION_ERROR), a missing reference (REFERENCE_NOT_FOUND) or channel (CHANNEL_NOT_AVAILABLE)
           content:
@@ -17493,31 +17500,86 @@ components:
           description: Number of evaluators to skip
           example: 0
 
-    BudgetRequest:
+    Budget:
       type: object
-      description: A spend limit on LLM traffic
-      required: [name, orgId, limit]
+      description: >-
+        A spend limit on LLM traffic, as the Budget kind: the same kind the gateway's API accepts and
+        pipelines keep in files. status is set by the server and ignored in requests.
+      required: [apiVersion, kind, metadata, spec]
+      properties:
+        apiVersion:
+          type: string
+          enum: [gateway.api-platform.wso2.com/v1]
+        kind:
+          type: string
+          enum: [Budget]
+        metadata:
+          $ref: "#/components/schemas/BudgetMetadata"
+        spec:
+          $ref: "#/components/schemas/BudgetSpec"
+        status:
+          $ref: "#/components/schemas/BudgetServerStatus"
+      example:
+        apiVersion: gateway.api-platform.wso2.com/v1
+        kind: Budget
+        metadata:
+          name: api-platform-per-agent-openai
+          annotations:
+            gateway.api-platform.wso2.com/project-id: api-platform
+        spec:
+          displayName: API Platform, per agent on OpenAI
+          limit:
+            amount: "100.00"
+            period: month
+            action: block
+          resource:
+            type: llmProvider
+            allocation: shared
+            id: openai
+          consumers:
+            - type: project
+              allocation: shared
+              id: api-platform
+            - type: agent
+              allocation: separate
+          warnings:
+            thresholds: [80, 100]
+            channels: [platform-slack]
+    BudgetMetadata:
+      type: object
+      required: [name]
       properties:
         name:
           type: string
           description: Handle, unique in the organization; cannot change
           pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
           maxLength: 63
-        orgId:
-          type: string
-          description: Handle of the organization that owns the budget; the token's organization. Cannot change
-        projectId:
-          type: string
+        annotations:
+          type: object
           description: >-
-            Handle of the project that owns the budget; omitted for an organization budget. A project
-            budget counts only that project's traffic: its project consumer is implied. Cannot change
+            gateway.api-platform.wso2.com/project-id is the handle of the project that owns the budget;
+            without it, the organization owns it. A project budget must list that project as a shared
+            consumer ({type: project, id}), as on gateways; the annotation itself scopes nothing.
+            Cannot change. Other annotations are ignored.
+          additionalProperties:
+            type: string
+    BudgetSpec:
+      type: object
+      required: [limit]
+      properties:
         displayName:
           type: string
           minLength: 1
           maxLength: 255
+          description: Defaults to the name
         description:
           type: string
           maxLength: 1023
+        status:
+          type: string
+          enum: [active, inactive]
+          default: active
+          description: An inactive budget is stored and listed but not enforced
         limit:
           $ref: "#/components/schemas/BudgetLimit"
         resource:
@@ -17536,6 +17598,26 @@ components:
             $ref: "#/components/schemas/BudgetExemption"
         warnings:
           $ref: "#/components/schemas/BudgetWarnings"
+    BudgetServerStatus:
+      type: object
+      readOnly: true
+      description: Set by the server on responses
+      required: [origin, createdAt, updatedAt]
+      properties:
+        origin:
+          type: string
+          enum: [control_plane, gateway_api]
+          description: "gateway_api: created on a gateway; only displayName, description and warnings change here"
+        currentPeriod:
+          $ref: "#/components/schemas/BudgetCurrentPeriod"
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
     BudgetImportResult:
       type: object
       description: The outcome of a CSV import
@@ -17600,48 +17682,6 @@ components:
           example: BUDGET_ALREADY_EXISTS
         message:
           type: string
-    BudgetUpdateRequest:
-      type: object
-      description: The editable fields of a budget; the others are fixed after creation
-      required: [limit]
-      properties:
-        displayName:
-          type: string
-          minLength: 1
-          maxLength: 255
-        description:
-          type: string
-          maxLength: 1023
-        status:
-          type: string
-          enum: [active, inactive]
-          default: active
-        limit:
-          $ref: "#/components/schemas/BudgetUpdateLimit"
-        exemptions:
-          type: array
-          maxItems: 100
-          items:
-            $ref: "#/components/schemas/BudgetExemption"
-        warnings:
-          $ref: "#/components/schemas/BudgetWarnings"
-    BudgetUpdateLimit:
-      type: object
-      description: The editable part of the limit; currency and period are fixed
-      required: [amount, action]
-      properties:
-        amount:
-          type: string
-          pattern: ^[0-9]+(\.[0-9]{1,2})?$
-          example: "150.00"
-        action:
-          type: string
-          enum: [block, allow]
-        blockAt:
-          type: integer
-          minimum: 1
-          maximum: 100
-          default: 100
     BudgetListResponse:
       type: object
       required: [budgets, total, limit, offset]
@@ -17649,62 +17689,13 @@ components:
         budgets:
           type: array
           items:
-            $ref: "#/components/schemas/BudgetResponse"
+            $ref: "#/components/schemas/Budget"
         total:
           type: integer
         limit:
           type: integer
         offset:
           type: integer
-    BudgetResponse:
-      type: object
-      required: [name, orgId, displayName, status, origin, limit, consumers, exemptions, createdAt, updatedAt]
-      properties:
-        name:
-          type: string
-        orgId:
-          type: string
-          description: Handle of the organization that owns the budget; the token's organization. Cannot change
-        projectId:
-          type: string
-          description: >-
-            Handle of the project that owns the budget; omitted for an organization budget. A project
-            budget counts only that project's traffic: its project consumer is implied. Cannot change
-        displayName:
-          type: string
-        description:
-          type: string
-        status:
-          type: string
-          enum: [active, inactive]
-        origin:
-          type: string
-          enum: [control_plane, gateway_api]
-          description: "gateway_api: created on a gateway and read-only here"
-        limit:
-          $ref: "#/components/schemas/BudgetLimit"
-        resource:
-          $ref: "#/components/schemas/BudgetResource"
-        consumers:
-          type: array
-          items:
-            $ref: "#/components/schemas/BudgetConsumer"
-        exemptions:
-          type: array
-          items:
-            $ref: "#/components/schemas/BudgetExemption"
-        warnings:
-          $ref: "#/components/schemas/BudgetWarnings"
-        currentPeriod:
-          $ref: "#/components/schemas/BudgetCurrentPeriod"
-        createdBy:
-          type: string
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
     BudgetLimit:
       type: object
       required: [amount, period, action]

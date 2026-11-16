@@ -132,7 +132,7 @@ func TestBudgetRepository_GatewayBudgets(t *testing.T) {
 	named, err := repo.Get(ctx, ou, "team-a")
 	require.NoError(t, err)
 	named.Configuration.DisplayName = "Team A, monthly"
-	named.Configuration.Warnings = &models.BudgetWarnings{Thresholds: []int32{80}, ChannelIDs: []string{"3f2b8c1e-5a7d-4e9b-8c21-6d0f4a9e7b13"}}
+	named.Configuration.Warnings = &models.BudgetWarnings{Thresholds: []int32{80}, Channels: []string{"finance-email"}}
 	require.NoError(t, repo.Update(ctx, named))
 
 	// A later push of team-a updates the stored budget and keeps its ID.
@@ -342,9 +342,22 @@ func TestBudgetRepository_BudgetsUsingRefuseDeletes(t *testing.T) {
 	openai := "openai"
 	cfg := budgetConfig("OpenAI monthly", "1000")
 	cfg.Resource = &models.BudgetResource{Type: "llmProvider", Allocation: "shared", ID: &openai}
-	cfg.Warnings = &models.BudgetWarnings{Thresholds: []int32{80}, ChannelIDs: []string{channel.ID.String()}}
+	cfg.Warnings = &models.BudgetWarnings{Thresholds: []int32{80}, Channels: []string{channel.Name}}
 	b := models.Budget{OrgID: ou, Origin: models.BudgetOriginControlPlane, Configuration: cfg}
 	require.NoError(t, repo.CreateForControlPlane(ctx, &b, "openai-monthly"))
+
+	// The row holds the Budget kind as received, as a gateway stores it.
+	var raw string
+	require.NoError(t, gdb.Table("budgets").Select("configuration").Where("id = ?", b.ID).Scan(&raw).Error)
+	var doc models.BudgetDocument
+	require.NoError(t, json.Unmarshal([]byte(raw), &doc))
+	assert.Equal(t, models.BudgetAPIVersion, doc.APIVersion)
+	assert.Equal(t, models.KindBudget, doc.Kind)
+	assert.Equal(t, "openai-monthly", doc.Metadata.Name)
+	assert.Equal(t, []string{"finance-email"}, doc.Spec.Warnings.Channels, "channels by name")
+	read, err := repo.Get(ctx, ou, "openai-monthly")
+	require.NoError(t, err)
+	assert.Equal(t, cfg, read.Configuration, "the spec reads back")
 	other := models.Budget{OrgID: ou, Origin: models.BudgetOriginControlPlane, Configuration: budgetConfig("All", "5")}
 	require.NoError(t, repo.CreateForControlPlane(ctx, &other, "all-providers"))
 
@@ -356,6 +369,14 @@ func TestBudgetRepository_BudgetsUsingRefuseDeletes(t *testing.T) {
 	assert.Empty(t, names)
 
 	_, err = events.DeleteDestination(ctx, ou, channel.ID)
+	require.ErrorIs(t, err, utils.ErrEventDestinationInUse)
+	assert.Contains(t, err.Error(), "openai-monthly")
+
+	// Budgets keep the channel by name, so a channel they use keeps its name.
+	renamed, err := events.GetDestination(ctx, ou, channel.ID)
+	require.NoError(t, err)
+	renamed.Name = "finance-alerts"
+	err = events.UpdateDestination(ctx, renamed, nil)
 	require.ErrorIs(t, err, utils.ErrEventDestinationInUse)
 	assert.Contains(t, err.Error(), "openai-monthly")
 

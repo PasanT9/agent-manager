@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -229,23 +230,19 @@ func (s *BudgetWarningService) CheckBudget(ctx context.Context, b *models.Budget
 // channels returns the budget's notification channels it may still send to.
 func (s *BudgetWarningService) channels(ctx context.Context, b *models.Budget) ([]models.EventDestination, error) {
 	w := b.Configuration.Warnings
-	if s.bus == nil || w == nil || len(w.Thresholds) == 0 || len(w.ChannelIDs) == 0 {
+	if s.bus == nil || w == nil || len(w.Thresholds) == 0 || len(w.Channels) == 0 {
 		return nil, nil
 	}
-	ids := make([]uuid.UUID, 0, len(w.ChannelIDs))
-	for _, raw := range w.ChannelIDs {
-		if id, err := uuid.Parse(raw); err == nil {
-			ids = append(ids, id)
-		}
-	}
-	found, err := s.events.DestinationsByID(ctx, b.OrgID, ids)
+	// Channels are stored by name (the kind as received); a channel a budget uses cannot
+	// be renamed or deleted.
+	all, err := s.events.ListDestinations(ctx, b.OrgID)
 	if err != nil {
 		return nil, err
 	}
 	project := budgetProject(&b.Configuration)
-	out := found[:0]
-	for _, d := range found {
-		if d.AvailableToBudget(project) {
+	out := make([]models.EventDestination, 0, len(w.Channels))
+	for _, d := range all {
+		if slices.Contains(w.Channels, d.Name) && d.AvailableToBudget(project) {
 			out = append(out, d)
 		}
 	}

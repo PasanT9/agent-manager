@@ -432,6 +432,18 @@ func (r *eventRepository) UpdateDestination(
 				return err
 			}
 		}
+		if d.Name != locked.Name {
+			// Budgets keep their warning channels by name (the kind as received): a channel
+			// they use keeps its name, as one they use cannot be deleted.
+			budgets, err := budgetsWarning(tx, d.OUID, locked.Name)
+			if err != nil {
+				return err
+			}
+			if len(budgets) > 0 {
+				return fmt.Errorf("%w: budget(s) %s send warnings to it by name; remove it from them before renaming it",
+					utils.ErrEventDestinationInUse, strings.Join(budgets, ", "))
+			}
+		}
 		if taken, err := nameTaken(tx, d); err != nil || taken {
 			if taken {
 				return utils.ErrEventDestinationNameTaken
@@ -466,6 +478,13 @@ func (r *eventRepository) UpdateDestination(
 	return err
 }
 
+// budgetsWarning names the budgets that send warnings to the channel with that name.
+func budgetsWarning(tx *gorm.DB, ouID, channel string) ([]string, error) {
+	return BudgetsUsing(tx, ouID, func(c models.BudgetConfig) bool {
+		return c.Warnings != nil && slices.Contains(c.Warnings.Channels, channel)
+	})
+}
+
 func (r *eventRepository) DeleteDestination(ctx context.Context, ouID string, id uuid.UUID) (bool, error) {
 	deleted := false
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -485,9 +504,7 @@ func (r *eventRepository) DeleteDestination(ctx context.Context, ouID string, id
 			return utils.ErrEventDestinationInUse
 		}
 		// Budgets name their warning channels in their configuration, not by foreign key.
-		budgets, err := BudgetsUsing(tx, ouID, func(c models.BudgetConfig) bool {
-			return c.Warnings != nil && slices.Contains(c.Warnings.ChannelIDs, id.String())
-		})
+		budgets, err := budgetsWarning(tx, ouID, destination.Name)
 		if err != nil {
 			return err
 		}
@@ -1155,7 +1172,7 @@ func (r *eventRepository) PruneDeliveries(ctx context.Context, cutoff time.Time)
 
 func (r *eventRepository) BudgetConfig(ctx context.Context, ouID string, budgetID uuid.UUID) (*models.BudgetConfig, error) {
 	var row struct {
-		Configuration models.BudgetConfig `gorm:"column:configuration;serializer:json"`
+		Configuration models.BudgetConfig `gorm:"column:configuration;serializer:budgetkind"`
 	}
 	err := r.db.WithContext(ctx).Table("budgets").Select("configuration").
 		Where("org_id = ? AND id = ?", ouID, budgetID).Take(&row).Error

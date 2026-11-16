@@ -457,7 +457,7 @@ func (d *eventDispatcher) budgetWants(ctx context.Context, delivery *models.Even
 		return false, err
 	}
 	if cfg.Status != budgetStatusActive || cfg.Warnings == nil ||
-		!slices.Contains(cfg.Warnings.ChannelIDs, dest.ID.String()) {
+		!slices.Contains(cfg.Warnings.Channels, dest.Name) {
 		return false, nil
 	}
 	return dest.AvailableToBudget(budgetProject(cfg)), nil

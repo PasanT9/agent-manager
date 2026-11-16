@@ -118,7 +118,7 @@ const (
 type importRow struct {
 	row    int32
 	name   string
-	req    spec.BudgetRequest
+	req    budgetRequest
 	budget *models.Budget // the budget the row creates, or the stored budget it updates
 	action string
 	errs   []spec.BudgetImportRowError
@@ -282,22 +282,23 @@ func readBudgetCSV(file io.Reader) ([]string, [][]string, error) {
 
 // budgetRequestFromCSV maps a row onto the payload of POST /budgets. Cells that cannot be
 // read (a number, JSON) fail their column on row.
-func budgetRequestFromCSV(cells map[string]string, orgName string, row *importRow) spec.BudgetRequest {
+func budgetRequestFromCSV(cells map[string]string, orgName string, row *importRow) budgetRequest {
 	optional := func(column string) *string {
 		if v := cells[column]; v != "" {
 			return &v
 		}
 		return nil
 	}
-	req := spec.BudgetRequest{
-		Name: cells[csvName], OrgId: orgName, ProjectId: optional(csvProjectID),
+	req := budgetRequest{
+		Name: cells[csvName], ProjectId: optional(csvProjectID),
 		DisplayName: optional(csvDisplayName), Description: optional(csvDescription),
 		Limit: spec.BudgetLimit{
 			Amount: cells[csvAmount], Currency: optional(csvCurrency), Period: cells[csvPeriod], Action: cells[csvAction],
 		},
 	}
-	if v := cells[csvOrgID]; v != "" {
-		req.OrgId = v
+	if v := strings.TrimSpace(cells[csvOrgID]); v != "" && v != orgName {
+		// The organization is the one imported into, as for a Budget kind.
+		row.fail(csvOrgID, utils.ErrCodeValidation, fmt.Sprintf("orgId must be this organization, %s.", orgName))
 	}
 	if v := cells[csvBlockAt]; v != "" {
 		n, err := strconv.ParseInt(v, 10, 32)
@@ -373,10 +374,12 @@ func decodeCSVJSON(v string, out any) error {
 
 // budgetCSVColumn names the CSV column of a payload field, so a row's error points at
 // the cell to fix; empty when it is about the whole row.
-func budgetCSVColumn(field string, req spec.BudgetRequest) string {
+func budgetCSVColumn(field string, req budgetRequest) string {
 	switch {
 	case field == "name", field == "orgId", field == "projectId", field == "displayName", field == "description":
 		return field
+	case field == "metadata.annotations":
+		return csvProjectID
 	case strings.HasPrefix(field, "limit."):
 		return strings.TrimPrefix(field, "limit.")
 	case field == "resource.allocation":

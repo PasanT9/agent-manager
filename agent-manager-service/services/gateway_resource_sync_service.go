@@ -244,7 +244,7 @@ func (b *gatewayBudgetSyncer) Save(ctx context.Context, gateway *models.Gateway,
 	gatewayID := gateway.UUID
 	budget := &models.Budget{
 		OrgID: gateway.OUID, Origin: models.BudgetOriginGateway, GatewayID: &gatewayID, ProjectID: projectID,
-		Configuration: cfg,
+		ProjectName: project, Configuration: cfg,
 	}
 	stored, err := b.repo.SaveForGateway(ctx, budget, name)
 	if err != nil {

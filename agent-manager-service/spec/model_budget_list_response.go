@@ -19,17 +19,17 @@ var _ MappedNullable = &BudgetListResponse{}
 
 // BudgetListResponse struct for BudgetListResponse
 type BudgetListResponse struct {
-	Budgets []BudgetResponse `json:"budgets"`
-	Total   int32            `json:"total"`
-	Limit   int32            `json:"limit"`
-	Offset  int32            `json:"offset"`
+	Budgets []Budget `json:"budgets"`
+	Total   int32    `json:"total"`
+	Limit   int32    `json:"limit"`
+	Offset  int32    `json:"offset"`
 }
 
 // NewBudgetListResponse instantiates a new BudgetListResponse object
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewBudgetListResponse(budgets []BudgetResponse, total int32, limit int32, offset int32) *BudgetListResponse {
+func NewBudgetListResponse(budgets []Budget, total int32, limit int32, offset int32) *BudgetListResponse {
 	this := BudgetListResponse{}
 	this.Budgets = budgets
 	this.Total = total
@@ -47,9 +47,9 @@ func NewBudgetListResponseWithDefaults() *BudgetListResponse {
 }
 
 // GetBudgets returns the Budgets field value
-func (o *BudgetListResponse) GetBudgets() []BudgetResponse {
+func (o *BudgetListResponse) GetBudgets() []Budget {
 	if o == nil {
-		var ret []BudgetResponse
+		var ret []Budget
 		return ret
 	}
 
@@ -58,7 +58,7 @@ func (o *BudgetListResponse) GetBudgets() []BudgetResponse {
 
 // GetBudgetsOk returns a tuple with the Budgets field value
 // and a boolean to check if the value has been set.
-func (o *BudgetListResponse) GetBudgetsOk() ([]BudgetResponse, bool) {
+func (o *BudgetListResponse) GetBudgetsOk() ([]Budget, bool) {
 	if o == nil {
 		return nil, false
 	}
@@ -66,7 +66,7 @@ func (o *BudgetListResponse) GetBudgetsOk() ([]BudgetResponse, bool) {
 }
 
 // SetBudgets sets field value
-func (o *BudgetListResponse) SetBudgets(v []BudgetResponse) {
+func (o *BudgetListResponse) SetBudgets(v []Budget) {
 	o.Budgets = v
 }
 

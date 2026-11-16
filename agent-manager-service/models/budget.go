@@ -17,9 +17,14 @@
 package models
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm/schema"
 )
 
 // BudgetOrigin says who created a budget.
@@ -41,12 +46,14 @@ const BudgetVersion = "v1"
 // provider is. Configuration is the control-plane model, as LLMProviderConfig is for a
 // provider: the spec of the Budget kind, which is built from it when it is sent out.
 type Budget struct {
-	ID            uuid.UUID    `gorm:"column:id;primaryKey"`
-	OrgID         string       `gorm:"column:org_id"`
-	Origin        BudgetOrigin `gorm:"column:origin"`
-	GatewayID     *uuid.UUID   `gorm:"column:gateway_id"` // set for gateway budgets only
-	ProjectID     *uuid.UUID   `gorm:"column:project_id"` // the owning project; nil: the organization
-	Configuration BudgetConfig `gorm:"column:configuration;serializer:json"`
+	ID        uuid.UUID    `gorm:"column:id;primaryKey"`
+	OrgID     string       `gorm:"column:org_id"`
+	Origin    BudgetOrigin `gorm:"column:origin"`
+	GatewayID *uuid.UUID   `gorm:"column:gateway_id"` // set for gateway budgets only
+	ProjectID *uuid.UUID   `gorm:"column:project_id"` // the owning project; nil: the organization
+	// Configuration is the kind's spec; the column holds the whole Budget kind as received
+	// (Interfaces 1.1), written and read by the budgetkind serializer.
+	Configuration BudgetConfig `gorm:"column:configuration;serializer:budgetkind"`
 	CreatedBy     string       `gorm:"column:created_by"`
 
 	// Name and the timestamps come from the artifact, the owners' handles from the
@@ -107,9 +114,96 @@ type BudgetExemption struct {
 
 // BudgetWarnings is when, and to which notification channels, a budget warns.
 type BudgetWarnings struct {
-	Thresholds []int32  `json:"thresholds"`
-	ChannelIDs []string `json:"channelIds"`
+	Thresholds []int32 `json:"thresholds"`
+	// Channels are notification channel names, as in the kind.
+	Channels []string `json:"channels"`
 }
 
 // TableName maps Budget to its table.
 func (Budget) TableName() string { return "budgets" }
+
+// BudgetAPIVersion is the Budget kind's apiVersion.
+const BudgetAPIVersion = "gateway.api-platform.wso2.com/v1"
+
+// AnnotationBudgetProjectID names the project that owns a budget.
+const AnnotationBudgetProjectID = "gateway.api-platform.wso2.com/project-id"
+
+// BudgetDocument is a budget as stored, as a gateway stores it: the Budget kind as
+// received (Interfaces 1.1, 3).
+type BudgetDocument struct {
+	APIVersion string                 `json:"apiVersion"`
+	Kind       string                 `json:"kind"`
+	Metadata   BudgetDocumentMetadata `json:"metadata"`
+	Spec       BudgetConfig           `json:"spec"`
+}
+
+// BudgetDocumentMetadata names a stored budget and its owning project.
+type BudgetDocumentMetadata struct {
+	Name        string            `json:"name"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// NewBudgetDocument is the stored kind of a budget with that name, project ("" for an
+// organization budget) and spec.
+func NewBudgetDocument(name, project string, spec BudgetConfig) BudgetDocument {
+	doc := BudgetDocument{APIVersion: BudgetAPIVersion, Kind: KindBudget, Metadata: BudgetDocumentMetadata{Name: name}, Spec: spec}
+	if project != "" {
+		doc.Metadata.Annotations = map[string]string{AnnotationBudgetProjectID: project}
+	}
+	return doc
+}
+
+func init() {
+	schema.RegisterSerializer("budgetkind", budgetKindSerializer{})
+}
+
+// budgetKindSerializer stores a Budget's Configuration as the whole Budget kind, named
+// after the budget's Name and ProjectName, and reads the spec back. Metadata is read from
+// the budget's columns, so the stored annotation never overrides the current project.
+type budgetKindSerializer struct{}
+
+func (budgetKindSerializer) Scan(ctx context.Context, field *schema.Field, dst reflect.Value, dbValue any) error {
+	var raw []byte
+	switch v := dbValue.(type) {
+	case nil:
+		return nil
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		return fmt.Errorf("budget configuration: unsupported type %T", dbValue)
+	}
+	var probe struct {
+		Spec json.RawMessage `json:"spec"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return fmt.Errorf("budget configuration: %w", err)
+	}
+	var cfg BudgetConfig
+	body := raw
+	if len(probe.Spec) > 0 {
+		body = probe.Spec
+	}
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		return fmt.Errorf("budget configuration: %w", err)
+	}
+	return field.Set(ctx, dst, cfg)
+}
+
+func (budgetKindSerializer) Value(_ context.Context, _ *schema.Field, dst reflect.Value, fieldValue any) (any, error) {
+	cfg, _ := fieldValue.(BudgetConfig)
+	name, project := "", ""
+	for dst.Kind() == reflect.Pointer {
+		dst = dst.Elem()
+	}
+	if dst.Kind() == reflect.Struct {
+		name = dst.FieldByName("Name").String()
+		project = dst.FieldByName("ProjectName").String()
+	}
+	b, err := json.Marshal(NewBudgetDocument(name, project, cfg))
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
+}

@@ -14,21 +14,18 @@ import (
 	"encoding/json"
 )
 
-// checks if the BudgetRequest type satisfies the MappedNullable interface at compile time
-var _ MappedNullable = &BudgetRequest{}
+// checks if the BudgetSpec type satisfies the MappedNullable interface at compile time
+var _ MappedNullable = &BudgetSpec{}
 
-// BudgetRequest A spend limit on LLM traffic
-type BudgetRequest struct {
-	// Handle, unique in the organization; cannot change
-	Name string `json:"name"`
-	// Handle of the organization that owns the budget; the token's organization. Cannot change
-	OrgId string `json:"orgId"`
-	// Handle of the project that owns the budget; omitted for an organization budget. A project budget counts only that project's traffic: its project consumer is implied. Cannot change
-	ProjectId   *string         `json:"projectId,omitempty"`
-	DisplayName *string         `json:"displayName,omitempty"`
-	Description *string         `json:"description,omitempty"`
-	Limit       BudgetLimit     `json:"limit"`
-	Resource    *BudgetResource `json:"resource,omitempty"`
+// BudgetSpec struct for BudgetSpec
+type BudgetSpec struct {
+	// Defaults to the name
+	DisplayName *string `json:"displayName,omitempty"`
+	Description *string `json:"description,omitempty"`
+	// An inactive budget is stored and listed but not enforced
+	Status   *string         `json:"status,omitempty"`
+	Limit    BudgetLimit     `json:"limit"`
+	Resource *BudgetResource `json:"resource,omitempty"`
 	// Combined with AND
 	Consumers []BudgetConsumer `json:"consumers,omitempty"`
 	// Traffic not counted or blocked by this budget
@@ -36,108 +33,30 @@ type BudgetRequest struct {
 	Warnings   *BudgetWarnings   `json:"warnings,omitempty"`
 }
 
-// NewBudgetRequest instantiates a new BudgetRequest object
+// NewBudgetSpec instantiates a new BudgetSpec object
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewBudgetRequest(name string, orgId string, limit BudgetLimit) *BudgetRequest {
-	this := BudgetRequest{}
-	this.Name = name
-	this.OrgId = orgId
+func NewBudgetSpec(limit BudgetLimit) *BudgetSpec {
+	this := BudgetSpec{}
+	var status string = "active"
+	this.Status = &status
 	this.Limit = limit
 	return &this
 }
 
-// NewBudgetRequestWithDefaults instantiates a new BudgetRequest object
+// NewBudgetSpecWithDefaults instantiates a new BudgetSpec object
 // This constructor will only assign default values to properties that have it defined,
 // but it doesn't guarantee that properties required by API are set
-func NewBudgetRequestWithDefaults() *BudgetRequest {
-	this := BudgetRequest{}
+func NewBudgetSpecWithDefaults() *BudgetSpec {
+	this := BudgetSpec{}
+	var status string = "active"
+	this.Status = &status
 	return &this
 }
 
-// GetName returns the Name field value
-func (o *BudgetRequest) GetName() string {
-	if o == nil {
-		var ret string
-		return ret
-	}
-
-	return o.Name
-}
-
-// GetNameOk returns a tuple with the Name field value
-// and a boolean to check if the value has been set.
-func (o *BudgetRequest) GetNameOk() (*string, bool) {
-	if o == nil {
-		return nil, false
-	}
-	return &o.Name, true
-}
-
-// SetName sets field value
-func (o *BudgetRequest) SetName(v string) {
-	o.Name = v
-}
-
-// GetOrgId returns the OrgId field value
-func (o *BudgetRequest) GetOrgId() string {
-	if o == nil {
-		var ret string
-		return ret
-	}
-
-	return o.OrgId
-}
-
-// GetOrgIdOk returns a tuple with the OrgId field value
-// and a boolean to check if the value has been set.
-func (o *BudgetRequest) GetOrgIdOk() (*string, bool) {
-	if o == nil {
-		return nil, false
-	}
-	return &o.OrgId, true
-}
-
-// SetOrgId sets field value
-func (o *BudgetRequest) SetOrgId(v string) {
-	o.OrgId = v
-}
-
-// GetProjectId returns the ProjectId field value if set, zero value otherwise.
-func (o *BudgetRequest) GetProjectId() string {
-	if o == nil || IsNil(o.ProjectId) {
-		var ret string
-		return ret
-	}
-	return *o.ProjectId
-}
-
-// GetProjectIdOk returns a tuple with the ProjectId field value if set, nil otherwise
-// and a boolean to check if the value has been set.
-func (o *BudgetRequest) GetProjectIdOk() (*string, bool) {
-	if o == nil || IsNil(o.ProjectId) {
-		return nil, false
-	}
-	return o.ProjectId, true
-}
-
-// HasProjectId returns a boolean if a field has been set.
-func (o *BudgetRequest) HasProjectId() bool {
-	if o != nil && !IsNil(o.ProjectId) {
-		return true
-	}
-
-	return false
-}
-
-// SetProjectId gets a reference to the given string and assigns it to the ProjectId field.
-func (o *BudgetRequest) SetProjectId(v string) {
-	o.ProjectId = &v
-}
-
 // GetDisplayName returns the DisplayName field value if set, zero value otherwise.
-func (o *BudgetRequest) GetDisplayName() string {
+func (o *BudgetSpec) GetDisplayName() string {
 	if o == nil || IsNil(o.DisplayName) {
 		var ret string
 		return ret
@@ -147,7 +66,7 @@ func (o *BudgetRequest) GetDisplayName() string {
 
 // GetDisplayNameOk returns a tuple with the DisplayName field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *BudgetRequest) GetDisplayNameOk() (*string, bool) {
+func (o *BudgetSpec) GetDisplayNameOk() (*string, bool) {
 	if o == nil || IsNil(o.DisplayName) {
 		return nil, false
 	}
@@ -155,7 +74,7 @@ func (o *BudgetRequest) GetDisplayNameOk() (*string, bool) {
 }
 
 // HasDisplayName returns a boolean if a field has been set.
-func (o *BudgetRequest) HasDisplayName() bool {
+func (o *BudgetSpec) HasDisplayName() bool {
 	if o != nil && !IsNil(o.DisplayName) {
 		return true
 	}
@@ -164,12 +83,12 @@ func (o *BudgetRequest) HasDisplayName() bool {
 }
 
 // SetDisplayName gets a reference to the given string and assigns it to the DisplayName field.
-func (o *BudgetRequest) SetDisplayName(v string) {
+func (o *BudgetSpec) SetDisplayName(v string) {
 	o.DisplayName = &v
 }
 
 // GetDescription returns the Description field value if set, zero value otherwise.
-func (o *BudgetRequest) GetDescription() string {
+func (o *BudgetSpec) GetDescription() string {
 	if o == nil || IsNil(o.Description) {
 		var ret string
 		return ret
@@ -179,7 +98,7 @@ func (o *BudgetRequest) GetDescription() string {
 
 // GetDescriptionOk returns a tuple with the Description field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *BudgetRequest) GetDescriptionOk() (*string, bool) {
+func (o *BudgetSpec) GetDescriptionOk() (*string, bool) {
 	if o == nil || IsNil(o.Description) {
 		return nil, false
 	}
@@ -187,7 +106,7 @@ func (o *BudgetRequest) GetDescriptionOk() (*string, bool) {
 }
 
 // HasDescription returns a boolean if a field has been set.
-func (o *BudgetRequest) HasDescription() bool {
+func (o *BudgetSpec) HasDescription() bool {
 	if o != nil && !IsNil(o.Description) {
 		return true
 	}
@@ -196,12 +115,44 @@ func (o *BudgetRequest) HasDescription() bool {
 }
 
 // SetDescription gets a reference to the given string and assigns it to the Description field.
-func (o *BudgetRequest) SetDescription(v string) {
+func (o *BudgetSpec) SetDescription(v string) {
 	o.Description = &v
 }
 
+// GetStatus returns the Status field value if set, zero value otherwise.
+func (o *BudgetSpec) GetStatus() string {
+	if o == nil || IsNil(o.Status) {
+		var ret string
+		return ret
+	}
+	return *o.Status
+}
+
+// GetStatusOk returns a tuple with the Status field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *BudgetSpec) GetStatusOk() (*string, bool) {
+	if o == nil || IsNil(o.Status) {
+		return nil, false
+	}
+	return o.Status, true
+}
+
+// HasStatus returns a boolean if a field has been set.
+func (o *BudgetSpec) HasStatus() bool {
+	if o != nil && !IsNil(o.Status) {
+		return true
+	}
+
+	return false
+}
+
+// SetStatus gets a reference to the given string and assigns it to the Status field.
+func (o *BudgetSpec) SetStatus(v string) {
+	o.Status = &v
+}
+
 // GetLimit returns the Limit field value
-func (o *BudgetRequest) GetLimit() BudgetLimit {
+func (o *BudgetSpec) GetLimit() BudgetLimit {
 	if o == nil {
 		var ret BudgetLimit
 		return ret
@@ -212,7 +163,7 @@ func (o *BudgetRequest) GetLimit() BudgetLimit {
 
 // GetLimitOk returns a tuple with the Limit field value
 // and a boolean to check if the value has been set.
-func (o *BudgetRequest) GetLimitOk() (*BudgetLimit, bool) {
+func (o *BudgetSpec) GetLimitOk() (*BudgetLimit, bool) {
 	if o == nil {
 		return nil, false
 	}
@@ -220,12 +171,12 @@ func (o *BudgetRequest) GetLimitOk() (*BudgetLimit, bool) {
 }
 
 // SetLimit sets field value
-func (o *BudgetRequest) SetLimit(v BudgetLimit) {
+func (o *BudgetSpec) SetLimit(v BudgetLimit) {
 	o.Limit = v
 }
 
 // GetResource returns the Resource field value if set, zero value otherwise.
-func (o *BudgetRequest) GetResource() BudgetResource {
+func (o *BudgetSpec) GetResource() BudgetResource {
 	if o == nil || IsNil(o.Resource) {
 		var ret BudgetResource
 		return ret
@@ -235,7 +186,7 @@ func (o *BudgetRequest) GetResource() BudgetResource {
 
 // GetResourceOk returns a tuple with the Resource field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *BudgetRequest) GetResourceOk() (*BudgetResource, bool) {
+func (o *BudgetSpec) GetResourceOk() (*BudgetResource, bool) {
 	if o == nil || IsNil(o.Resource) {
 		return nil, false
 	}
@@ -243,7 +194,7 @@ func (o *BudgetRequest) GetResourceOk() (*BudgetResource, bool) {
 }
 
 // HasResource returns a boolean if a field has been set.
-func (o *BudgetRequest) HasResource() bool {
+func (o *BudgetSpec) HasResource() bool {
 	if o != nil && !IsNil(o.Resource) {
 		return true
 	}
@@ -252,12 +203,12 @@ func (o *BudgetRequest) HasResource() bool {
 }
 
 // SetResource gets a reference to the given BudgetResource and assigns it to the Resource field.
-func (o *BudgetRequest) SetResource(v BudgetResource) {
+func (o *BudgetSpec) SetResource(v BudgetResource) {
 	o.Resource = &v
 }
 
 // GetConsumers returns the Consumers field value if set, zero value otherwise.
-func (o *BudgetRequest) GetConsumers() []BudgetConsumer {
+func (o *BudgetSpec) GetConsumers() []BudgetConsumer {
 	if o == nil || IsNil(o.Consumers) {
 		var ret []BudgetConsumer
 		return ret
@@ -267,7 +218,7 @@ func (o *BudgetRequest) GetConsumers() []BudgetConsumer {
 
 // GetConsumersOk returns a tuple with the Consumers field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *BudgetRequest) GetConsumersOk() ([]BudgetConsumer, bool) {
+func (o *BudgetSpec) GetConsumersOk() ([]BudgetConsumer, bool) {
 	if o == nil || IsNil(o.Consumers) {
 		return nil, false
 	}
@@ -275,7 +226,7 @@ func (o *BudgetRequest) GetConsumersOk() ([]BudgetConsumer, bool) {
 }
 
 // HasConsumers returns a boolean if a field has been set.
-func (o *BudgetRequest) HasConsumers() bool {
+func (o *BudgetSpec) HasConsumers() bool {
 	if o != nil && !IsNil(o.Consumers) {
 		return true
 	}
@@ -284,12 +235,12 @@ func (o *BudgetRequest) HasConsumers() bool {
 }
 
 // SetConsumers gets a reference to the given []BudgetConsumer and assigns it to the Consumers field.
-func (o *BudgetRequest) SetConsumers(v []BudgetConsumer) {
+func (o *BudgetSpec) SetConsumers(v []BudgetConsumer) {
 	o.Consumers = v
 }
 
 // GetExemptions returns the Exemptions field value if set, zero value otherwise.
-func (o *BudgetRequest) GetExemptions() []BudgetExemption {
+func (o *BudgetSpec) GetExemptions() []BudgetExemption {
 	if o == nil || IsNil(o.Exemptions) {
 		var ret []BudgetExemption
 		return ret
@@ -299,7 +250,7 @@ func (o *BudgetRequest) GetExemptions() []BudgetExemption {
 
 // GetExemptionsOk returns a tuple with the Exemptions field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *BudgetRequest) GetExemptionsOk() ([]BudgetExemption, bool) {
+func (o *BudgetSpec) GetExemptionsOk() ([]BudgetExemption, bool) {
 	if o == nil || IsNil(o.Exemptions) {
 		return nil, false
 	}
@@ -307,7 +258,7 @@ func (o *BudgetRequest) GetExemptionsOk() ([]BudgetExemption, bool) {
 }
 
 // HasExemptions returns a boolean if a field has been set.
-func (o *BudgetRequest) HasExemptions() bool {
+func (o *BudgetSpec) HasExemptions() bool {
 	if o != nil && !IsNil(o.Exemptions) {
 		return true
 	}
@@ -316,12 +267,12 @@ func (o *BudgetRequest) HasExemptions() bool {
 }
 
 // SetExemptions gets a reference to the given []BudgetExemption and assigns it to the Exemptions field.
-func (o *BudgetRequest) SetExemptions(v []BudgetExemption) {
+func (o *BudgetSpec) SetExemptions(v []BudgetExemption) {
 	o.Exemptions = v
 }
 
 // GetWarnings returns the Warnings field value if set, zero value otherwise.
-func (o *BudgetRequest) GetWarnings() BudgetWarnings {
+func (o *BudgetSpec) GetWarnings() BudgetWarnings {
 	if o == nil || IsNil(o.Warnings) {
 		var ret BudgetWarnings
 		return ret
@@ -331,7 +282,7 @@ func (o *BudgetRequest) GetWarnings() BudgetWarnings {
 
 // GetWarningsOk returns a tuple with the Warnings field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *BudgetRequest) GetWarningsOk() (*BudgetWarnings, bool) {
+func (o *BudgetSpec) GetWarningsOk() (*BudgetWarnings, bool) {
 	if o == nil || IsNil(o.Warnings) {
 		return nil, false
 	}
@@ -339,7 +290,7 @@ func (o *BudgetRequest) GetWarningsOk() (*BudgetWarnings, bool) {
 }
 
 // HasWarnings returns a boolean if a field has been set.
-func (o *BudgetRequest) HasWarnings() bool {
+func (o *BudgetSpec) HasWarnings() bool {
 	if o != nil && !IsNil(o.Warnings) {
 		return true
 	}
@@ -348,11 +299,11 @@ func (o *BudgetRequest) HasWarnings() bool {
 }
 
 // SetWarnings gets a reference to the given BudgetWarnings and assigns it to the Warnings field.
-func (o *BudgetRequest) SetWarnings(v BudgetWarnings) {
+func (o *BudgetSpec) SetWarnings(v BudgetWarnings) {
 	o.Warnings = &v
 }
 
-func (o BudgetRequest) MarshalJSON() ([]byte, error) {
+func (o BudgetSpec) MarshalJSON() ([]byte, error) {
 	toSerialize, err := o.ToMap()
 	if err != nil {
 		return []byte{}, err
@@ -360,18 +311,16 @@ func (o BudgetRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(toSerialize)
 }
 
-func (o BudgetRequest) ToMap() (map[string]interface{}, error) {
+func (o BudgetSpec) ToMap() (map[string]interface{}, error) {
 	toSerialize := map[string]interface{}{}
-	toSerialize["name"] = o.Name
-	toSerialize["orgId"] = o.OrgId
-	if !IsNil(o.ProjectId) {
-		toSerialize["projectId"] = o.ProjectId
-	}
 	if !IsNil(o.DisplayName) {
 		toSerialize["displayName"] = o.DisplayName
 	}
 	if !IsNil(o.Description) {
 		toSerialize["description"] = o.Description
+	}
+	if !IsNil(o.Status) {
+		toSerialize["status"] = o.Status
 	}
 	toSerialize["limit"] = o.Limit
 	if !IsNil(o.Resource) {
@@ -389,38 +338,38 @@ func (o BudgetRequest) ToMap() (map[string]interface{}, error) {
 	return toSerialize, nil
 }
 
-type NullableBudgetRequest struct {
-	value *BudgetRequest
+type NullableBudgetSpec struct {
+	value *BudgetSpec
 	isSet bool
 }
 
-func (v NullableBudgetRequest) Get() *BudgetRequest {
+func (v NullableBudgetSpec) Get() *BudgetSpec {
 	return v.value
 }
 
-func (v *NullableBudgetRequest) Set(val *BudgetRequest) {
+func (v *NullableBudgetSpec) Set(val *BudgetSpec) {
 	v.value = val
 	v.isSet = true
 }
 
-func (v NullableBudgetRequest) IsSet() bool {
+func (v NullableBudgetSpec) IsSet() bool {
 	return v.isSet
 }
 
-func (v *NullableBudgetRequest) Unset() {
+func (v *NullableBudgetSpec) Unset() {
 	v.value = nil
 	v.isSet = false
 }
 
-func NewNullableBudgetRequest(val *BudgetRequest) *NullableBudgetRequest {
-	return &NullableBudgetRequest{value: val, isSet: true}
+func NewNullableBudgetSpec(val *BudgetSpec) *NullableBudgetSpec {
+	return &NullableBudgetSpec{value: val, isSet: true}
 }
 
-func (v NullableBudgetRequest) MarshalJSON() ([]byte, error) {
+func (v NullableBudgetSpec) MarshalJSON() ([]byte, error) {
 	return json.Marshal(v.value)
 }
 
-func (v *NullableBudgetRequest) UnmarshalJSON(src []byte) error {
+func (v *NullableBudgetSpec) UnmarshalJSON(src []byte) error {
 	v.isSet = true
 	return json.Unmarshal(src, &v.value)
 }
