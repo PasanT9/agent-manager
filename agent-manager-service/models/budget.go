@@ -45,27 +45,30 @@ type Budget struct {
 	OrgID         string       `gorm:"column:org_id"`
 	Origin        BudgetOrigin `gorm:"column:origin"`
 	GatewayID     *uuid.UUID   `gorm:"column:gateway_id"` // set for gateway budgets only
+	ProjectID     *uuid.UUID   `gorm:"column:project_id"` // the owning project; nil: the organization
 	Configuration BudgetConfig `gorm:"column:configuration;serializer:json"`
 	CreatedBy     string       `gorm:"column:created_by"`
 
-	// Name and the timestamps come from the artifact, read with a join.
-	Name      string    `gorm:"->;column:name"`
-	CreatedAt time.Time `gorm:"->;column:created_at"`
-	UpdatedAt time.Time `gorm:"->;column:updated_at"`
+	// Name and the timestamps come from the artifact, the owners' handles from the
+	// organization and project, read with joins.
+	Name        string    `gorm:"->;column:name"`
+	OrgName     string    `gorm:"->;column:org_name"`
+	ProjectName string    `gorm:"->;column:project_name"`
+	CreatedAt   time.Time `gorm:"->;column:created_at"`
+	UpdatedAt   time.Time `gorm:"->;column:updated_at"`
 }
 
 // BudgetConfig is a budget's settings (Interfaces 2.2), with defaults filled in: the
 // spec of the Budget kind (Interfaces 3).
 type BudgetConfig struct {
-	DisplayName  string              `json:"displayName,omitempty"`
-	Description  *string             `json:"description,omitempty"`
-	Status       string              `json:"status"`
-	Limit        BudgetLimit         `json:"limit"`
-	Resource     *BudgetResource     `json:"resource,omitempty"`
-	Environments *BudgetEnvironments `json:"environments,omitempty"`
-	Consumers    []BudgetConsumer    `json:"consumers"`
-	Exemptions   []BudgetExemption   `json:"exemptions"`
-	Warnings     *BudgetWarnings     `json:"warnings,omitempty"`
+	DisplayName string            `json:"displayName,omitempty"`
+	Description *string           `json:"description,omitempty"`
+	Status      string            `json:"status"`
+	Limit       BudgetLimit       `json:"limit"`
+	Resource    *BudgetResource   `json:"resource,omitempty"`
+	Consumers   []BudgetConsumer  `json:"consumers"`
+	Exemptions  []BudgetExemption `json:"exemptions"`
+	Warnings    *BudgetWarnings   `json:"warnings,omitempty"`
 }
 
 // BudgetLimit is how much may be spent per period, and what happens when it is used up.
@@ -82,12 +85,6 @@ type BudgetResource struct {
 	Type       string  `json:"type"`
 	Allocation string  `json:"allocation"`
 	ID         *string `json:"id,omitempty"`
-}
-
-// BudgetEnvironments is the environments a budget covers; nil covers all.
-type BudgetEnvironments struct {
-	Allocation string   `json:"allocation"`
-	IDs        []string `json:"ids,omitempty"`
 }
 
 // BudgetConsumer selects the traffic a budget counts; consumers combine with AND.

@@ -20,7 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,6 +86,9 @@ type SubscriptionCounts map[uuid.UUID]map[string]int
 //go:generate moq -rm -fmt goimports -skip-ensure -pkg repomocks -out repomocks/event_repository_mock.go . EventRepository:EventRepositoryMock
 type EventRepository interface {
 	MonitorAlertWants(ctx context.Context, ouID string, alertID, destinationID uuid.UUID, project, agent string) (bool, error)
+	// BudgetConfig returns the configuration of the org's budget with id, or nil when it
+	// is gone: a budget warning is sent only while its budget still names the destination.
+	BudgetConfig(ctx context.Context, ouID string, budgetID uuid.UUID) (*models.BudgetConfig, error)
 	ListDestinations(ctx context.Context, ouID string) ([]models.EventDestination, error)
 	// GetDestination returns the org's destination with id, or
 	// gorm.ErrRecordNotFound.
@@ -478,6 +483,17 @@ func (r *eventRepository) DeleteDestination(ctx context.Context, ouID string, id
 		}
 		if using > 0 {
 			return utils.ErrEventDestinationInUse
+		}
+		// Budgets name their warning channels in their configuration, not by foreign key.
+		budgets, err := BudgetsUsing(tx, ouID, func(c models.BudgetConfig) bool {
+			return c.Warnings != nil && slices.Contains(c.Warnings.ChannelIDs, id.String())
+		})
+		if err != nil {
+			return err
+		}
+		if len(budgets) > 0 {
+			return fmt.Errorf("%w: budget(s) %s send warnings to it; remove it from them first",
+				utils.ErrEventDestinationInUse, strings.Join(budgets, ", "))
 		}
 		res := tx.Where("id = ?", id).Delete(&models.EventDestination{})
 		if res.Error != nil {
@@ -1135,6 +1151,21 @@ func (r *eventRepository) FailStaleDeliveries(ctx context.Context, cutoff time.T
 func (r *eventRepository) PruneDeliveries(ctx context.Context, cutoff time.Time) (int64, error) {
 	res := r.db.WithContext(ctx).Where("created_at < ?", cutoff.UTC()).Delete(&models.EventDelivery{})
 	return res.RowsAffected, res.Error
+}
+
+func (r *eventRepository) BudgetConfig(ctx context.Context, ouID string, budgetID uuid.UUID) (*models.BudgetConfig, error) {
+	var row struct {
+		Configuration models.BudgetConfig `gorm:"column:configuration;serializer:json"`
+	}
+	err := r.db.WithContext(ctx).Table("budgets").Select("configuration").
+		Where("org_id = ? AND id = ?", ouID, budgetID).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil //nolint:nilnil // the budget is gone
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &row.Configuration, nil
 }
 
 // MonitorAlertWants is always false: Lite runs no monitors, so no alert sends to a destination.

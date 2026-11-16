@@ -812,3 +812,61 @@ func TestEventDispatcherPruneFailsLostDeliveries(t *testing.T) {
 	f.dispatcher.prune(context.Background())
 	assert.Equal(t, []string{"fail", "prune"}, order)
 }
+
+func TestEventDispatcher_BudgetWarningDeliveryEligibility(t *testing.T) {
+	project := "payments"
+	active := func(channel uuid.UUID) *models.BudgetConfig {
+		return &models.BudgetConfig{
+			Status:    budgetStatusActive,
+			Consumers: []models.BudgetConsumer{{Type: budgetTypeProject, Allocation: "shared", ID: &project}},
+			Warnings:  &models.BudgetWarnings{Thresholds: []int32{80}, ChannelIDs: []string{channel.String()}},
+		}
+	}
+	for _, tc := range []struct {
+		name         string
+		availability string
+		projects     []string
+		config       func(channel uuid.UUID) *models.BudgetConfig
+		lookupErr    error
+		outcome      string
+		sends        int
+	}{
+		{name: "budget still names the channel", availability: models.DestinationAvailableAll, config: active, outcome: "ack", sends: 1},
+		{name: "org-wide channel", availability: models.DestinationAvailableOrg, config: active, outcome: "ack", sends: 1},
+		{name: "channel of the budget's project", availability: models.DestinationAvailableProjects, projects: []string{project}, config: active, outcome: "ack", sends: 1},
+		{name: "channel no longer available to the project", availability: models.DestinationAvailableProjects, projects: []string{"other"}, config: active, outcome: "drop"},
+		{name: "channel removed from the budget", availability: models.DestinationAvailableAll, config: func(uuid.UUID) *models.BudgetConfig { return active(uuid.New()) }, outcome: "drop"},
+		{name: "budget disabled", availability: models.DestinationAvailableAll, config: func(c uuid.UUID) *models.BudgetConfig {
+			cfg := active(c)
+			cfg.Status = budgetStatusInactive
+			return cfg
+		}, outcome: "drop"},
+		{name: "budget deleted", availability: models.DestinationAvailableAll, config: func(uuid.UUID) *models.BudgetConfig { return nil }, outcome: "drop"},
+		{name: "budget lookup fails", availability: models.DestinationAvailableAll, config: active, lookupErr: errors.New("database unavailable"), outcome: "retry"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDispatcherFixture(t)
+			dest := f.destination(tc.availability, tc.projects...)
+			budgetID := uuid.New()
+			evt := matcherEvent(BudgetWarningEvent, events.ScopeProject, project, "", "")
+			payload, err := json.Marshal(evt)
+			require.NoError(t, err)
+			body, err := json.Marshal(eventDeliveryJob{DestinationID: dest.ID.String(), Event: payload})
+			require.NoError(t, err)
+			f.deliveries[deliveryKey(dest.ID, evt.ID)] = models.EventDelivery{
+				ID: uuid.New(), OUID: dest.OUID, DestinationID: dest.ID, BudgetID: &budgetID, EventID: evt.ID,
+				ProjectName: project, Status: models.EventDeliveryPending,
+			}
+			f.repo.BudgetConfigFunc = func(_ context.Context, ouID string, got uuid.UUID) (*models.BudgetConfig, error) {
+				assert.Equal(t, dest.OUID, ouID)
+				assert.Equal(t, budgetID, got)
+				return tc.config(dest.ID), tc.lookupErr
+			}
+			f.repo.SubscriptionsByIDFunc = nil
+			msg := &answeredMessage{data: body, attempt: 1}
+			f.dispatcher.handleDelivery(context.Background(), msg)
+			assert.Equal(t, tc.outcome, msg.outcome)
+			assert.Equal(t, tc.sends, f.driver.sends())
+		})
+	}
+}

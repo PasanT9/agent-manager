@@ -53,12 +53,12 @@ func budgetItem(id, kind, name string) models.GatewayResourceItem {
 
 func TestGatewayResourceSync_RefusesAnotherOrgsGatewayAndKeepsRealErrors(t *testing.T) {
 	other := &models.Gateway{UUID: resourceSyncGateway, OUID: "org-2"}
-	svc := NewGatewayResourceSyncService(gatewayRepoFor(other, nil), &repomocks.BudgetRepositoryMock{})
+	svc := NewGatewayResourceSyncService(gatewayRepoFor(other, nil), &repomocks.BudgetRepositoryMock{}, nil)
 	_, err := svc.Sync(context.Background(), resourceSyncGateway.String(), resourceSyncOrg, models.GatewayResourcesRequest{})
 	assert.ErrorIs(t, err, utils.ErrGatewayNotFound)
 
 	dbDown := errors.New("db down")
-	svc = NewGatewayResourceSyncService(gatewayRepoFor(nil, dbDown), &repomocks.BudgetRepositoryMock{})
+	svc = NewGatewayResourceSyncService(gatewayRepoFor(nil, dbDown), &repomocks.BudgetRepositoryMock{}, nil)
 	_, err = svc.Sync(context.Background(), resourceSyncGateway.String(), resourceSyncOrg, models.GatewayResourcesRequest{})
 	assert.ErrorIs(t, err, dbDown)
 	assert.NotErrorIs(t, err, utils.ErrGatewayNotFound, "a real error is not masked as not found")
@@ -86,7 +86,7 @@ func TestGatewayResourceSync_SavesDeletesAndReportsEachOne(t *testing.T) {
 			return nil
 		},
 	}
-	svc := NewGatewayResourceSyncService(gatewayRepoFor(gw, nil), repo)
+	svc := NewGatewayResourceSyncService(gatewayRepoFor(gw, nil), repo, nil)
 
 	resp, err := svc.Sync(context.Background(), resourceSyncGateway.String(), resourceSyncOrg, models.GatewayResourcesRequest{
 		Resources: []models.GatewayResourceItem{
@@ -131,7 +131,7 @@ func TestGatewayResourceSync_ACompletePushRemovesWhatItDoesNotList(t *testing.T)
 			return nil
 		},
 	}
-	svc := NewGatewayResourceSyncService(gatewayRepoFor(gw, nil), repo)
+	svc := NewGatewayResourceSyncService(gatewayRepoFor(gw, nil), repo, nil)
 
 	_, err := svc.Sync(context.Background(), resourceSyncGateway.String(), resourceSyncOrg, models.GatewayResourcesRequest{
 		Complete:  true,
@@ -153,7 +153,7 @@ func TestGatewayResourceSync_StoreFailureIsAnError(t *testing.T) {
 	repo := &repomocks.BudgetRepositoryMock{
 		SaveForGatewayFunc: func(context.Context, *models.Budget, string) (bool, error) { return false, dbDown },
 	}
-	svc := NewGatewayResourceSyncService(gatewayRepoFor(gw, nil), repo)
+	svc := NewGatewayResourceSyncService(gatewayRepoFor(gw, nil), repo, nil)
 	_, err := svc.Sync(context.Background(), resourceSyncGateway.String(), resourceSyncOrg, models.GatewayResourcesRequest{
 		Resources: []models.GatewayResourceItem{budgetItem("dp-a", "Budget", "team-a")},
 	})

@@ -195,6 +195,7 @@ var (
 	ErrLLMProviderTemplateExists   = errors.New("LLM provider template already exists")
 	ErrLLMProviderNotFound         = errors.New("LLM provider not found")
 	ErrLLMProviderExists           = errors.New("LLM provider already exists")
+	ErrLLMProviderUsedByBudgets    = errors.New("cannot delete LLM provider: budgets limit spend on it")
 	ErrLLMProviderHasProxies       = errors.New("cannot delete LLM provider: it has associated LLM proxies. Please delete all proxies before deleting the provider")
 	ErrLLMProviderUndeployFailed   = errors.New("cannot delete LLM provider: undeploying it from its gateways failed. Retry, or undeploy manually before deleting")
 	ErrLLMProviderDeleteInProgress = errors.New("cannot delete LLM provider: a delete is already in progress for it")

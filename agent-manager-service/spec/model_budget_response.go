@@ -20,7 +20,11 @@ var _ MappedNullable = &BudgetResponse{}
 
 // BudgetResponse struct for BudgetResponse
 type BudgetResponse struct {
-	Name        string  `json:"name"`
+	Name string `json:"name"`
+	// Handle of the organization that owns the budget; the token's organization. Cannot change
+	OrgId string `json:"orgId"`
+	// Handle of the project that owns the budget; omitted for an organization budget. A project budget counts only that project's traffic: its project consumer is implied. Cannot change
+	ProjectId   *string `json:"projectId,omitempty"`
 	DisplayName string  `json:"displayName"`
 	Description *string `json:"description,omitempty"`
 	Status      string  `json:"status"`
@@ -28,7 +32,6 @@ type BudgetResponse struct {
 	Origin        string               `json:"origin"`
 	Limit         BudgetLimit          `json:"limit"`
 	Resource      *BudgetResource      `json:"resource,omitempty"`
-	Environments  *BudgetEnvironments  `json:"environments,omitempty"`
 	Consumers     []BudgetConsumer     `json:"consumers"`
 	Exemptions    []BudgetExemption    `json:"exemptions"`
 	Warnings      *BudgetWarnings      `json:"warnings,omitempty"`
@@ -42,9 +45,10 @@ type BudgetResponse struct {
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewBudgetResponse(name string, displayName string, status string, origin string, limit BudgetLimit, consumers []BudgetConsumer, exemptions []BudgetExemption, createdAt time.Time, updatedAt time.Time) *BudgetResponse {
+func NewBudgetResponse(name string, orgId string, displayName string, status string, origin string, limit BudgetLimit, consumers []BudgetConsumer, exemptions []BudgetExemption, createdAt time.Time, updatedAt time.Time) *BudgetResponse {
 	this := BudgetResponse{}
 	this.Name = name
+	this.OrgId = orgId
 	this.DisplayName = displayName
 	this.Status = status
 	this.Origin = origin
@@ -86,6 +90,62 @@ func (o *BudgetResponse) GetNameOk() (*string, bool) {
 // SetName sets field value
 func (o *BudgetResponse) SetName(v string) {
 	o.Name = v
+}
+
+// GetOrgId returns the OrgId field value
+func (o *BudgetResponse) GetOrgId() string {
+	if o == nil {
+		var ret string
+		return ret
+	}
+
+	return o.OrgId
+}
+
+// GetOrgIdOk returns a tuple with the OrgId field value
+// and a boolean to check if the value has been set.
+func (o *BudgetResponse) GetOrgIdOk() (*string, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return &o.OrgId, true
+}
+
+// SetOrgId sets field value
+func (o *BudgetResponse) SetOrgId(v string) {
+	o.OrgId = v
+}
+
+// GetProjectId returns the ProjectId field value if set, zero value otherwise.
+func (o *BudgetResponse) GetProjectId() string {
+	if o == nil || IsNil(o.ProjectId) {
+		var ret string
+		return ret
+	}
+	return *o.ProjectId
+}
+
+// GetProjectIdOk returns a tuple with the ProjectId field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *BudgetResponse) GetProjectIdOk() (*string, bool) {
+	if o == nil || IsNil(o.ProjectId) {
+		return nil, false
+	}
+	return o.ProjectId, true
+}
+
+// HasProjectId returns a boolean if a field has been set.
+func (o *BudgetResponse) HasProjectId() bool {
+	if o != nil && !IsNil(o.ProjectId) {
+		return true
+	}
+
+	return false
+}
+
+// SetProjectId gets a reference to the given string and assigns it to the ProjectId field.
+func (o *BudgetResponse) SetProjectId(v string) {
+	o.ProjectId = &v
 }
 
 // GetDisplayName returns the DisplayName field value
@@ -246,38 +306,6 @@ func (o *BudgetResponse) HasResource() bool {
 // SetResource gets a reference to the given BudgetResource and assigns it to the Resource field.
 func (o *BudgetResponse) SetResource(v BudgetResource) {
 	o.Resource = &v
-}
-
-// GetEnvironments returns the Environments field value if set, zero value otherwise.
-func (o *BudgetResponse) GetEnvironments() BudgetEnvironments {
-	if o == nil || IsNil(o.Environments) {
-		var ret BudgetEnvironments
-		return ret
-	}
-	return *o.Environments
-}
-
-// GetEnvironmentsOk returns a tuple with the Environments field value if set, nil otherwise
-// and a boolean to check if the value has been set.
-func (o *BudgetResponse) GetEnvironmentsOk() (*BudgetEnvironments, bool) {
-	if o == nil || IsNil(o.Environments) {
-		return nil, false
-	}
-	return o.Environments, true
-}
-
-// HasEnvironments returns a boolean if a field has been set.
-func (o *BudgetResponse) HasEnvironments() bool {
-	if o != nil && !IsNil(o.Environments) {
-		return true
-	}
-
-	return false
-}
-
-// SetEnvironments gets a reference to the given BudgetEnvironments and assigns it to the Environments field.
-func (o *BudgetResponse) SetEnvironments(v BudgetEnvironments) {
-	o.Environments = &v
 }
 
 // GetConsumers returns the Consumers field value
@@ -483,6 +511,10 @@ func (o BudgetResponse) MarshalJSON() ([]byte, error) {
 func (o BudgetResponse) ToMap() (map[string]interface{}, error) {
 	toSerialize := map[string]interface{}{}
 	toSerialize["name"] = o.Name
+	toSerialize["orgId"] = o.OrgId
+	if !IsNil(o.ProjectId) {
+		toSerialize["projectId"] = o.ProjectId
+	}
 	toSerialize["displayName"] = o.DisplayName
 	if !IsNil(o.Description) {
 		toSerialize["description"] = o.Description
@@ -492,9 +524,6 @@ func (o BudgetResponse) ToMap() (map[string]interface{}, error) {
 	toSerialize["limit"] = o.Limit
 	if !IsNil(o.Resource) {
 		toSerialize["resource"] = o.Resource
-	}
-	if !IsNil(o.Environments) {
-		toSerialize["environments"] = o.Environments
 	}
 	toSerialize["consumers"] = o.Consumers
 	toSerialize["exemptions"] = o.Exemptions

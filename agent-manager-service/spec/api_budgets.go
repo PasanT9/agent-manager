@@ -490,13 +490,371 @@ func (a *BudgetsAPIService) GetBudgetExecute(r ApiGetBudgetRequest) (*BudgetResp
 	return localVarReturnValue, localVarHTTPResponse, nil
 }
 
+type ApiImportBudgetsRequest struct {
+	ctx        context.Context
+	ApiService *BudgetsAPIService
+	orgName    string
+	body       *string
+	dryRun     *bool
+}
+
+// UTF-8 CSV with a header row; at most 500 rows and 1 MB.
+func (r ApiImportBudgetsRequest) Body(body string) ApiImportBudgetsRequest {
+	r.body = &body
+	return r
+}
+
+// Check every row and save nothing.
+func (r ApiImportBudgetsRequest) DryRun(dryRun bool) ApiImportBudgetsRequest {
+	r.dryRun = &dryRun
+	return r
+}
+
+func (r ApiImportBudgetsRequest) Execute() (*BudgetImportResult, *http.Response, error) {
+	return r.ApiService.ImportBudgetsExecute(r)
+}
+
+/*
+ImportBudgets Import budgets from CSV
+
+Creates many budgets from a CSV file, one budget per row (Interfaces 2.5). Each row is
+checked like a created budget; if any row fails, nothing is saved. With dryRun, every
+row is checked and nothing is saved.
+
+	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
+	@param orgName Organization name
+	@return ApiImportBudgetsRequest
+*/
+func (a *BudgetsAPIService) ImportBudgets(ctx context.Context, orgName string) ApiImportBudgetsRequest {
+	return ApiImportBudgetsRequest{
+		ApiService: a,
+		ctx:        ctx,
+		orgName:    orgName,
+	}
+}
+
+// Execute executes the request
+//
+//	@return BudgetImportResult
+func (a *BudgetsAPIService) ImportBudgetsExecute(r ApiImportBudgetsRequest) (*BudgetImportResult, *http.Response, error) {
+	var (
+		localVarHTTPMethod  = http.MethodPost
+		localVarPostBody    interface{}
+		formFiles           []formFile
+		localVarReturnValue *BudgetImportResult
+	)
+
+	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "BudgetsAPIService.ImportBudgets")
+	if err != nil {
+		return localVarReturnValue, nil, &GenericOpenAPIError{error: err.Error()}
+	}
+
+	localVarPath := localBasePath + "/orgs/{orgName}/budgets/import"
+	localVarPath = strings.Replace(localVarPath, "{"+"orgName"+"}", url.PathEscape(parameterValueToString(r.orgName, "orgName")), -1)
+
+	localVarHeaderParams := make(map[string]string)
+	localVarQueryParams := url.Values{}
+	localVarFormParams := url.Values{}
+	if r.body == nil {
+		return localVarReturnValue, nil, reportError("body is required and must be specified")
+	}
+
+	if r.dryRun != nil {
+		parameterAddToHeaderOrQuery(localVarQueryParams, "dryRun", r.dryRun, "")
+	}
+	// to determine the Content-Type header
+	localVarHTTPContentTypes := []string{"text/csv"}
+
+	// set Content-Type header
+	localVarHTTPContentType := selectHeaderContentType(localVarHTTPContentTypes)
+	if localVarHTTPContentType != "" {
+		localVarHeaderParams["Content-Type"] = localVarHTTPContentType
+	}
+
+	// to determine the Accept header
+	localVarHTTPHeaderAccepts := []string{"application/json"}
+
+	// set Accept header
+	localVarHTTPHeaderAccept := selectHeaderAccept(localVarHTTPHeaderAccepts)
+	if localVarHTTPHeaderAccept != "" {
+		localVarHeaderParams["Accept"] = localVarHTTPHeaderAccept
+	}
+	// body params
+	localVarPostBody = r.body
+	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
+	if err != nil {
+		return localVarReturnValue, nil, err
+	}
+
+	localVarHTTPResponse, err := a.client.callAPI(req)
+	if err != nil || localVarHTTPResponse == nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	localVarBody, err := io.ReadAll(localVarHTTPResponse.Body)
+	localVarHTTPResponse.Body.Close()
+	localVarHTTPResponse.Body = io.NopCloser(bytes.NewBuffer(localVarBody))
+	if err != nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	if localVarHTTPResponse.StatusCode >= 300 {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: localVarHTTPResponse.Status,
+		}
+		if localVarHTTPResponse.StatusCode == 400 {
+			var v ImportBudgets400Response
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+			newErr.model = v
+			return localVarReturnValue, localVarHTTPResponse, newErr
+		}
+		if localVarHTTPResponse.StatusCode == 401 {
+			var v ErrorResponse
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+			newErr.model = v
+			return localVarReturnValue, localVarHTTPResponse, newErr
+		}
+		if localVarHTTPResponse.StatusCode == 403 {
+			var v ErrorResponse
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+			newErr.model = v
+			return localVarReturnValue, localVarHTTPResponse, newErr
+		}
+		if localVarHTTPResponse.StatusCode == 500 {
+			var v ErrorResponse
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+			newErr.model = v
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	err = a.client.decode(&localVarReturnValue, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+	if err != nil {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: err.Error(),
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	return localVarReturnValue, localVarHTTPResponse, nil
+}
+
+type ApiListBudgetUsageRequest struct {
+	ctx        context.Context
+	ApiService *BudgetsAPIService
+	orgName    string
+	budgetName string
+	limit      *int32
+	offset     *int32
+}
+
+func (r ApiListBudgetUsageRequest) Limit(limit int32) ApiListBudgetUsageRequest {
+	r.limit = &limit
+	return r
+}
+
+func (r ApiListBudgetUsageRequest) Offset(offset int32) ApiListBudgetUsageRequest {
+	r.offset = &offset
+	return r
+}
+
+func (r ApiListBudgetUsageRequest) Execute() (*BudgetUsageListResponse, *http.Response, error) {
+	return r.ApiService.ListBudgetUsageExecute(r)
+}
+
+/*
+ListBudgetUsage Budget usage
+
+Each allowance's spend in the budget's current period, highest spend first (FR-15). An allowance whose last report was in an earlier period has spent nothing this period.
+
+	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
+	@param orgName Organization name
+	@param budgetName Budget name
+	@return ApiListBudgetUsageRequest
+*/
+func (a *BudgetsAPIService) ListBudgetUsage(ctx context.Context, orgName string, budgetName string) ApiListBudgetUsageRequest {
+	return ApiListBudgetUsageRequest{
+		ApiService: a,
+		ctx:        ctx,
+		orgName:    orgName,
+		budgetName: budgetName,
+	}
+}
+
+// Execute executes the request
+//
+//	@return BudgetUsageListResponse
+func (a *BudgetsAPIService) ListBudgetUsageExecute(r ApiListBudgetUsageRequest) (*BudgetUsageListResponse, *http.Response, error) {
+	var (
+		localVarHTTPMethod  = http.MethodGet
+		localVarPostBody    interface{}
+		formFiles           []formFile
+		localVarReturnValue *BudgetUsageListResponse
+	)
+
+	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "BudgetsAPIService.ListBudgetUsage")
+	if err != nil {
+		return localVarReturnValue, nil, &GenericOpenAPIError{error: err.Error()}
+	}
+
+	localVarPath := localBasePath + "/orgs/{orgName}/budgets/{budgetName}/budget-usage"
+	localVarPath = strings.Replace(localVarPath, "{"+"orgName"+"}", url.PathEscape(parameterValueToString(r.orgName, "orgName")), -1)
+	localVarPath = strings.Replace(localVarPath, "{"+"budgetName"+"}", url.PathEscape(parameterValueToString(r.budgetName, "budgetName")), -1)
+
+	localVarHeaderParams := make(map[string]string)
+	localVarQueryParams := url.Values{}
+	localVarFormParams := url.Values{}
+
+	if r.limit != nil {
+		parameterAddToHeaderOrQuery(localVarQueryParams, "limit", r.limit, "")
+	}
+	if r.offset != nil {
+		parameterAddToHeaderOrQuery(localVarQueryParams, "offset", r.offset, "")
+	}
+	// to determine the Content-Type header
+	localVarHTTPContentTypes := []string{}
+
+	// set Content-Type header
+	localVarHTTPContentType := selectHeaderContentType(localVarHTTPContentTypes)
+	if localVarHTTPContentType != "" {
+		localVarHeaderParams["Content-Type"] = localVarHTTPContentType
+	}
+
+	// to determine the Accept header
+	localVarHTTPHeaderAccepts := []string{"application/json"}
+
+	// set Accept header
+	localVarHTTPHeaderAccept := selectHeaderAccept(localVarHTTPHeaderAccepts)
+	if localVarHTTPHeaderAccept != "" {
+		localVarHeaderParams["Accept"] = localVarHTTPHeaderAccept
+	}
+	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
+	if err != nil {
+		return localVarReturnValue, nil, err
+	}
+
+	localVarHTTPResponse, err := a.client.callAPI(req)
+	if err != nil || localVarHTTPResponse == nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	localVarBody, err := io.ReadAll(localVarHTTPResponse.Body)
+	localVarHTTPResponse.Body.Close()
+	localVarHTTPResponse.Body = io.NopCloser(bytes.NewBuffer(localVarBody))
+	if err != nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	if localVarHTTPResponse.StatusCode >= 300 {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: localVarHTTPResponse.Status,
+		}
+		if localVarHTTPResponse.StatusCode == 400 {
+			var v ErrorResponse
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+			newErr.model = v
+			return localVarReturnValue, localVarHTTPResponse, newErr
+		}
+		if localVarHTTPResponse.StatusCode == 401 {
+			var v ErrorResponse
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+			newErr.model = v
+			return localVarReturnValue, localVarHTTPResponse, newErr
+		}
+		if localVarHTTPResponse.StatusCode == 403 {
+			var v ErrorResponse
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+			newErr.model = v
+			return localVarReturnValue, localVarHTTPResponse, newErr
+		}
+		if localVarHTTPResponse.StatusCode == 404 {
+			var v ErrorResponse
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+			newErr.model = v
+			return localVarReturnValue, localVarHTTPResponse, newErr
+		}
+		if localVarHTTPResponse.StatusCode == 500 {
+			var v ErrorResponse
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+			newErr.model = v
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	err = a.client.decode(&localVarReturnValue, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+	if err != nil {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: err.Error(),
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	return localVarReturnValue, localVarHTTPResponse, nil
+}
+
 type ApiListBudgetsRequest struct {
 	ctx        context.Context
 	ApiService *BudgetsAPIService
 	orgName    string
+	projectId  *string
 	filter     *[]string
 	limit      *int32
 	offset     *int32
+}
+
+// Only the budgets this project owns; omitted, every budget in the organization.
+func (r ApiListBudgetsRequest) ProjectId(projectId string) ApiListBudgetsRequest {
+	r.projectId = &projectId
+	return r
 }
 
 // type:id, with type project, agent, apiKey or llmProvider: budgets whose resource, consumers or exemptions name it. Repeat for AND.
@@ -559,6 +917,9 @@ func (a *BudgetsAPIService) ListBudgetsExecute(r ApiListBudgetsRequest) (*Budget
 	localVarQueryParams := url.Values{}
 	localVarFormParams := url.Values{}
 
+	if r.projectId != nil {
+		parameterAddToHeaderOrQuery(localVarQueryParams, "projectId", r.projectId, "")
+	}
 	if r.filter != nil {
 		t := *r.filter
 		if reflect.TypeOf(t).Kind() == reflect.Slice {

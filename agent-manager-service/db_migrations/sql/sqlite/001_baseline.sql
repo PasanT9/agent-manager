@@ -383,16 +383,34 @@ CREATE TABLE budgets (
     org_id TEXT NOT NULL,
     origin TEXT NOT NULL,
     gateway_id TEXT,
+    project_id TEXT,
     configuration TEXT NOT NULL,
     created_by TEXT,
     CONSTRAINT pk_budgets PRIMARY KEY (id),
     CONSTRAINT fk_budgets_org_id_id FOREIGN KEY (org_id, id) REFERENCES artifacts (org_id, id) ON DELETE CASCADE,
     CONSTRAINT fk_budgets_org_id_gateway_id FOREIGN KEY (org_id, gateway_id) REFERENCES gateways (org_id, id),
+    CONSTRAINT fk_budgets_org_id_project_id FOREIGN KEY (org_id, project_id) REFERENCES projects (org_id, id),
     CONSTRAINT ck_budgets_1 CHECK (json_valid(configuration)),
     CONSTRAINT ck_budgets_2 CHECK (origin IN ('control_plane', 'gateway_api')),
     CONSTRAINT ck_budgets_3 CHECK ((origin = 'gateway_api') = (gateway_id IS NOT NULL))
 );
 CREATE INDEX idx_budgets_gateway_id ON budgets (gateway_id);
+CREATE INDEX idx_budgets_project_id ON budgets (project_id);
+
+CREATE TABLE budget_usage (
+    budget_id TEXT NOT NULL,
+    allowance_id TEXT NOT NULL,
+    org_id TEXT NOT NULL,
+    allowance TEXT NOT NULL,
+    period_start TIMESTAMP NOT NULL,
+    spent TEXT NOT NULL,
+    unpriced_requests INTEGER NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    CONSTRAINT pk_budget_usage PRIMARY KEY (budget_id, allowance_id),
+    CONSTRAINT fk_budget_usage_budget_id FOREIGN KEY (budget_id) REFERENCES budgets (id) ON DELETE CASCADE,
+    CONSTRAINT ck_budget_usage_1 CHECK (json_valid(allowance))
+);
+CREATE INDEX idx_budget_usage_org_id ON budget_usage (org_id);
 
 CREATE TABLE llm_proxies (
     id TEXT NOT NULL,
@@ -777,6 +795,7 @@ CREATE TABLE event_deliveries (
     project_id TEXT,
     agent_id TEXT,
     environment_id TEXT,
+    budget_id TEXT,
     status TEXT NOT NULL,
     attempts INTEGER NOT NULL,
     response_code INTEGER,

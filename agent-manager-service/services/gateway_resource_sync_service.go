@@ -19,9 +19,12 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/google/uuid"
 
 	"github.com/wso2/agent-manager/agent-manager-service/models"
 	"github.com/wso2/agent-manager/agent-manager-service/repositories"
@@ -36,6 +39,9 @@ const (
 	// BudgetErrAlreadyExists: the name is taken by another artifact: a control-plane
 	// budget, another gateway's, or another kind.
 	BudgetErrAlreadyExists = "BUDGET_ALREADY_EXISTS"
+	// GatewayResourceErrReferenceNotFound: the project-id annotation names a project the
+	// organization does not have.
+	GatewayResourceErrReferenceNotFound = "REFERENCE_NOT_FOUND"
 )
 
 // maxResourceNameLength matches the gateway's limit on metadata.name.
@@ -65,9 +71,10 @@ type GatewayResourceSyncService struct {
 func NewGatewayResourceSyncService(
 	gatewayRepo repositories.GatewayRepository,
 	budgetRepo repositories.BudgetRepository,
+	platform repositories.PlatformRepository,
 ) *GatewayResourceSyncService {
 	s := &GatewayResourceSyncService{gatewayRepo: gatewayRepo, kinds: map[string]GatewayResourceKindSyncer{}}
-	for _, k := range []GatewayResourceKindSyncer{newGatewayBudgetSyncer(budgetRepo)} {
+	for _, k := range []GatewayResourceKindSyncer{newGatewayBudgetSyncer(budgetRepo, platform)} {
 		s.kinds[k.Kind()] = k
 	}
 	return s
@@ -201,11 +208,12 @@ func sortedKinds[T any](m map[string]T) []string {
 // gatewayBudgetSyncer stores the budgets a gateway created through its own API as
 // gateway-origin budgets owned by that gateway.
 type gatewayBudgetSyncer struct {
-	repo repositories.BudgetRepository
+	repo     repositories.BudgetRepository
+	platform repositories.PlatformRepository
 }
 
-func newGatewayBudgetSyncer(repo repositories.BudgetRepository) *gatewayBudgetSyncer {
-	return &gatewayBudgetSyncer{repo: repo}
+func newGatewayBudgetSyncer(repo repositories.BudgetRepository, platform repositories.PlatformRepository) *gatewayBudgetSyncer {
+	return &gatewayBudgetSyncer{repo: repo, platform: platform}
 }
 
 func (b *gatewayBudgetSyncer) Kind() string { return models.GatewayResourceKindBudget }
@@ -213,13 +221,29 @@ func (b *gatewayBudgetSyncer) Kind() string { return models.GatewayResourceKindB
 func (b *gatewayBudgetSyncer) Save(ctx context.Context, gateway *models.Gateway, name string,
 	item models.GatewayResourceItem,
 ) (string, string, error) {
-	cfg, err := gatewayBudgetConfig(name, item.Configuration)
+	cfg, project, err := gatewayBudgetConfig(name, item.Configuration)
 	if err != nil {
 		return "", GatewayResourceErrInvalid, nil //nolint:nilerr // a bad document fails the item, not the push
 	}
+	// The project-id annotation makes it a project budget, as the artifact import reads it
+	// for project-scoped kinds (Interfaces 4.3).
+	var projectID *uuid.UUID
+	if project != "" {
+		projectID, err = budgetProjectID(ctx, b.platform, gateway.OUID, project, "")
+		var refused *BudgetError
+		if errors.As(err, &refused) {
+			return "", GatewayResourceErrReferenceNotFound, nil
+		}
+		if err != nil {
+			return "", "", err
+		}
+		if ownByProject(&cfg, project) != nil {
+			return "", GatewayResourceErrInvalid, nil //nolint:nilerr // a budget outside its project fails the item, not the push
+		}
+	}
 	gatewayID := gateway.UUID
 	budget := &models.Budget{
-		OrgID: gateway.OUID, Origin: models.BudgetOriginGateway, GatewayID: &gatewayID,
+		OrgID: gateway.OUID, Origin: models.BudgetOriginGateway, GatewayID: &gatewayID, ProjectID: projectID,
 		Configuration: cfg,
 	}
 	stored, err := b.repo.SaveForGateway(ctx, budget, name)
@@ -241,15 +265,20 @@ func (b *gatewayBudgetSyncer) Keep(ctx context.Context, gateway *models.Gateway,
 }
 
 // gatewayBudgetConfig maps a pushed Budget kind onto the stored model: its spec, with the
-// defaults the REST API fills in. A gateway budget has no display name, so its name is
-// shown (Interfaces 1.1).
-func gatewayBudgetConfig(name string, raw json.RawMessage) (models.BudgetConfig, error) {
+// defaults the REST API fills in, and the project its project-id annotation names (empty
+// for an organization budget). A gateway budget has no display name, so its name is shown
+// (Interfaces 1.1).
+func gatewayBudgetConfig(name string, raw json.RawMessage) (models.BudgetConfig, string, error) {
 	var doc struct {
+		Metadata struct {
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
 		Spec models.BudgetConfig `json:"spec"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return models.BudgetConfig{}, err
+		return models.BudgetConfig{}, "", err
 	}
+	project := strings.TrimSpace(doc.Metadata.Annotations[AnnotationProjectID])
 	cfg := doc.Spec
 	if cfg.DisplayName == "" {
 		cfg.DisplayName = name
@@ -263,9 +292,6 @@ func gatewayBudgetConfig(name string, raw json.RawMessage) (models.BudgetConfig,
 	if cfg.Resource != nil && cfg.Resource.Allocation == "" {
 		cfg.Resource.Allocation = budgetAllocationShared
 	}
-	if cfg.Environments != nil && cfg.Environments.Allocation == "" {
-		cfg.Environments.Allocation = budgetAllocationShared
-	}
 	for i := range cfg.Consumers {
 		if cfg.Consumers[i].Allocation == "" {
 			cfg.Consumers[i].Allocation = budgetAllocationShared
@@ -277,5 +303,5 @@ func gatewayBudgetConfig(name string, raw json.RawMessage) (models.BudgetConfig,
 	if cfg.Exemptions == nil {
 		cfg.Exemptions = []models.BudgetExemption{}
 	}
-	return cfg, nil
+	return cfg, project, nil
 }

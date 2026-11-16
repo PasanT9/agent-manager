@@ -20,16 +20,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"math/big"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"github.com/wso2/agent-manager/agent-manager-service/audit"
 	"github.com/wso2/agent-manager/agent-manager-service/models"
+	"github.com/wso2/agent-manager/agent-manager-service/orgctx"
 	"github.com/wso2/agent-manager/agent-manager-service/repositories"
 	"github.com/wso2/agent-manager/agent-manager-service/spec"
 	"github.com/wso2/agent-manager/agent-manager-service/utils"
@@ -55,14 +60,13 @@ const (
 	budgetTypeAPIKey      = "apiKey"
 	budgetTypeAttribute   = "attribute"
 
-	maxBudgetDisplayName  = 255
-	maxBudgetDescription  = 1023
-	maxBudgetEnvironments = 50
-	maxBudgetConsumers    = 20
-	maxBudgetExemptions   = 100
-	maxBudgetThresholds   = 10
-	maxBudgetThreshold    = 1000
-	maxBudgetChannels     = 20
+	maxBudgetDisplayName = 255
+	maxBudgetDescription = 1023
+	maxBudgetConsumers   = 20
+	maxBudgetExemptions  = 100
+	maxBudgetThresholds  = 10
+	maxBudgetThreshold   = 1000
+	maxBudgetChannels    = 20
 )
 
 // gatewayConsumerTypes are the consumer and exemption types gateways can identify: token
@@ -107,13 +111,21 @@ func budgetReferenceNotFound(field, format string, args ...any) error {
 type BudgetService interface {
 	// Create stores a new, active budget for the organization. createdBy is the caller.
 	Create(ctx context.Context, ouID, createdBy string, req spec.BudgetRequest) (*spec.BudgetResponse, error)
+	// Import creates the budgets of a CSV file, one per row, all or none (Interfaces 2.5).
+	// The result lists each row's errors; applied says whether they were saved. A file that
+	// cannot be read is a *BudgetError with code INVALID_CSV.
+	Import(ctx context.Context, ouID, createdBy string, file io.Reader, dryRun bool) (*spec.BudgetImportResult, error)
 	// Get returns the organization's budget named name.
 	Get(ctx context.Context, ouID, name string) (*spec.BudgetResponse, error)
-	// List returns a page of the organization's budgets matching every filter (type:id).
-	List(ctx context.Context, ouID string, filters []string, limit, offset int32) (*spec.BudgetListResponse, error)
+	// List returns a page of the organization's budgets matching every filter (type:id),
+	// only those the project owns when projectID is set.
+	List(ctx context.Context, ouID, projectID string, filters []string, limit, offset int32) (*spec.BudgetListResponse, error)
 	// Update replaces a budget's editable fields. A gateway's budget changes only in the
 	// fields gateways never get (displayName, description, warnings).
 	Update(ctx context.Context, ouID, name string, req spec.BudgetUpdateRequest) (*spec.BudgetResponse, error)
+	// Usage returns a page of the budget's allowances with their spend this period,
+	// highest first (GET /budgets/{budgetName}/budget-usage).
+	Usage(ctx context.Context, ouID, name string, limit, offset int32) (*spec.BudgetUsageListResponse, error)
 	// Delete deletes a control-plane budget.
 	Delete(ctx context.Context, ouID, name string) error
 }
@@ -124,18 +136,27 @@ type budgetService struct {
 	platform     repositories.PlatformRepository
 	eventRepo    repositories.EventRepository
 	gateways     BudgetGatewaySender
+	warner       BudgetWarner
+	usageRepo    repositories.BudgetUsageRepository
+	now          func() time.Time
 }
 
 // NewBudgetService creates a BudgetService. gateways sends budgets to the gateways that
-// enforce them.
+// enforce them; warner checks an edited budget's thresholds against its spend; usageRepo
+// holds the spend the gateways report.
 func NewBudgetService(
 	budgetRepo repositories.BudgetRepository,
 	artifactRepo repositories.ArtifactRepository,
 	platform repositories.PlatformRepository,
 	eventRepo repositories.EventRepository,
 	gateways BudgetGatewaySender,
+	warner BudgetWarner,
+	usageRepo repositories.BudgetUsageRepository,
 ) BudgetService {
-	return &budgetService{budgetRepo: budgetRepo, artifactRepo: artifactRepo, platform: platform, eventRepo: eventRepo, gateways: gateways}
+	return &budgetService{
+		budgetRepo: budgetRepo, artifactRepo: artifactRepo, platform: platform, eventRepo: eventRepo,
+		gateways: gateways, warner: warner, usageRepo: usageRepo, now: time.Now,
+	}
 }
 
 // BudgetKind is the Budget kind (Interfaces 3): what gateways receive and what pipelines
@@ -153,8 +174,7 @@ type BudgetKindMetadata struct {
 }
 
 // BuildBudgetKind wraps a stored budget in the Budget kind. For a gateway it leaves out
-// what gateways never get: displayName, description and warnings (Interfaces 3), and the
-// environments, which only choose the gateways.
+// what gateways never get: displayName, description and warnings (Interfaces 3).
 func BuildBudgetKind(name string, cfg models.BudgetConfig, forGateway bool) BudgetKind {
 	if forGateway {
 		// A gateway names an agent with its project (agent names are unique per project);
@@ -174,8 +194,7 @@ func BuildBudgetKind(name string, cfg models.BudgetConfig, forGateway bool) Budg
 			consumers[i] = c
 		}
 		cfg.Consumers = consumers
-		// The gateway kind has no environments: they only choose the gateways it goes to.
-		cfg.DisplayName, cfg.Description, cfg.Warnings, cfg.Environments = "", nil, nil, nil
+		cfg.DisplayName, cfg.Description, cfg.Warnings = "", nil, nil
 		if cfg.Resource == nil {
 			// No resource covers every provider, shared; the gateway kind names it.
 			cfg.Resource = &models.BudgetResource{Type: budgetTypeLLMProvider, Allocation: budgetAllocationShared}
@@ -188,27 +207,137 @@ func (s *budgetService) Create(ctx context.Context, ouID, createdBy string, req 
 	if ouID == "" {
 		return nil, utils.ErrOrganizationNotFound
 	}
-	cfg, err := normalizeBudget(req)
+	budget, err := s.prepareBudget(ctx, ouID, createdBy, req)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.checkReferences(ctx, ouID, cfg); err != nil {
-		return nil, err
-	}
-	budget := &models.Budget{
-		OrgID: ouID, Origin: models.BudgetOriginControlPlane, Configuration: *cfg, CreatedBy: createdBy,
-	}
 	if err := s.budgetRepo.CreateForControlPlane(ctx, budget, req.Name); err != nil {
 		if errors.Is(err, utils.ErrBudgetAlreadyExists) {
-			return nil, &BudgetError{
-				Code: utils.ErrCodeBudgetAlreadyExists, Field: "name",
-				Message: fmt.Sprintf("A budget or other resource named %s already exists.", req.Name),
-			}
+			return nil, budgetNameTaken(req.Name)
 		}
 		return nil, err
 	}
 	s.gateways.SendBudget(ctx, budget, true)
-	return BudgetResponse(budget), nil
+	return s.response(ctx, ouID, budget)
+}
+
+// prepareBudget checks a new budget (Interfaces 2.2), its owner and every name it refers
+// to, and returns it ready to store; Create and Import share it.
+func (s *budgetService) prepareBudget(ctx context.Context, ouID, createdBy string, req spec.BudgetRequest) (*models.Budget, error) {
+	cfg, err := normalizeBudget(req)
+	if err != nil {
+		return nil, err
+	}
+	orgName, err := s.checkOrg(ctx, ouID, req.OrgId)
+	if err != nil {
+		return nil, err
+	}
+	var projectID *uuid.UUID
+	projectName := ""
+	if req.ProjectId != nil {
+		projectName = strings.TrimSpace(*req.ProjectId)
+		if projectID, err = s.projectID(ctx, ouID, projectName, "projectId"); err != nil {
+			return nil, err
+		}
+		if err := ownByProject(cfg, projectName); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.checkReferences(ctx, ouID, cfg); err != nil {
+		return nil, err
+	}
+	return &models.Budget{
+		OrgID: ouID, Origin: models.BudgetOriginControlPlane, ProjectID: projectID, Configuration: *cfg, CreatedBy: createdBy,
+		OrgName: orgName, ProjectName: projectName,
+	}, nil
+}
+
+func budgetNameTaken(name string) error {
+	return &BudgetError{
+		Code: utils.ErrCodeBudgetAlreadyExists, Field: "name",
+		Message: fmt.Sprintf("A budget or other resource named %s already exists.", name),
+	}
+}
+
+// checkOrg checks orgId names the caller's organization, the owner of every budget it
+// creates, and returns the organization's handle.
+func (s *budgetService) checkOrg(ctx context.Context, ouID, orgID string) (string, error) {
+	handle, err := s.orgHandle(ctx, ouID)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(orgID) != handle {
+		return "", invalidBudget("orgId", "orgId must be this organization, %s.", handle)
+	}
+	return handle, nil
+}
+
+// orgHandle returns the organization's handle: the token's, or the stored one.
+func (s *budgetService) orgHandle(ctx context.Context, ouID string) (string, error) {
+	if org, ok := orgctx.GetResolvedOrg(ctx); ok && org.OUID == ouID {
+		return org.OuHandle, nil
+	}
+	org, err := s.platform.GetOrganization(ctx, ouID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get organization: %w", err)
+	}
+	return org.Name, nil
+}
+
+// projectID returns the ID of the organization's project with that name.
+func (s *budgetService) projectID(ctx context.Context, ouID, name, field string) (*uuid.UUID, error) {
+	return budgetProjectID(ctx, s.platform, ouID, name, field)
+}
+
+// budgetProjectID returns the ID of the organization's project with that name, or
+// REFERENCE_NOT_FOUND on field when there is none.
+func budgetProjectID(ctx context.Context, platform repositories.PlatformRepository, ouID, name, field string) (*uuid.UUID, error) {
+	p, err := platform.GetProject(ctx, ouID, name)
+	if err != nil {
+		if errors.Is(err, utils.ErrProjectNotFound) {
+			return nil, budgetReferenceNotFound(field, "Project %s does not exist.", name)
+		}
+		return nil, fmt.Errorf("failed to get project %q: %w", name, err)
+	}
+	id, err := uuid.Parse(p.UUID)
+	if err != nil {
+		return nil, fmt.Errorf("project %q has an invalid ID: %w", name, err)
+	}
+	return &id, nil
+}
+
+// ownByProject makes a budget its project's own (Interfaces 2.2): it counts only that
+// project's traffic, so its project consumer is implied and added when not given, and it
+// exempts only agents of that project.
+func ownByProject(cfg *models.BudgetConfig, project string) error {
+	implied := false
+	for i, c := range cfg.Consumers {
+		if c.Type != budgetTypeProject {
+			continue
+		}
+		if c.Allocation != budgetAllocationShared || c.ID == nil || *c.ID != project {
+			return invalidBudget(fmt.Sprintf("consumers[%d]", i),
+				"A budget of project %s counts only that project: its project consumer is implied.", project)
+		}
+		implied = true
+	}
+	for i, e := range cfg.Exemptions {
+		field := fmt.Sprintf("exemptions[%d]", i)
+		if e.Type == budgetTypeProject {
+			return invalidBudget(field+".type", "A budget of project %s cannot exempt a project.", project)
+		}
+		if e.Type == budgetTypeAgent && (e.Project == nil || *e.Project != project) {
+			return invalidBudget(field+".project", "A budget of project %s can exempt only its agents.", project)
+		}
+	}
+	if !implied {
+		if len(cfg.Consumers) >= maxBudgetConsumers {
+			return invalidBudget("consumers", "consumers takes at most %d entries, including the implied project.", maxBudgetConsumers)
+		}
+		id := project
+		cfg.Consumers = append(cfg.Consumers, models.BudgetConsumer{Type: budgetTypeProject, Allocation: budgetAllocationShared, ID: &id})
+	}
+	return nil
 }
 
 func budgetNotFound(name string) error {
@@ -247,10 +376,10 @@ func (s *budgetService) Get(ctx context.Context, ouID, name string) (*spec.Budge
 	if err != nil {
 		return nil, err
 	}
-	return BudgetResponse(b), nil
+	return s.response(ctx, ouID, b)
 }
 
-func (s *budgetService) List(ctx context.Context, ouID string, filters []string, limit, offset int32) (*spec.BudgetListResponse, error) {
+func (s *budgetService) List(ctx context.Context, ouID, projectID string, filters []string, limit, offset int32) (*spec.BudgetListResponse, error) {
 	if ouID == "" {
 		return nil, utils.ErrOrganizationNotFound
 	}
@@ -273,15 +402,144 @@ func (s *budgetService) List(ctx context.Context, ouID string, filters []string,
 	if err != nil {
 		return nil, err
 	}
-	matched := make([]spec.BudgetResponse, 0, len(all))
+	matched := make([]*models.Budget, 0, len(all))
 	for i := range all {
+		if projectID != "" && all[i].ProjectName != projectID {
+			continue
+		}
 		if budgetMatches(&all[i].Configuration, matchers) {
-			matched = append(matched, *BudgetResponse(&all[i]))
+			matched = append(matched, &all[i])
 		}
 	}
 	total := int32(len(matched))
 	start, end := min(offset, total), min(offset+limit, total)
-	return spec.NewBudgetListResponse(matched[start:end], total, limit, offset), nil
+	page, err := s.responses(ctx, ouID, matched[start:end])
+	if err != nil {
+		return nil, err
+	}
+	return spec.NewBudgetListResponse(page, total, limit, offset), nil
+}
+
+// response is a budget as the API returns it, with its spend this period.
+func (s *budgetService) response(ctx context.Context, ouID string, b *models.Budget) (*spec.BudgetResponse, error) {
+	resps, err := s.responses(ctx, ouID, []*models.Budget{b})
+	if err != nil {
+		return nil, err
+	}
+	return &resps[0], nil
+}
+
+// responses are budgets as the API returns them, each with its spend this period
+// (currentPeriod), read in one query.
+func (s *budgetService) responses(ctx context.Context, ouID string, budgets []*models.Budget) ([]spec.BudgetResponse, error) {
+	out := make([]spec.BudgetResponse, len(budgets))
+	ids := make([]uuid.UUID, len(budgets))
+	for i, b := range budgets {
+		out[i] = *BudgetResponse(b)
+		ids[i] = b.ID
+	}
+	var rows []models.BudgetUsage
+	if s.usageRepo != nil && len(ids) > 0 {
+		var err error
+		if rows, err = s.usageRepo.ForBudgets(ctx, ouID, ids); err != nil {
+			return nil, err
+		}
+	}
+	byBudget := map[uuid.UUID][]models.BudgetUsage{}
+	for _, r := range rows {
+		byBudget[r.BudgetID] = append(byBudget[r.BudgetID], r)
+	}
+	now := s.now()
+	for i, b := range budgets {
+		start := budgetPeriodStart(b.Configuration.Limit.Period, now)
+		spent, unpriced := new(big.Rat), int64(0)
+		for _, r := range byBudget[b.ID] {
+			rowSpent, rowUnpriced := spendIn(r, start)
+			spent.Add(spent, rowSpent)
+			unpriced += rowUnpriced
+		}
+		current := spec.NewBudgetCurrentPeriod(start.Format(time.DateOnly), spent.FloatString(2), int32(min(unpriced, math.MaxInt32)))
+		out[i].CurrentPeriod = current
+	}
+	return out, nil
+}
+
+// budgetPeriodStart is the start of the budget period that holds now: the UTC day, the
+// week from Monday, or the month from the 1st (Interfaces 2.2).
+func budgetPeriodStart(period string, now time.Time) time.Time {
+	now = now.UTC()
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	switch period {
+	case "day":
+		return day
+	case "week":
+		return day.AddDate(0, 0, -((int(day.Weekday()) + 6) % 7))
+	default:
+		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	}
+}
+
+// spendIn is an allowance's spend in the period starting at start: its stored totals, or
+// nothing when they belong to an earlier period (Interfaces 1.2).
+func spendIn(r models.BudgetUsage, start time.Time) (*big.Rat, int64) {
+	if !r.PeriodStart.UTC().Equal(start) {
+		return new(big.Rat), 0
+	}
+	spent, ok := new(big.Rat).SetString(r.Spent)
+	if !ok {
+		spent = new(big.Rat)
+	}
+	return spent, r.UnpricedRequests
+}
+
+func (s *budgetService) Usage(ctx context.Context, ouID, name string, limit, offset int32) (*spec.BudgetUsageListResponse, error) {
+	if limit == 0 {
+		limit = budgetDefaultPageSize
+	}
+	if limit < 1 || limit > budgetMaxPageSize {
+		return nil, invalidBudget("limit", "limit must be from 1 to %d.", budgetMaxPageSize)
+	}
+	if offset < 0 {
+		return nil, invalidBudget("offset", "offset must not be negative.")
+	}
+	b, err := s.getBudget(ctx, ouID, name)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.usageRepo.ForBudget(ctx, b.ID)
+	if err != nil {
+		return nil, err
+	}
+	start := budgetPeriodStart(b.Configuration.Limit.Period, s.now())
+	type usage struct {
+		row   models.BudgetUsage
+		spent *big.Rat
+		label string
+	}
+	all := make([]usage, 0, len(rows))
+	for _, r := range rows {
+		spent, unpriced := spendIn(r, start)
+		r.UnpricedRequests = unpriced
+		all = append(all, usage{row: r, spent: spent, label: allowanceLabel(r.Allowance)})
+	}
+	// Highest spend first; equal spend by allowance, so pages are stable.
+	sort.SliceStable(all, func(i, j int) bool {
+		if c := all[i].spent.Cmp(all[j].spent); c != 0 {
+			return c > 0
+		}
+		return all[i].label < all[j].label
+	})
+	total := int32(len(all))
+	from, to := min(offset, total), min(offset+limit, total)
+	page := make([]spec.BudgetAllowanceUsage, 0, to-from)
+	for _, u := range all[from:to] {
+		allowance := u.row.Allowance
+		if allowance == nil {
+			allowance = map[string]string{}
+		}
+		page = append(page, *spec.NewBudgetAllowanceUsage(allowance, u.spent.FloatString(2), u.row.UnpricedRequests))
+	}
+	return spec.NewBudgetUsageListResponse(start.Format(time.DateOnly), page, total, limit, offset), nil
 }
 
 func (s *budgetService) Update(ctx context.Context, ouID, name string, req spec.BudgetUpdateRequest) (*spec.BudgetResponse, error) {
@@ -290,9 +548,9 @@ func (s *budgetService) Update(ctx context.Context, ouID, name string, req spec.
 		return nil, err
 	}
 	cfg := b.Configuration
-	displayName := strings.TrimSpace(req.DisplayName)
-	if displayName == "" || len([]rune(displayName)) > maxBudgetDisplayName {
-		return nil, invalidBudget("displayName", "displayName must be 1-%d characters.", maxBudgetDisplayName)
+	displayName, err := budgetDisplayName(req.DisplayName, name)
+	if err != nil {
+		return nil, err
 	}
 	if req.Description != nil && len([]rune(*req.Description)) > maxBudgetDescription {
 		return nil, invalidBudget("description", "description must be at most %d characters.", maxBudgetDescription)
@@ -331,6 +589,11 @@ func (s *budgetService) Update(ctx context.Context, ouID, name string, req spec.
 	}
 	cfg.DisplayName, cfg.Description, cfg.Status = displayName, req.Description, status
 	cfg.Limit, cfg.Exemptions, cfg.Warnings = limit, exemptions, warnings
+	if b.ProjectName != "" {
+		if err := ownByProject(&cfg, b.ProjectName); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.checkEditableReferences(ctx, ouID, &cfg); err != nil {
 		return nil, err
 	}
@@ -346,7 +609,11 @@ func (s *budgetService) Update(ctx context.Context, ouID, name string, req spec.
 	if sendToGateways {
 		s.gateways.SendBudget(ctx, b, false)
 	}
-	return BudgetResponse(b), nil
+	if s.warner != nil {
+		// A lower limit or a new threshold may already be crossed.
+		s.warner.CheckBudget(ctx, b)
+	}
+	return s.response(ctx, ouID, b)
 }
 
 // gatewayFieldsUnchanged reports whether an update leaves a budget's enforced fields
@@ -434,15 +701,28 @@ func budgetNames(c *models.BudgetConfig, f budgetFilter) bool {
 	return false
 }
 
+// budgetDisplayName is the display name given, or the budget's name when none is
+// (Interfaces 2.2).
+func budgetDisplayName(in *string, name string) (string, error) {
+	if in == nil || strings.TrimSpace(*in) == "" {
+		return name, nil
+	}
+	displayName := strings.TrimSpace(*in)
+	if len([]rune(displayName)) > maxBudgetDisplayName {
+		return "", invalidBudget("displayName", "displayName must be at most %d characters.", maxBudgetDisplayName)
+	}
+	return displayName, nil
+}
+
 // normalizeBudget checks the payload (Interfaces 2.2) and returns the budget's settings
 // with defaults filled in.
 func normalizeBudget(req spec.BudgetRequest) (*models.BudgetConfig, error) {
 	if !budgetNamePattern.MatchString(req.Name) {
 		return nil, invalidBudget("name", "name must be 1-63 lowercase letters, digits or '-', starting and ending with a letter or digit.")
 	}
-	displayName := strings.TrimSpace(req.DisplayName)
-	if displayName == "" || len([]rune(displayName)) > maxBudgetDisplayName {
-		return nil, invalidBudget("displayName", "displayName must be 1-%d characters.", maxBudgetDisplayName)
+	displayName, err := budgetDisplayName(req.DisplayName, req.Name)
+	if err != nil {
+		return nil, err
 	}
 	if req.Description != nil && len([]rune(*req.Description)) > maxBudgetDescription {
 		return nil, invalidBudget("description", "description must be at most %d characters.", maxBudgetDescription)
@@ -452,10 +732,6 @@ func normalizeBudget(req spec.BudgetRequest) (*models.BudgetConfig, error) {
 		return nil, err
 	}
 	resource, err := normalizeBudgetResource(req.Resource)
-	if err != nil {
-		return nil, err
-	}
-	environments, err := normalizeBudgetEnvironments(req.Environments)
 	if err != nil {
 		return nil, err
 	}
@@ -473,7 +749,7 @@ func normalizeBudget(req spec.BudgetRequest) (*models.BudgetConfig, error) {
 	}
 	return &models.BudgetConfig{
 		DisplayName: displayName, Description: req.Description, Status: budgetStatusActive,
-		Limit: limit, Resource: resource, Environments: environments,
+		Limit: limit, Resource: resource,
 		Consumers: consumers, Exemptions: exemptions, Warnings: warnings,
 	}, nil
 }
@@ -535,27 +811,6 @@ func normalizeBudgetResource(in *spec.BudgetResource) (*models.BudgetResource, e
 		return nil, invalidBudget("resource.id", "resource.id applies only to a shared resource.")
 	}
 	return &models.BudgetResource{Type: in.Type, Allocation: allocation, ID: in.Id}, nil
-}
-
-func normalizeBudgetEnvironments(in *spec.BudgetEnvironments) (*models.BudgetEnvironments, error) {
-	if in == nil {
-		return nil, nil //nolint:nilnil // no environments: all of them, including new ones
-	}
-	allocation, err := normalizeAllocation("environments.allocation", in.Allocation)
-	if err != nil {
-		return nil, err
-	}
-	if len(in.Ids) > maxBudgetEnvironments {
-		return nil, invalidBudget("environments.ids", "environments.ids takes at most %d environments.", maxBudgetEnvironments)
-	}
-	seen := map[string]bool{}
-	for i, id := range in.Ids {
-		if id == "" || seen[id] {
-			return nil, invalidBudget(fmt.Sprintf("environments.ids[%d]", i), "Environment names must be non-empty and unique.")
-		}
-		seen[id] = true
-	}
-	return &models.BudgetEnvironments{Allocation: allocation, IDs: in.Ids}, nil
 }
 
 func normalizeBudgetConsumers(in []spec.BudgetConsumer) ([]models.BudgetConsumer, error) {
@@ -688,17 +943,6 @@ func (s *budgetService) checkReferences(ctx context.Context, ouID string, b *mod
 			return err
 		}
 	}
-	if b.Environments != nil {
-		for i, name := range b.Environments.IDs {
-			env, err := s.platform.GetEnvironment(ctx, ouID, name)
-			if err != nil && !errors.Is(err, utils.ErrEnvironmentNotFound) {
-				return fmt.Errorf("failed to get environment %q: %w", name, err)
-			}
-			if err != nil || env.Name != name {
-				return budgetReferenceNotFound(fmt.Sprintf("environments.ids[%d]", i), "Environment %s does not exist.", name)
-			}
-		}
-	}
 	project := budgetProject(b)
 	for i, c := range b.Consumers {
 		if c.ID == nil {
@@ -798,16 +1042,7 @@ func (s *budgetService) checkChannels(ctx context.Context, ouID, project string,
 			}
 			return fmt.Errorf("failed to get notification channel %s: %w", raw, err)
 		}
-		if destination.OUID != ouID {
-			return unavailable
-		}
-		switch destination.Availability {
-		case models.DestinationAvailableAll, models.DestinationAvailableOrg:
-		case models.DestinationAvailableProjects:
-			if project == "" || !containsString(destination.Projects, project) {
-				return unavailable
-			}
-		default:
+		if destination.OUID != ouID || !destination.AvailableToBudget(project) {
 			return unavailable
 		}
 	}
@@ -828,16 +1063,16 @@ func BudgetResponse(b *models.Budget) *spec.BudgetResponse {
 	}
 	currency := c.Limit.Currency
 	limit := spec.BudgetLimit{Amount: c.Limit.Amount, Currency: &currency, Period: c.Limit.Period, Action: c.Limit.Action, BlockAt: c.Limit.BlockAt}
-	resp := spec.NewBudgetResponse(b.Name, c.DisplayName, c.Status, string(b.Origin), limit, consumers, exemptions,
+	resp := spec.NewBudgetResponse(b.Name, b.OrgName, c.DisplayName, c.Status, string(b.Origin), limit, consumers, exemptions,
 		b.CreatedAt, b.UpdatedAt)
+	if b.ProjectName != "" {
+		project := b.ProjectName
+		resp.ProjectId = &project
+	}
 	resp.Description = c.Description
 	if c.Resource != nil {
 		allocation := c.Resource.Allocation
 		resp.Resource = &spec.BudgetResource{Type: c.Resource.Type, Allocation: &allocation, Id: c.Resource.ID}
-	}
-	if c.Environments != nil {
-		allocation := c.Environments.Allocation
-		resp.Environments = &spec.BudgetEnvironments{Allocation: &allocation, Ids: c.Environments.IDs}
 	}
 	if c.Warnings != nil {
 		resp.Warnings = &spec.BudgetWarnings{Thresholds: c.Warnings.Thresholds, ChannelIds: c.Warnings.ChannelIDs}

@@ -102,6 +102,20 @@ func (d *EventDestination) UsableBy(scope, project string) bool {
 	}
 }
 
+// AvailableToBudget reports whether a budget may send warnings to the destination:
+// org-wide destinations always, a projects destination only when it lists the budget's
+// project (the project its project consumer names).
+func (d *EventDestination) AvailableToBudget(project string) bool {
+	switch d.Availability {
+	case DestinationAvailableAll, DestinationAvailableOrg:
+		return true
+	case DestinationAvailableProjects:
+		return project != "" && slices.Contains(d.Projects, project)
+	default:
+		return false
+	}
+}
+
 // EventSubscription sends the events it selects to a destination. Its scope
 // decides which events can reach it: an org subscription gets the events of
 // the whole org, a project subscription those of its project and its agents,
@@ -136,6 +150,10 @@ func (EventSubscription) TableName() string { return "event_subscriptions" }
 // subscriptions may match the same event and send it to the same
 // destination; it is delivered once, and SubscriptionIDs lists them all.
 type EventDelivery struct {
+	// BudgetID is set on a budget warning: the dispatcher checks the budget still names
+	// the destination before each attempt.
+	BudgetID *uuid.UUID `gorm:"column:budget_id" json:"-"`
+
 	// MonitorAlertID, SourceEventID and Payload carried monitor alerts, which Lite does not run.
 	MonitorAlertID  *uuid.UUID      `gorm:"-" json:"-"`
 	SourceEventID   string          `gorm:"-" json:"-"`

@@ -17,8 +17,11 @@
 package controllers
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"mime"
 	"net/http"
 	"strconv"
 
@@ -36,8 +39,10 @@ const maxBudgetRequestBytes = 1 << 20
 // BudgetController serves the budgets API (/orgs/{orgName}/budgets).
 type BudgetController interface {
 	CreateBudget(w http.ResponseWriter, r *http.Request)
+	ImportBudgets(w http.ResponseWriter, r *http.Request)
 	ListBudgets(w http.ResponseWriter, r *http.Request)
 	GetBudget(w http.ResponseWriter, r *http.Request)
+	GetBudgetUsage(w http.ResponseWriter, r *http.Request)
 	UpdateBudget(w http.ResponseWriter, r *http.Request)
 	DeleteBudget(w http.ResponseWriter, r *http.Request)
 }
@@ -75,6 +80,44 @@ func (c *budgetController) CreateBudget(w http.ResponseWriter, r *http.Request) 
 	utils.WriteSuccessResponse(w, http.StatusCreated, resp)
 }
 
+// ImportBudgets handles POST /orgs/{orgName}/budgets/import: a CSV file, one budget per
+// row, saved all or none (Interfaces 2.5). 200 when every row passed, 400 with the same
+// result when a row failed, 400 INVALID_CSV when the file cannot be read.
+func (c *budgetController) ImportBudgets(w http.ResponseWriter, r *http.Request) {
+	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mediaType != "text/csv" {
+		utils.WriteErrorResponseWithReason(w, http.StatusBadRequest, "Send the file as text/csv.", "", utils.ErrCodeInvalidCSV)
+		return
+	}
+	dryRun := false
+	if raw := r.URL.Query().Get("dryRun"); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			utils.WriteErrorResponseWithReason(w, http.StatusBadRequest, "dryRun must be true or false.", err.Error(), utils.ErrCodeValidation)
+			return
+		}
+		dryRun = v
+	}
+	file, err := io.ReadAll(http.MaxBytesReader(w, r.Body, services.MaxBudgetImportBytes))
+	if err != nil {
+		utils.WriteErrorResponseWithReason(w, http.StatusBadRequest, "The file must be at most 1 MB.", err.Error(), utils.ErrCodeInvalidCSV)
+		return
+	}
+	createdBy := ""
+	if claims := jwtassertion.GetTokenClaims(r.Context()); claims != nil {
+		createdBy = claims.Sub
+	}
+	result, err := c.budgets.Import(r.Context(), middleware.OUIDFromRequest(r), createdBy, bytes.NewReader(file), dryRun)
+	if err != nil {
+		writeBudgetError(w, r, err, "Failed to import budgets")
+		return
+	}
+	status := http.StatusOK
+	if result.Summary.Error > 0 {
+		status = http.StatusBadRequest
+	}
+	utils.WriteSuccessResponse(w, status, result)
+}
+
 // ListBudgets handles GET /orgs/{orgName}/budgets.
 func (c *budgetController) ListBudgets(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
@@ -86,7 +129,7 @@ func (c *budgetController) ListBudgets(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	resp, err := c.budgets.List(r.Context(), middleware.OUIDFromRequest(r), query["filter"], limit, offset)
+	resp, err := c.budgets.List(r.Context(), middleware.OUIDFromRequest(r), query.Get("projectId"), query["filter"], limit, offset)
 	if err != nil {
 		writeBudgetError(w, r, err, "Failed to list budgets")
 		return
@@ -112,6 +155,26 @@ func (c *budgetController) GetBudget(w http.ResponseWriter, r *http.Request) {
 	resp, err := c.budgets.Get(r.Context(), middleware.OUIDFromRequest(r), r.PathValue(PathParamBudgetName))
 	if err != nil {
 		writeBudgetError(w, r, err, "Failed to get budget")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, resp)
+}
+
+// GetBudgetUsage handles GET /orgs/{orgName}/budgets/{budgetName}/budget-usage: each
+// allowance's spend this period, highest first.
+func (c *budgetController) GetBudgetUsage(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	limit, ok := budgetQueryInt(w, query.Get("limit"), "limit")
+	if !ok {
+		return
+	}
+	offset, ok := budgetQueryInt(w, query.Get("offset"), "offset")
+	if !ok {
+		return
+	}
+	resp, err := c.budgets.Usage(r.Context(), middleware.OUIDFromRequest(r), r.PathValue(PathParamBudgetName), limit, offset)
+	if err != nil {
+		writeBudgetError(w, r, err, "Failed to read budget usage")
 		return
 	}
 	utils.WriteSuccessResponse(w, http.StatusOK, resp)

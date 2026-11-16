@@ -18,7 +18,6 @@ package services
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -58,13 +57,11 @@ type BudgetGatewaySender interface {
 	SendBudgetDeleted(ctx context.Context, b *models.Budget)
 }
 
-// BudgetGateways decides which gateways a control-plane budget goes to and sends it
-// there: the egress gateways of the environments it covers, or of every environment when
-// it names none. Gateways' own budgets are never sent back to them.
+// BudgetGateways sends a control-plane budget to the gateways that enforce it: every
+// egress gateway of its organization. Gateways' own budgets are never sent back to them.
 type BudgetGateways struct {
 	events      *GatewayEventsService
 	gatewayRepo repositories.GatewayRepository
-	platform    repositories.PlatformRepository
 	budgetRepo  repositories.BudgetRepository
 }
 
@@ -72,10 +69,9 @@ type BudgetGateways struct {
 func NewBudgetGateways(
 	events *GatewayEventsService,
 	gatewayRepo repositories.GatewayRepository,
-	platform repositories.PlatformRepository,
 	budgetRepo repositories.BudgetRepository,
 ) *BudgetGateways {
-	return &BudgetGateways{events: events, gatewayRepo: gatewayRepo, platform: platform, budgetRepo: budgetRepo}
+	return &BudgetGateways{events: events, gatewayRepo: gatewayRepo, budgetRepo: budgetRepo}
 }
 
 // gatewayPayload is the budget as gateways get it.
@@ -104,7 +100,7 @@ func (g *BudgetGateways) send(ctx context.Context, b *models.Budget, eventType, 
 	if b.Origin != models.BudgetOriginControlPlane {
 		return
 	}
-	gateways, err := g.targets(ctx, b.OrgID, b.Configuration.Environments)
+	gateways, err := g.targets(ctx, b.OrgID)
 	if err != nil {
 		slog.Error("Failed to find the gateways for a budget; they get it when they next connect",
 			"budget", b.Name, "event", eventType, "error", err)
@@ -119,53 +115,19 @@ func (g *BudgetGateways) send(ctx context.Context, b *models.Budget, eventType, 
 	}
 }
 
-// targets returns the IDs of the organization's egress gateways in the covered
-// environments: all of them when envs names none.
-func (g *BudgetGateways) targets(ctx context.Context, ouID string, envs *models.BudgetEnvironments) ([]string, error) {
-	filters := []repositories.GatewayFilterOptions{{OrganizationID: ouID, FunctionalityTypeIn: models.EgressGatewayRoles}}
-	if envs != nil && len(envs.IDs) > 0 {
-		filters = filters[:0]
-		envIDs, err := g.environmentIDs(ctx, ouID, envs.IDs)
-		if err != nil {
-			return nil, err
-		}
-		for _, envID := range envIDs {
-			filters = append(filters, repositories.GatewayFilterOptions{
-				OrganizationID: ouID, FunctionalityTypeIn: models.EgressGatewayRoles, EnvironmentID: &envID,
-			})
-		}
+// targets returns the IDs of the organization's egress gateways.
+func (g *BudgetGateways) targets(ctx context.Context, ouID string) ([]string, error) {
+	gateways, err := g.gatewayRepo.ListWithFiltersCtx(ctx, repositories.GatewayFilterOptions{
+		OrganizationID: ouID, FunctionalityTypeIn: models.EgressGatewayRoles,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list gateways: %w", err)
 	}
-	var out []string
-	for _, f := range filters {
-		gateways, err := g.gatewayRepo.ListWithFiltersCtx(ctx, f)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list gateways: %w", err)
-		}
-		for _, gw := range gateways {
-			if id := gw.UUID.String(); !slices.Contains(out, id) {
-				out = append(out, id)
-			}
-		}
+	out := make([]string, 0, len(gateways))
+	for _, gw := range gateways {
+		out = append(out, gw.UUID.String())
 	}
 	return out, nil
-}
-
-// environmentIDs resolves environment names to IDs; a name that no longer exists is skipped.
-func (g *BudgetGateways) environmentIDs(ctx context.Context, ouID string, names []string) ([]string, error) {
-	ids := make([]string, 0, len(names))
-	for _, name := range names {
-		env, err := g.platform.GetEnvironment(ctx, ouID, name)
-		if errors.Is(err, utils.ErrEnvironmentNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to get environment %q: %w", name, err)
-		}
-		if env.Name == name && !slices.Contains(ids, env.UUID) {
-			ids = append(ids, env.UUID)
-		}
-	}
-	return ids, nil
 }
 
 // ForGatewayID is ForGateway for the gateway with that ID in the organization.
@@ -187,47 +149,15 @@ func (g *BudgetGateways) ForGateway(ctx context.Context, ouID string, gateway *m
 	if !slices.Contains(models.EgressGatewayRoles, gateway.GatewayFunctionalityType) {
 		return out, nil
 	}
-	mappings, err := g.gatewayRepo.GetEnvironmentMappingsByGatewayID(gateway.UUID.String())
-	if err != nil {
-		return nil, fmt.Errorf("failed to get the gateway's environments: %w", err)
-	}
-	gatewayEnvs := make([]string, 0, len(mappings))
-	for _, m := range mappings {
-		gatewayEnvs = append(gatewayEnvs, m.EnvironmentUUID.String())
-	}
 	budgets, err := g.budgetRepo.List(ctx, ouID)
 	if err != nil {
 		return nil, err
 	}
 	for i := range budgets {
 		b := &budgets[i]
-		if b.Origin != models.BudgetOriginControlPlane {
-			continue
-		}
-		covered, err := g.covers(ctx, ouID, b.Configuration.Environments, gatewayEnvs)
-		if err != nil {
-			return nil, err
-		}
-		if covered {
+		if b.Origin == models.BudgetOriginControlPlane {
 			out = append(out, gatewayPayload(b))
 		}
 	}
 	return out, nil
-}
-
-// covers reports whether a budget's environments include one of the gateway's.
-func (g *BudgetGateways) covers(ctx context.Context, ouID string, envs *models.BudgetEnvironments, gatewayEnvs []string) (bool, error) {
-	if envs == nil || len(envs.IDs) == 0 {
-		return true, nil
-	}
-	ids, err := g.environmentIDs(ctx, ouID, envs.IDs)
-	if err != nil {
-		return false, err
-	}
-	for _, id := range ids {
-		if slices.Contains(gatewayEnvs, id) {
-			return true, nil
-		}
-	}
-	return false, nil
 }

@@ -20,6 +20,7 @@ package repositories
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -229,4 +230,127 @@ func TestBudgetRepository_GetUpdateDelete(t *testing.T) {
 	var rows int64
 	require.NoError(t, gdb.Model(&models.Budget{}).Where("id = ?", b.ID).Count(&rows).Error)
 	assert.Zero(t, rows, "the row goes with the artifact")
+}
+
+// A budget is owned by its organization or one of its projects; reads carry both handles,
+// a gateway's push may move its budget between them, and deleting the project deletes its budgets.
+func TestBudgetRepository_ProjectBudgets(t *testing.T) {
+	gdb := db.GetDB()
+	ctx := context.Background()
+	ou := dbtest.Org(t, gdb)
+	orgHandle := "org-" + ou[len(ou)-12:]
+	project := dbtest.Project(t, gdb, ou, "api-platform")
+	repo := NewBudgetRepository(gdb)
+
+	orgBudget := models.Budget{OrgID: ou, Origin: models.BudgetOriginControlPlane, Configuration: budgetConfig("Org", "5000")}
+	require.NoError(t, repo.CreateForControlPlane(ctx, &orgBudget, "org-monthly"))
+	projectBudget := models.Budget{
+		OrgID: ou, Origin: models.BudgetOriginControlPlane, ProjectID: &project, Configuration: budgetConfig("API Platform", "1000"),
+	}
+	require.NoError(t, repo.CreateForControlPlane(ctx, &projectBudget, "api-platform-monthly"))
+
+	all := budgetsByName(t, repo, ou)
+	assert.Equal(t, orgHandle, all["org-monthly"].OrgName)
+	assert.Empty(t, all["org-monthly"].ProjectName)
+	assert.Nil(t, all["org-monthly"].ProjectID)
+	assert.Equal(t, orgHandle, all["api-platform-monthly"].OrgName)
+	assert.Equal(t, "api-platform", all["api-platform-monthly"].ProjectName)
+	require.NotNil(t, all["api-platform-monthly"].ProjectID)
+	assert.Equal(t, project, *all["api-platform-monthly"].ProjectID)
+
+	got, err := repo.Get(ctx, ou, "api-platform-monthly")
+	require.NoError(t, err)
+	assert.Equal(t, "api-platform", got.ProjectName)
+
+	gw := dbtest.Gateway(t, gdb, ou, models.GatewayRoleEgress)
+	pushed := gatewayBudget(ou, gw.UUID, "team-daily", "50")
+	pushed.ProjectID = &project
+	stored, err := repo.SaveForGateway(ctx, &pushed, "team-daily")
+	require.NoError(t, err)
+	require.True(t, stored)
+	assert.Equal(t, "api-platform", budgetsByName(t, repo, ou)["team-daily"].ProjectName)
+	again := gatewayBudget(ou, gw.UUID, "team-daily", "60")
+	stored, err = repo.SaveForGateway(ctx, &again, "team-daily")
+	require.NoError(t, err)
+	require.True(t, stored)
+	assert.Empty(t, budgetsByName(t, repo, ou)["team-daily"].ProjectName, "a push without the annotation makes it the organization's")
+
+	again.ProjectID = &project
+	_, err = repo.SaveForGateway(ctx, &again, "team-daily")
+	require.NoError(t, err)
+
+	// Deleting the project deletes its control-plane budgets, with their usage; the
+	// budgets a gateway created for it become the organization's.
+	require.NoError(t, NewPlatformRepo(gdb).DeleteProject(ctx, ou, "api-platform"))
+	left := budgetsByName(t, repo, ou)
+	assert.ElementsMatch(t, []string{"org-monthly", "team-daily"}, keys(left))
+	assert.Nil(t, left["team-daily"].ProjectID)
+	var artifacts int64
+	require.NoError(t, gdb.Model(&models.Artifact{}).Where("org_id = ? AND handle = ?", ou, "api-platform-monthly").Count(&artifacts).Error)
+	assert.Zero(t, artifacts, "the budget's artifact goes too")
+}
+
+// An import saves every budget or none, and finds names any artifact already holds.
+func TestBudgetRepository_CreateManyIsAllOrNothing(t *testing.T) {
+	gdb := db.GetDB()
+	ctx := context.Background()
+	ou := dbtest.Org(t, gdb)
+	repo := NewBudgetRepository(gdb)
+	createArtifact(t, gdb, ou, models.KindLLMProvider, "openai")
+
+	taken, err := repo.TakenNames(ctx, ou, []string{"team-a", "openai"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"openai"}, taken, "a name held by any kind is taken")
+
+	newBudget := func(amount string) *models.Budget {
+		return &models.Budget{OrgID: ou, Origin: models.BudgetOriginControlPlane, Configuration: budgetConfig("x", amount)}
+	}
+	err = repo.CreateManyForControlPlane(ctx, []*models.Budget{newBudget("1"), newBudget("2")}, []string{"team-a", "openai"})
+	var nameTaken *BudgetNameTakenError
+	require.ErrorAs(t, err, &nameTaken)
+	assert.Equal(t, "openai", nameTaken.Name)
+	assert.ErrorIs(t, err, utils.ErrBudgetAlreadyExists)
+	assert.Empty(t, budgetsByName(t, repo, ou), "team-a was rolled back")
+
+	require.NoError(t, repo.CreateManyForControlPlane(ctx, []*models.Budget{newBudget("1"), newBudget("2")}, []string{"team-a", "team-b"}))
+	assert.ElementsMatch(t, []string{"team-a", "team-b"}, keys(budgetsByName(t, repo, ou)))
+}
+
+// A provider or notification channel a budget uses cannot be deleted (Interfaces 1.1).
+func TestBudgetRepository_BudgetsUsingRefuseDeletes(t *testing.T) {
+	gdb := db.GetDB()
+	ctx := context.Background()
+	ou := dbtest.Org(t, gdb)
+	repo := NewBudgetRepository(gdb)
+	events := NewEventRepository(gdb)
+	channel := &models.EventDestination{
+		ID: uuid.New(), OUID: ou, Name: "finance-email", Kind: models.DestinationKindWebhook,
+		Config: json.RawMessage(`{"url":"https://example.com"}`), Availability: models.DestinationAvailableAll, Projects: []string{},
+	}
+	require.NoError(t, events.CreateDestination(ctx, channel))
+
+	openai := "openai"
+	cfg := budgetConfig("OpenAI monthly", "1000")
+	cfg.Resource = &models.BudgetResource{Type: "llmProvider", Allocation: "shared", ID: &openai}
+	cfg.Warnings = &models.BudgetWarnings{Thresholds: []int32{80}, ChannelIDs: []string{channel.ID.String()}}
+	b := models.Budget{OrgID: ou, Origin: models.BudgetOriginControlPlane, Configuration: cfg}
+	require.NoError(t, repo.CreateForControlPlane(ctx, &b, "openai-monthly"))
+	other := models.Budget{OrgID: ou, Origin: models.BudgetOriginControlPlane, Configuration: budgetConfig("All", "5")}
+	require.NoError(t, repo.CreateForControlPlane(ctx, &other, "all-providers"))
+
+	names, err := NewLLMProviderRepo(gdb).BudgetsUsing(ctx, ou, "openai")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"openai-monthly"}, names)
+	names, err = NewLLMProviderRepo(gdb).BudgetsUsing(ctx, ou, "anthropic")
+	require.NoError(t, err)
+	assert.Empty(t, names)
+
+	_, err = events.DeleteDestination(ctx, ou, channel.ID)
+	require.ErrorIs(t, err, utils.ErrEventDestinationInUse)
+	assert.Contains(t, err.Error(), "openai-monthly")
+
+	require.NoError(t, repo.Delete(ctx, ou, "openai-monthly"))
+	deleted, err := events.DeleteDestination(ctx, ou, channel.ID)
+	require.NoError(t, err)
+	assert.True(t, deleted, "free once no budget uses it")
 }

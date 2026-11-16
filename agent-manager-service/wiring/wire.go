@@ -114,6 +114,8 @@ var serviceProviderSet = wire.NewSet(
 	services.NewBudgetService,
 	services.NewBudgetGateways,
 	wire.Bind(new(services.BudgetGatewaySender), new(*services.BudgetGateways)),
+	services.NewBudgetWarningService,
+	wire.Bind(new(services.BudgetWarner), new(*services.BudgetWarningService)),
 	services.NewMonitorScoresService,
 	services.NewCatalogService,
 	services.NewLLMProxyProvisioner,
@@ -254,6 +256,7 @@ var loggerProviderSet = wire.NewSet(
 var repositoryProviderSet = wire.NewSet(
 	ProvideGatewayRepository,
 	repositories.NewBudgetRepository,
+	repositories.NewBudgetUsageRepository,
 	ProvideLLMProviderTemplateRepository,
 	ProvideLLMProviderRepository,
 	ProvideLLMProxyRepository,
@@ -380,8 +383,11 @@ func ProvideDefaultGatewaySeeder(
 }
 
 // ProvideDeploymentAckHandler creates a new deployment ack handler that runs the reconcile kinds' after-live hooks.
-func ProvideDeploymentAckHandler(deploymentRepo repositories.DeploymentRepository, core *reconcile.Core) *services.DeploymentAckHandler {
-	return services.NewDeploymentAckHandler(deploymentRepo, core.AfterLive())
+// Usage messages go to the budget warning service.
+func ProvideDeploymentAckHandler(
+	deploymentRepo repositories.DeploymentRepository, core *reconcile.Core, warnings *services.BudgetWarningService,
+) *services.DeploymentAckHandler {
+	return services.NewDeploymentAckHandler(deploymentRepo, core.AfterLive(), warnings)
 }
 
 // ProvideReconcileKinds lists the gateway artifact kinds the reconcile core deploys.

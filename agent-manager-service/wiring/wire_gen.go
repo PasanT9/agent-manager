@@ -74,7 +74,9 @@ func InitializeAppParamsWithEnvThunderEndpoints(cfg *config.Config, db *gorm.DB,
 	}
 	gatewayEventsService := services.NewGatewayEventsService(eventHub)
 	apiKeyRepository := ProvideAPIKeyRepository(db)
-	infraResourceManager := services.NewInfraResourceManager(platformRepository, logger)
+	budgetRepository := repositories.NewBudgetRepository(db)
+	budgetGateways := services.NewBudgetGateways(gatewayEventsService, gatewayRepository, budgetRepository)
+	infraResourceManager := services.NewInfraResourceManager(platformRepository, budgetRepository, budgetGateways, logger)
 	mcpProxyScopeRepository := repositories.NewMCPProxyScopeRepository(db)
 	readSystemClientFunc := services.NewPlatformThunderSecretReader()
 	readThunderURLFunc := services.NewPlatformThunderURLReader()
@@ -153,13 +155,17 @@ func InitializeAppParamsWithEnvThunderEndpoints(cfg *config.Config, db *gorm.DB,
 	a2AProxyController := controllers.NewA2AProxyController(a2AProxyService)
 	llmProxyDeploymentController := controllers.NewLLMProxyDeploymentController(llmProxyDeploymentService)
 	mcpProxyController := controllers.NewMCPProxyController(mcpProxyService, agentConfigurationService, platformRepository)
-	deploymentAckHandler := ProvideDeploymentAckHandler(deploymentRepository, core)
+	budgetUsageRepository := repositories.NewBudgetUsageRepository(db)
+	bus, err := ProvideEventBus(configConfig, logger)
+	if err != nil {
+		return nil, err
+	}
+	budgetWarningService := services.NewBudgetWarningService(budgetRepository, budgetUsageRepository, eventRepository, gatewayRepository, bus)
+	deploymentAckHandler := ProvideDeploymentAckHandler(deploymentRepository, core, budgetWarningService)
 	otelIngestPublisher := services.NewOtelIngestPublisher(db, otelIngestKind, artifactRepository, deploymentRepository, core, logger)
 	webSocketController := ProvideWebSocketController(manager, eventHub, platformGatewayService, deploymentAckHandler, otelIngestPublisher, configConfig, logger)
 	gatewayInternalAPIService := services.NewGatewayInternalAPIService(llmProviderRepository, llmProxyRepository, deploymentRepository, artifactRepository, gatewayRepository, infraResourceManager, v, core)
-	budgetRepository := repositories.NewBudgetRepository(db)
-	gatewayResourceSyncService := services.NewGatewayResourceSyncService(gatewayRepository, budgetRepository)
-	budgetGateways := services.NewBudgetGateways(gatewayEventsService, gatewayRepository, platformRepository, budgetRepository)
+	gatewayResourceSyncService := services.NewGatewayResourceSyncService(gatewayRepository, budgetRepository, platformRepository)
 	gatewayInternalController := controllers.NewGatewayInternalController(platformGatewayService, gatewayInternalAPIService, apiKeyRepository, aiApplicationRepository, gatewayResourceSyncService, budgetGateways)
 	monitorController := controllers.NewMonitorController(monitorManagerService)
 	monitorScoresService := services.NewMonitorScoresService(scoreRepository, monitorRepository, logger)
@@ -178,14 +184,10 @@ func InitializeAppParamsWithEnvThunderEndpoints(cfg *config.Config, db *gorm.DB,
 	registry := ProvideDestinationDrivers(configConfig)
 	eventDestinationService := services.NewEventDestinationService(eventRepository, registry, v, logger)
 	eventsController := controllers.NewEventsController(eventDestinationService, eventSubscriptionService)
-	budgetService := services.NewBudgetService(budgetRepository, artifactRepository, platformRepository, eventRepository, budgetGateways)
+	budgetService := services.NewBudgetService(budgetRepository, artifactRepository, platformRepository, eventRepository, budgetGateways, budgetWarningService, budgetUsageRepository)
 	budgetController := controllers.NewBudgetController(budgetService)
 	monitorAlertService := services.NewMonitorAlertService(monitorAlertRepository, monitorRepository, eventRepository)
 	monitorAlertController := controllers.NewMonitorAlertController(monitorAlertService)
-	bus, err := ProvideEventBus(configConfig, logger)
-	if err != nil {
-		return nil, err
-	}
 	outbox := repositories.NewEventOutboxRepository(db)
 	publisher := ProvideEventPublisher(bus, outbox, logger)
 	monitorRunObserver := services.NewMonitorRunEvents(publisher, scoreRepository, monitorRepository, logger)
@@ -300,7 +302,9 @@ func InitializeTestAppParamsWithClientMocks(cfg *config.Config, db *gorm.DB, aut
 	}
 	gatewayEventsService := services.NewGatewayEventsService(eventHub)
 	apiKeyRepository := ProvideAPIKeyRepository(db)
-	infraResourceManager := services.NewInfraResourceManager(platformRepository, logger)
+	budgetRepository := repositories.NewBudgetRepository(db)
+	budgetGateways := services.NewBudgetGateways(gatewayEventsService, gatewayRepository, budgetRepository)
+	infraResourceManager := services.NewInfraResourceManager(platformRepository, budgetRepository, budgetGateways, logger)
 	mcpProxyScopeRepository := repositories.NewMCPProxyScopeRepository(db)
 	readSystemClientFunc := services.NewPlatformThunderSecretReader()
 	readThunderURLFunc := services.NewPlatformThunderURLReader()
@@ -378,13 +382,17 @@ func InitializeTestAppParamsWithClientMocks(cfg *config.Config, db *gorm.DB, aut
 	a2AProxyController := controllers.NewA2AProxyController(a2AProxyService)
 	llmProxyDeploymentController := controllers.NewLLMProxyDeploymentController(llmProxyDeploymentService)
 	mcpProxyController := controllers.NewMCPProxyController(mcpProxyService, agentConfigurationService, platformRepository)
-	deploymentAckHandler := ProvideDeploymentAckHandler(deploymentRepository, core)
+	budgetUsageRepository := repositories.NewBudgetUsageRepository(db)
+	bus, err := ProvideEventBus(configConfig, logger)
+	if err != nil {
+		return nil, err
+	}
+	budgetWarningService := services.NewBudgetWarningService(budgetRepository, budgetUsageRepository, eventRepository, gatewayRepository, bus)
+	deploymentAckHandler := ProvideDeploymentAckHandler(deploymentRepository, core, budgetWarningService)
 	otelIngestPublisher := services.NewOtelIngestPublisher(db, otelIngestKind, artifactRepository, deploymentRepository, core, logger)
 	webSocketController := ProvideWebSocketController(manager, eventHub, platformGatewayService, deploymentAckHandler, otelIngestPublisher, configConfig, logger)
 	gatewayInternalAPIService := services.NewGatewayInternalAPIService(llmProviderRepository, llmProxyRepository, deploymentRepository, artifactRepository, gatewayRepository, infraResourceManager, v, core)
-	budgetRepository := repositories.NewBudgetRepository(db)
-	gatewayResourceSyncService := services.NewGatewayResourceSyncService(gatewayRepository, budgetRepository)
-	budgetGateways := services.NewBudgetGateways(gatewayEventsService, gatewayRepository, platformRepository, budgetRepository)
+	gatewayResourceSyncService := services.NewGatewayResourceSyncService(gatewayRepository, budgetRepository, platformRepository)
 	gatewayInternalController := controllers.NewGatewayInternalController(platformGatewayService, gatewayInternalAPIService, apiKeyRepository, aiApplicationRepository, gatewayResourceSyncService, budgetGateways)
 	monitorController := controllers.NewMonitorController(monitorManagerService)
 	monitorScoresService := services.NewMonitorScoresService(scoreRepository, monitorRepository, logger)
@@ -402,14 +410,10 @@ func InitializeTestAppParamsWithClientMocks(cfg *config.Config, db *gorm.DB, aut
 	registry := ProvideDestinationDrivers(configConfig)
 	eventDestinationService := services.NewEventDestinationService(eventRepository, registry, v, logger)
 	eventsController := controllers.NewEventsController(eventDestinationService, eventSubscriptionService)
-	budgetService := services.NewBudgetService(budgetRepository, artifactRepository, platformRepository, eventRepository, budgetGateways)
+	budgetService := services.NewBudgetService(budgetRepository, artifactRepository, platformRepository, eventRepository, budgetGateways, budgetWarningService, budgetUsageRepository)
 	budgetController := controllers.NewBudgetController(budgetService)
 	monitorAlertService := services.NewMonitorAlertService(monitorAlertRepository, monitorRepository, eventRepository)
 	monitorAlertController := controllers.NewMonitorAlertController(monitorAlertService)
-	bus, err := ProvideEventBus(configConfig, logger)
-	if err != nil {
-		return nil, err
-	}
 	outbox := repositories.NewEventOutboxRepository(db)
 	publisher := ProvideEventPublisher(bus, outbox, logger)
 	monitorRunObserver := services.NewMonitorRunEvents(publisher, scoreRepository, monitorRepository, logger)
@@ -502,7 +506,7 @@ var clientProviderSet = wire.NewSet(repositories.NewPlatformRepo, ProvideSecretM
 	ProvideOUHandleLookup, thundersvc.NewProber, services.NewPlatformThunderSecretReader, services.NewPlatformThunderURLReader, ProvideEnvThunderResolverWithEndpoints,
 )
 
-var serviceProviderSet = wire.NewSet(services.NewAgentManagerService, services.NewInfraResourceManager, services.NewAgentTokenManagerService, fileauth.NewService, services.NewMonitorExecutor, services.NewMonitorManagerService, ProvideThunderConfig, services.NewMonitorSchedulerService, services.NewAgentThunderReconcilerService, services.NewA2ACardFetcher, services.NewA2ACardReconcilerService, services.NewConfiguredDeploymentTimeoutSweeper, services.NewA2AAgentCardService, ProvideTxRunner, services.NewAgentExposurePublisher, services.NewA2APublisher, services.NewA2AProxyService, ProvideA2AProxyHooks, services.NewEvaluatorManagerService, services.NewEnvironmentService, ProvidePlatformGatewayService, services.NewLLMProviderTemplateService, services.NewLLMProviderService, services.NewLLMProxyService, services.NewLLMProviderDeploymentService, services.NewLLMProviderAPIKeyService, services.NewLLMProxyAPIKeyService, services.NewAgentAPIKeyService, services.NewLLMProxyDeploymentService, services.NewMCPProxyService, services.NewMCPProxyScopeService, wire.Bind(new(services.MCPProxyRedeployer), new(*services.MCPProxyService)), wire.Bind(new(controllers.MCPResourceServerIdentifierResolver), new(*services.MCPProxyService)), services.NewGatewayInternalAPIService, services.NewGatewayResourceSyncService, services.NewBudgetService, services.NewBudgetGateways, wire.Bind(new(services.BudgetGatewaySender), new(*services.BudgetGateways)), services.NewMonitorScoresService, services.NewCatalogService, services.NewLLMProxyProvisioner, services.NewAgentConfigurationService, services.NewLLMTemplateStore, services.NewAIApplicationService, ProvideEventBus,
+var serviceProviderSet = wire.NewSet(services.NewAgentManagerService, services.NewInfraResourceManager, services.NewAgentTokenManagerService, fileauth.NewService, services.NewMonitorExecutor, services.NewMonitorManagerService, ProvideThunderConfig, services.NewMonitorSchedulerService, services.NewAgentThunderReconcilerService, services.NewA2ACardFetcher, services.NewA2ACardReconcilerService, services.NewConfiguredDeploymentTimeoutSweeper, services.NewA2AAgentCardService, ProvideTxRunner, services.NewAgentExposurePublisher, services.NewA2APublisher, services.NewA2AProxyService, ProvideA2AProxyHooks, services.NewEvaluatorManagerService, services.NewEnvironmentService, ProvidePlatformGatewayService, services.NewLLMProviderTemplateService, services.NewLLMProviderService, services.NewLLMProxyService, services.NewLLMProviderDeploymentService, services.NewLLMProviderAPIKeyService, services.NewLLMProxyAPIKeyService, services.NewAgentAPIKeyService, services.NewLLMProxyDeploymentService, services.NewMCPProxyService, services.NewMCPProxyScopeService, wire.Bind(new(services.MCPProxyRedeployer), new(*services.MCPProxyService)), wire.Bind(new(controllers.MCPResourceServerIdentifierResolver), new(*services.MCPProxyService)), services.NewGatewayInternalAPIService, services.NewGatewayResourceSyncService, services.NewBudgetService, services.NewBudgetGateways, wire.Bind(new(services.BudgetGatewaySender), new(*services.BudgetGateways)), services.NewBudgetWarningService, wire.Bind(new(services.BudgetWarner), new(*services.BudgetWarningService)), services.NewMonitorScoresService, services.NewCatalogService, services.NewLLMProxyProvisioner, services.NewAgentConfigurationService, services.NewLLMTemplateStore, services.NewAIApplicationService, ProvideEventBus,
 	ProvideEventPublisher, repositories.NewEventOutboxRepository, services.NewMonitorRunEvents, ProvideDestinationDrivers, services.NewEventDestinationService, services.NewEventSubscriptionService, wire.Bind(new(services.EventsCleaner), new(services.EventSubscriptionService)), wire.Bind(new(services.DestinationResolver), new(services.EventDestinationService)), services.NewEventDispatcherService, services.NewMonitorAlertService, services.NewMonitorAlertProcessor,
 )
 
@@ -587,7 +591,7 @@ var loggerProviderSet = wire.NewSet(
 )
 
 var repositoryProviderSet = wire.NewSet(
-	ProvideGatewayRepository, repositories.NewBudgetRepository, ProvideLLMProviderTemplateRepository,
+	ProvideGatewayRepository, repositories.NewBudgetRepository, repositories.NewBudgetUsageRepository, ProvideLLMProviderTemplateRepository,
 	ProvideLLMProviderRepository,
 	ProvideLLMProxyRepository,
 	ProvideMCPProxyRepository, repositories.NewMCPProxyEndpointRepository, ProvideDeploymentRepository,
@@ -690,8 +694,11 @@ func ProvideDefaultGatewaySeeder(
 }
 
 // ProvideDeploymentAckHandler creates a new deployment ack handler that runs the reconcile kinds' after-live hooks.
-func ProvideDeploymentAckHandler(deploymentRepo repositories.DeploymentRepository, core *reconcile.Core) *services.DeploymentAckHandler {
-	return services.NewDeploymentAckHandler(deploymentRepo, core.AfterLive())
+// Usage messages go to the budget warning service.
+func ProvideDeploymentAckHandler(
+	deploymentRepo repositories.DeploymentRepository, core *reconcile.Core, warnings *services.BudgetWarningService,
+) *services.DeploymentAckHandler {
+	return services.NewDeploymentAckHandler(deploymentRepo, core.AfterLive(), warnings)
 }
 
 // ProvideReconcileKinds lists the gateway artifact kinds the reconcile core deploys.

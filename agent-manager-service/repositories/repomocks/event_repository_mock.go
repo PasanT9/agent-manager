@@ -19,6 +19,9 @@ import (
 //
 //		// make and configure a mocked repositories.EventRepository
 //		mockedEventRepository := &EventRepositoryMock{
+//			BudgetConfigFunc: func(ctx context.Context, ouID string, budgetID uuid.UUID) (*models.BudgetConfig, error) {
+//				panic("mock out the BudgetConfig method")
+//			},
 //			CandidateSubscriptionsFunc: func(ctx context.Context, ouID string, projectName string, agentName string) ([]models.EventSubscription, error) {
 //				panic("mock out the CandidateSubscriptions method")
 //			},
@@ -107,6 +110,9 @@ import (
 //
 //	}
 type EventRepositoryMock struct {
+	// BudgetConfigFunc mocks the BudgetConfig method.
+	BudgetConfigFunc func(ctx context.Context, ouID string, budgetID uuid.UUID) (*models.BudgetConfig, error)
+
 	// CandidateSubscriptionsFunc mocks the CandidateSubscriptions method.
 	CandidateSubscriptionsFunc func(ctx context.Context, ouID string, projectName string, agentName string) ([]models.EventSubscription, error)
 
@@ -190,6 +196,15 @@ type EventRepositoryMock struct {
 
 	// calls tracks calls to the methods.
 	calls struct {
+		// BudgetConfig holds details about calls to the BudgetConfig method.
+		BudgetConfig []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// OuID is the ouID argument value.
+			OuID string
+			// BudgetID is the budgetID argument value.
+			BudgetID uuid.UUID
+		}
 		// CandidateSubscriptions holds details about calls to the CandidateSubscriptions method.
 		CandidateSubscriptions []struct {
 			// Ctx is the ctx argument value.
@@ -432,6 +447,7 @@ type EventRepositoryMock struct {
 			Check func(*models.EventDestination) error
 		}
 	}
+	lockBudgetConfig                  sync.RWMutex
 	lockCandidateSubscriptions        sync.RWMutex
 	lockClaimDelivery                 sync.RWMutex
 	lockCreateDestination             sync.RWMutex
@@ -459,6 +475,46 @@ type EventRepositoryMock struct {
 	lockSubscriptionsUsing            sync.RWMutex
 	lockUpdateDestination             sync.RWMutex
 	lockUpdateSubscription            sync.RWMutex
+}
+
+// BudgetConfig calls BudgetConfigFunc.
+func (mock *EventRepositoryMock) BudgetConfig(ctx context.Context, ouID string, budgetID uuid.UUID) (*models.BudgetConfig, error) {
+	if mock.BudgetConfigFunc == nil {
+		panic("EventRepositoryMock.BudgetConfigFunc: method is nil but EventRepository.BudgetConfig was just called")
+	}
+	callInfo := struct {
+		Ctx      context.Context
+		OuID     string
+		BudgetID uuid.UUID
+	}{
+		Ctx:      ctx,
+		OuID:     ouID,
+		BudgetID: budgetID,
+	}
+	mock.lockBudgetConfig.Lock()
+	mock.calls.BudgetConfig = append(mock.calls.BudgetConfig, callInfo)
+	mock.lockBudgetConfig.Unlock()
+	return mock.BudgetConfigFunc(ctx, ouID, budgetID)
+}
+
+// BudgetConfigCalls gets all the calls that were made to BudgetConfig.
+// Check the length with:
+//
+//	len(mockedEventRepository.BudgetConfigCalls())
+func (mock *EventRepositoryMock) BudgetConfigCalls() []struct {
+	Ctx      context.Context
+	OuID     string
+	BudgetID uuid.UUID
+} {
+	var calls []struct {
+		Ctx      context.Context
+		OuID     string
+		BudgetID uuid.UUID
+	}
+	mock.lockBudgetConfig.RLock()
+	calls = mock.calls.BudgetConfig
+	mock.lockBudgetConfig.RUnlock()
+	return calls
 }
 
 // CandidateSubscriptions calls CandidateSubscriptionsFunc.

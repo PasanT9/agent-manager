@@ -42,18 +42,45 @@ type InfraResourceManager interface {
 }
 
 type infraResourceManager struct {
-	platform repositories.PlatformRepository
-	logger   *slog.Logger
+	platform   repositories.PlatformRepository
+	budgetRepo repositories.BudgetRepository
+	budgets    BudgetGatewaySender
+	logger     *slog.Logger
 }
 
+// NewInfraResourceManager creates an InfraResourceManager. Deleting a project deletes its
+// budgets; budgets tells the gateways that enforce them.
 func NewInfraResourceManager(
 	platform repositories.PlatformRepository,
+	budgetRepo repositories.BudgetRepository,
+	budgets BudgetGatewaySender,
 	logger *slog.Logger,
 ) InfraResourceManager {
 	return &infraResourceManager{
-		platform: platform,
-		logger:   logger,
+		platform:   platform,
+		budgetRepo: budgetRepo,
+		budgets:    budgets,
+		logger:     logger,
 	}
+}
+
+// projectBudgets returns the control-plane budgets the project owns: deleting the project
+// deletes them.
+func (s *infraResourceManager) projectBudgets(ctx context.Context, ouID, projectName string) ([]models.Budget, error) {
+	if s.budgetRepo == nil {
+		return nil, nil
+	}
+	all, err := s.budgetRepo.List(ctx, ouID)
+	if err != nil {
+		return nil, err
+	}
+	owned := []models.Budget{}
+	for _, b := range all {
+		if b.ProjectName == projectName && b.Origin == models.BudgetOriginControlPlane {
+			owned = append(owned, b)
+		}
+	}
+	return owned, nil
 }
 
 func (s *infraResourceManager) ListOrganizations(ctx context.Context, limit int, offset int) ([]*models.OrganizationResponse, int32, error) {
@@ -193,6 +220,13 @@ func (s *infraResourceManager) DeleteProject(ctx context.Context, ouID string, p
 		return auditErr
 	}
 
+	// The project's budgets are deleted with it; read first, so gateways can be told.
+	budgets, err := s.projectBudgets(ctx, ouID, projectName)
+	if err != nil {
+		deleteAttempt.Complete(ctx, err)
+		s.logger.Error("Failed to list the project's budgets", "ouID", ouID, "projectName", projectName, "error", err)
+		return err
+	}
 	err = s.platform.DeleteProject(ctx, ouID, projectName)
 	deleteAttempt.Complete(ctx, err)
 	if err != nil {
@@ -203,7 +237,10 @@ func (s *infraResourceManager) DeleteProject(ctx context.Context, ouID string, p
 		s.logger.Error("Failed to delete project", "ouID", ouID, "projectName", projectName, "error", err)
 		return err
 	}
-	s.logger.Info("Project deleted successfully", "ouID", ouID, "projectName", projectName)
+	for i := range budgets {
+		s.budgets.SendBudgetDeleted(ctx, &budgets[i])
+	}
+	s.logger.Info("Project deleted successfully", "ouID", ouID, "projectName", projectName, "budgetsDeleted", len(budgets))
 	return nil
 }
 

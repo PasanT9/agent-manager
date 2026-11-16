@@ -6185,6 +6185,12 @@ paths:
           schema:
             type: string
           description: Organization name
+        - name: projectId
+          in: query
+          required: false
+          description: Only the budgets this project owns; omitted, every budget in the organization.
+          schema:
+            type: string
         - name: filter
           in: query
           required: false
@@ -6295,6 +6301,72 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: The name is already used in the organization (BUDGET_ALREADY_EXISTS)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /orgs/{orgName}/budgets/import:
+    post:
+      summary: Import budgets from CSV
+      description: |
+        Creates many budgets from a CSV file, one budget per row (Interfaces 2.5). Each row is
+        checked like a created budget; if any row fails, nothing is saved. With dryRun, every
+        row is checked and nothing is saved.
+      operationId: importBudgets
+      tags:
+        - Budgets
+      parameters:
+        - name: orgName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Organization name
+        - name: dryRun
+          in: query
+          required: false
+          description: Check every row and save nothing.
+          schema:
+            type: boolean
+            default: false
+      requestBody:
+        required: true
+        description: UTF-8 CSV with a header row; at most 500 rows and 1 MB.
+        content:
+          text/csv:
+            schema:
+              type: string
+      responses:
+        "200":
+          description: Every row passed; the budgets were saved unless dryRun
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BudgetImportResult"
+        "400":
+          description: >-
+            Nothing saved. A row failed: the import result, applied false. The file cannot be
+            read (INVALID_CSV): an ErrorResponse.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/BudgetImportResult"
+                  - $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -6469,6 +6541,80 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: The budget was created on a gateway (BUDGET_READ_ONLY)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /orgs/{orgName}/budgets/{budgetName}/budget-usage:
+    get:
+      summary: Budget usage
+      description: >-
+        Each allowance's spend in the budget's current period, highest spend first (FR-15). An
+        allowance whose last report was in an earlier period has spent nothing this period.
+      operationId: listBudgetUsage
+      tags:
+        - Budgets
+      parameters:
+        - name: orgName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Organization name
+        - name: budgetName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Budget name
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        "200":
+          description: A page of the budget's usage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BudgetUsageListResponse"
+        "400":
+          description: Invalid query (VALIDATION_ERROR)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: No such budget (BUDGET_NOT_FOUND)
           content:
             application/json:
               schema:
@@ -17271,13 +17417,21 @@ components:
     BudgetRequest:
       type: object
       description: A spend limit on LLM traffic
-      required: [name, displayName, limit]
+      required: [name, orgId, limit]
       properties:
         name:
           type: string
           description: Handle, unique in the organization; cannot change
           pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
           maxLength: 63
+        orgId:
+          type: string
+          description: Handle of the organization that owns the budget; the token's organization. Cannot change
+        projectId:
+          type: string
+          description: >-
+            Handle of the project that owns the budget; omitted for an organization budget. A project
+            budget counts only that project's traffic: its project consumer is implied. Cannot change
         displayName:
           type: string
           minLength: 1
@@ -17289,8 +17443,6 @@ components:
           $ref: "#/components/schemas/BudgetLimit"
         resource:
           $ref: "#/components/schemas/BudgetResource"
-        environments:
-          $ref: "#/components/schemas/BudgetEnvironments"
         consumers:
           type: array
           maxItems: 20
@@ -17305,10 +17457,61 @@ components:
             $ref: "#/components/schemas/BudgetExemption"
         warnings:
           $ref: "#/components/schemas/BudgetWarnings"
+    BudgetImportResult:
+      type: object
+      description: The outcome of a CSV import
+      required: [dryRun, applied, summary, results]
+      properties:
+        dryRun:
+          type: boolean
+        applied:
+          type: boolean
+          description: True when the budgets were saved
+        summary:
+          $ref: "#/components/schemas/BudgetImportSummary"
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/BudgetImportRowResult"
+    BudgetImportSummary:
+      type: object
+      required: [valid, error]
+      properties:
+        valid:
+          type: integer
+          description: Rows that pass every check
+        error:
+          type: integer
+          description: Rows with errors
+    BudgetImportRowResult:
+      type: object
+      required: [row]
+      properties:
+        row:
+          type: integer
+          description: CSV row number; the header is row 1
+        name:
+          type: string
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/BudgetImportRowError"
+    BudgetImportRowError:
+      type: object
+      required: [code, message]
+      properties:
+        column:
+          type: string
+          description: The CSV column the error is about; absent when it is about the whole row
+        code:
+          type: string
+          example: BUDGET_ALREADY_EXISTS
+        message:
+          type: string
     BudgetUpdateRequest:
       type: object
       description: The editable fields of a budget; the others are fixed after creation
-      required: [displayName, limit]
+      required: [limit]
       properties:
         displayName:
           type: string
@@ -17363,10 +17566,18 @@ components:
           type: integer
     BudgetResponse:
       type: object
-      required: [name, displayName, status, origin, limit, consumers, exemptions, createdAt, updatedAt]
+      required: [name, orgId, displayName, status, origin, limit, consumers, exemptions, createdAt, updatedAt]
       properties:
         name:
           type: string
+        orgId:
+          type: string
+          description: Handle of the organization that owns the budget; the token's organization. Cannot change
+        projectId:
+          type: string
+          description: >-
+            Handle of the project that owns the budget; omitted for an organization budget. A project
+            budget counts only that project's traffic: its project consumer is implied. Cannot change
         displayName:
           type: string
         description:
@@ -17382,8 +17593,6 @@ components:
           $ref: "#/components/schemas/BudgetLimit"
         resource:
           $ref: "#/components/schemas/BudgetResource"
-        environments:
-          $ref: "#/components/schemas/BudgetEnvironments"
         consumers:
           type: array
           items:
@@ -17446,19 +17655,6 @@ components:
         id:
           type: string
           description: Provider handle; only with shared
-    BudgetEnvironments:
-      type: object
-      properties:
-        allocation:
-          type: string
-          enum: [shared, separate]
-          default: shared
-        ids:
-          type: array
-          maxItems: 50
-          description: Environment names; omitted means all, including new ones
-          items:
-            type: string
     BudgetConsumer:
       type: object
       required: [type]
@@ -17513,6 +17709,41 @@ components:
           items:
             type: string
             format: uuid
+    BudgetUsageListResponse:
+      type: object
+      description: A page of a budget's usage, one row per allowance, in the current period
+      required: [periodStart, allowances, total, limit, offset]
+      properties:
+        periodStart:
+          type: string
+          format: date
+        allowances:
+          type: array
+          items:
+            $ref: "#/components/schemas/BudgetAllowanceUsage"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+    BudgetAllowanceUsage:
+      type: object
+      description: One allowance's spend this period
+      required: [allowance, spent, unpricedRequests]
+      properties:
+        allowance:
+          type: object
+          description: The allocated values, e.g. {"project":"api-platform","agent":"support-agent"}; empty when shared
+          additionalProperties:
+            type: string
+        spent:
+          type: string
+          description: USD
+          example: "104.21"
+        unpricedRequests:
+          type: integer
+          format: int64
     BudgetCurrentPeriod:
       type: object
       description: Spend in the current period

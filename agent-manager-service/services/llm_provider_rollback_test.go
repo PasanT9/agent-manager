@@ -59,6 +59,7 @@ func TestDelete_AlreadyUndeployedProviderBroadcastsCanonicalUUID(t *testing.T) {
 		},
 		MarkDeletingFunc:         func(_ uuid.UUID) (bool, error) { return true, nil },
 		HasAssociatedProxiesFunc: func(_ context.Context, _ uuid.UUID) (bool, error) { return false, nil },
+		BudgetsUsingFunc:         func(context.Context, string, string) ([]string, error) { return nil, nil },
 		DeleteTxFunc: func(_ context.Context, tx *gorm.DB, providerID, ouID string) error {
 			assert.Same(t, txSentinel, tx, "the provider is deleted in the transaction that sends its delete events")
 			assert.Equal(t, created.UUID.String(), providerID)
@@ -178,6 +179,7 @@ func TestDelete_ClearsDeletingFlagWhenUndeployFails(t *testing.T) {
 	providerRepo := &repomocks.LLMProviderRepositoryMock{
 		GetByUUIDFunc:            func(_, _ string) (*models.LLMProvider, error) { return created, nil },
 		HasAssociatedProxiesFunc: func(_ context.Context, _ uuid.UUID) (bool, error) { return false, nil },
+		BudgetsUsingFunc:         func(context.Context, string, string) ([]string, error) { return nil, nil },
 		MarkDeletingFunc:         func(_ uuid.UUID) (bool, error) { return true, nil },
 		ClearDeletingFunc:        func(_ uuid.UUID) error { clearCalled = true; return nil },
 	}
@@ -214,6 +216,7 @@ func TestDelete_CompletesAfterCancellationFollowingSuccessfulUndeploy(t *testing
 		GetByUUIDFunc:            func(_, _ string) (*models.LLMProvider, error) { return created, nil },
 		MarkDeletingFunc:         func(_ uuid.UUID) (bool, error) { return true, nil },
 		HasAssociatedProxiesFunc: func(_ context.Context, _ uuid.UUID) (bool, error) { return false, nil },
+		BudgetsUsingFunc:         func(context.Context, string, string) ([]string, error) { return nil, nil },
 		ClearDeletingFunc:        func(_ uuid.UUID) error { return nil },
 		DeleteTxFunc: func(got context.Context, _ *gorm.DB, _, _ string) error {
 			deleteCalled = true
@@ -266,4 +269,33 @@ func TestDelete_CompletesAfterCancellationFollowingSuccessfulUndeploy(t *testing
 	require.NoError(t, err)
 	assert.True(t, deleteCalled)
 	assert.Empty(t, providerRepo.ClearDeletingCalls())
+}
+
+// A provider a budget limits spend on is not deleted, nor undeployed, until the budget
+// stops naming it (Interfaces 1.1).
+func TestDelete_RejectsWithoutUndeployingWhenBudgetsUseTheProvider(t *testing.T) {
+	created := createdProvider()
+	clearCalled := false
+	var askedHandle string
+	providerRepo := &repomocks.LLMProviderRepositoryMock{
+		GetByUUIDFunc:            func(_, _ string) (*models.LLMProvider, error) { return created, nil },
+		MarkDeletingFunc:         func(_ uuid.UUID) (bool, error) { return true, nil },
+		HasAssociatedProxiesFunc: func(_ context.Context, _ uuid.UUID) (bool, error) { return false, nil },
+		BudgetsUsingFunc: func(_ context.Context, _, handle string) ([]string, error) {
+			askedHandle = handle
+			return []string{"openai-monthly", "support-openai"}, nil
+		},
+		ClearDeletingFunc: func(_ uuid.UUID) error {
+			clearCalled = true
+			return nil
+		},
+	}
+	svc := &LLMProviderService{providerRepo: providerRepo}
+
+	err := svc.Delete(context.Background(), created.UUID.String(), "ou-acme", &LLMProviderDeploymentService{})
+
+	require.ErrorIs(t, err, utils.ErrLLMProviderUsedByBudgets)
+	assert.Contains(t, err.Error(), "openai-monthly, support-openai")
+	assert.Equal(t, created.Configuration.Handle, askedHandle, "budgets name the provider by handle, even when it is deleted by UUID")
+	assert.True(t, clearCalled, "the provider is usable again")
 }

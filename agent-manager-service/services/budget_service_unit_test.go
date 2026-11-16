@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,12 +30,20 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/wso2/agent-manager/agent-manager-service/models"
+	"github.com/wso2/agent-manager/agent-manager-service/repositories"
 	"github.com/wso2/agent-manager/agent-manager-service/repositories/repomocks"
 	"github.com/wso2/agent-manager/agent-manager-service/spec"
 	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
 
-const budgetTestOrg = "0193f1c2-0000-7000-8000-000000000001"
+// budgetTestNow is Thursday 12 November 2026: in the week from Monday 9 November.
+var budgetTestNow = time.Date(2026, 11, 12, 15, 30, 0, 0, time.UTC)
+
+const (
+	budgetTestOrg       = "0193f1c2-0000-7000-8000-000000000001"
+	budgetTestOrgName   = "wso2"
+	budgetTestProjectID = "0193f1c2-0000-7000-8000-0000000000a1"
+)
 
 var (
 	budgetOrgChannel     = "3f2b8c1e-5a7d-4e9b-8c21-6d0f4a9e7b13"
@@ -68,12 +77,12 @@ func (r *recordingSender) SendBudgetDeleted(_ context.Context, b *models.Budget)
 // budgetTestRequest is the design's example payload (Interfaces 2.2).
 func budgetTestRequest() spec.BudgetRequest {
 	return spec.BudgetRequest{
-		Name:         "api-platform-per-agent-openai",
-		DisplayName:  "API Platform, per agent on OpenAI",
-		Description:  strPtr("Every agent in API Platform gets $100 a month on OpenAI."),
-		Limit:        spec.BudgetLimit{Amount: "100.00", Period: "month", Action: "block"},
-		Resource:     &spec.BudgetResource{Type: "llmProvider", Id: strPtr("openai")},
-		Environments: &spec.BudgetEnvironments{Ids: []string{"default"}},
+		Name:        "api-platform-per-agent-openai",
+		OrgId:       budgetTestOrgName,
+		DisplayName: strPtr("API Platform, per agent on OpenAI"),
+		Description: strPtr("Every agent in API Platform gets $100 a month on OpenAI."),
+		Limit:       spec.BudgetLimit{Amount: "100.00", Period: "month", Action: "block"},
+		Resource:    &spec.BudgetResource{Type: "llmProvider", Id: strPtr("openai")},
 		Consumers: []spec.BudgetConsumer{
 			{Type: "attribute", Expression: strPtr(budgetGroupExpr)},
 			{Type: "attribute", Allocation: strPtr("separate"), Expression: strPtr(budgetEmailExpr)},
@@ -85,6 +94,7 @@ func budgetTestRequest() spec.BudgetRequest {
 
 type budgetTestEnv struct {
 	svc     BudgetService
+	usage   []models.BudgetUsage
 	budgets *repomocks.BudgetRepositoryMock
 	created []models.Budget
 	store   map[string]models.Budget
@@ -92,7 +102,7 @@ type budgetTestEnv struct {
 }
 
 // newBudgetTestEnv has: provider openai, proxy support-proxy, project api-platform with
-// agent hotel-booking, the default environment, an org-wide channel and a channel for
+// agent hotel-booking, an org-wide channel and a channel for
 // project api-platform only.
 func newBudgetTestEnv(t *testing.T) *budgetTestEnv {
 	t.Helper()
@@ -125,6 +135,30 @@ func newBudgetTestEnv(t *testing.T) *budgetTestEnv {
 			delete(env.store, name)
 			return nil
 		},
+		CreateManyForControlPlaneFunc: func(_ context.Context, bs []*models.Budget, names []string) error {
+			for i := range bs {
+				if _, ok := env.store[names[i]]; ok {
+					return &repositories.BudgetNameTakenError{Name: names[i]}
+				}
+			}
+			for i, b := range bs {
+				b.ID, b.Name = uuid.New(), names[i]
+				b.CreatedAt = time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
+				b.UpdatedAt = b.CreatedAt
+				env.created = append(env.created, *b)
+				env.store[names[i]] = *b
+			}
+			return nil
+		},
+		TakenNamesFunc: func(_ context.Context, _ string, names []string) ([]string, error) {
+			taken := []string{}
+			for _, n := range names {
+				if _, ok := env.store[n]; ok || n == "taken" || n == "openai" {
+					taken = append(taken, n)
+				}
+			}
+			return taken, nil
+		},
 		ListFunc: func(context.Context, string) ([]models.Budget, error) {
 			out := []models.Budget{}
 			for _, n := range sortedKinds(env.store) {
@@ -143,7 +177,10 @@ func newBudgetTestEnv(t *testing.T) *budgetTestEnv {
 			if name != "api-platform" {
 				return nil, utils.ErrProjectNotFound
 			}
-			return &models.ProjectResponse{Name: name}, nil
+			return &models.ProjectResponse{UUID: budgetTestProjectID, Name: name}, nil
+		},
+		GetOrganizationFunc: func(context.Context, string) (*models.OrganizationResponse, error) {
+			return &models.OrganizationResponse{Name: budgetTestOrgName, Handle: budgetTestOrgName}, nil
 		},
 		GetAgentFunc: func(_ context.Context, _, project, name string) (*models.AgentResponse, error) {
 			if project != "api-platform" || name != "hotel-booking" {
@@ -151,11 +188,17 @@ func newBudgetTestEnv(t *testing.T) *budgetTestEnv {
 			}
 			return &models.AgentResponse{Name: name}, nil
 		},
-		GetEnvironmentFunc: func(context.Context, string, string) (*models.EnvironmentResponse, error) {
-			return &models.EnvironmentResponse{Name: models.DefaultEnvironmentName}, nil
-		},
 	}
 	events := &repomocks.EventRepositoryMock{
+		ListDestinationsFunc: func(_ context.Context, ouID string) ([]models.EventDestination, error) {
+			return []models.EventDestination{
+				{ID: uuid.MustParse(budgetOrgChannel), OUID: ouID, Name: "finance-email", Availability: models.DestinationAvailableOrg},
+				{
+					ID: uuid.MustParse(budgetProjectChannel), OUID: ouID, Name: "platform-slack",
+					Availability: models.DestinationAvailableProjects, Projects: []string{"api-platform"},
+				},
+			}, nil
+		},
 		GetDestinationFunc: func(_ context.Context, ouID string, id uuid.UUID) (*models.EventDestination, error) {
 			switch id.String() {
 			case budgetOrgChannel:
@@ -168,7 +211,30 @@ func newBudgetTestEnv(t *testing.T) *budgetTestEnv {
 			return nil, gorm.ErrRecordNotFound
 		},
 	}
-	env.svc = NewBudgetService(env.budgets, artifacts, platform, events, env.sender)
+	usageRepo := &repomocks.BudgetUsageRepositoryMock{
+		ForBudgetFunc: func(_ context.Context, id uuid.UUID) ([]models.BudgetUsage, error) {
+			out := []models.BudgetUsage{}
+			for _, u := range env.usage {
+				if u.BudgetID == id {
+					out = append(out, u)
+				}
+			}
+			return out, nil
+		},
+		ForBudgetsFunc: func(_ context.Context, _ string, ids []uuid.UUID) ([]models.BudgetUsage, error) {
+			out := []models.BudgetUsage{}
+			for _, u := range env.usage {
+				for _, id := range ids {
+					if u.BudgetID == id {
+						out = append(out, u)
+					}
+				}
+			}
+			return out, nil
+		},
+	}
+	env.svc = NewBudgetService(env.budgets, artifacts, platform, events, env.sender, nil, usageRepo)
+	env.svc.(*budgetService).now = func() time.Time { return budgetTestNow }
 	return env
 }
 
@@ -191,7 +257,6 @@ func TestBudgetService_CreateStoresTheBudgetKindWithDefaults(t *testing.T) {
 		"status": "active",
 		"limit": {"amount": "100.00", "currency": "USD", "period": "month", "action": "block", "blockAt": 100},
 		"resource": {"type": "llmProvider", "allocation": "shared", "id": "openai"},
-		"environments": {"allocation": "shared", "ids": ["default"]},
 		"consumers": [
 			{"type": "attribute", "allocation": "shared", "expression": "'research' in request.Auth.Claims[\"groups\"]"},
 			{"type": "attribute", "allocation": "separate", "expression": "request.Auth.Claims[\"email\"]"}
@@ -209,13 +274,14 @@ func TestBudgetService_CreateStoresTheBudgetKindWithDefaults(t *testing.T) {
 	assert.Equal(t, b.CreatedAt, resp.CreatedAt)
 	out, err := json.Marshal(resp)
 	require.NoError(t, err)
-	assert.NotContains(t, string(out), "currentPeriod", "spend is not reported until usage reports exist")
+	assert.Contains(t, string(out), `"currentPeriod":{"periodStart":"2026-11-01","spent":"0.00","unpricedRequests":0}`,
+		"a new budget has spent nothing this month")
 }
 
 func TestBudgetService_CreateAllowsAMinimalBudget(t *testing.T) {
 	env := newBudgetTestEnv(t)
 	resp, err := env.svc.Create(context.Background(), budgetTestOrg, "", spec.BudgetRequest{
-		Name: "org-monthly", DisplayName: "Org monthly",
+		Name: "org-monthly", OrgId: budgetTestOrgName, DisplayName: strPtr("Org monthly"),
 		Limit: spec.BudgetLimit{Amount: "5000", Period: "month", Action: "allow"},
 	})
 	require.NoError(t, err)
@@ -233,7 +299,7 @@ func TestBudgetService_CreateRefusesInvalidPayloads(t *testing.T) {
 		field string
 	}{
 		{"bad name", func(r *spec.BudgetRequest) { r.Name = "Team A" }, utils.ErrCodeValidation, "name"},
-		{"blank display name", func(r *spec.BudgetRequest) { r.DisplayName = "  " }, utils.ErrCodeValidation, "displayName"},
+		{"long display name", func(r *spec.BudgetRequest) { r.DisplayName = strPtr(strings.Repeat("x", 256)) }, utils.ErrCodeValidation, "displayName"},
 		{"zero amount", func(r *spec.BudgetRequest) { r.Limit.Amount = "0.00" }, utils.ErrCodeValidation, "limit.amount"},
 		{"three decimals", func(r *spec.BudgetRequest) { r.Limit.Amount = "1.005" }, utils.ErrCodeValidation, "limit.amount"},
 		{"other currency", func(r *spec.BudgetRequest) { r.Limit.Currency = strPtr("EUR") }, utils.ErrCodeValidation, "limit.currency"},
@@ -246,9 +312,6 @@ func TestBudgetService_CreateRefusesInvalidPayloads(t *testing.T) {
 		{"separate resource with id", func(r *spec.BudgetRequest) {
 			r.Resource.Allocation = strPtr("separate")
 		}, utils.ErrCodeValidation, "resource.id"},
-		{"duplicate environment", func(r *spec.BudgetRequest) {
-			r.Environments.Ids = []string{"default", "default"}
-		}, utils.ErrCodeValidation, "environments.ids[1]"},
 		{"unknown project", func(r *spec.BudgetRequest) {
 			r.Consumers = append(r.Consumers, spec.BudgetConsumer{Type: "project", Id: strPtr("other")})
 		}, utils.ErrCodeReferenceNotFound, "consumers[2].id"},
@@ -286,9 +349,6 @@ func TestBudgetService_CreateRefusesInvalidPayloads(t *testing.T) {
 			r.Warnings.ChannelIds = []string{"not-a-uuid"}
 		}, utils.ErrCodeValidation, "warnings.channelIds[0]"},
 		{"unknown provider", func(r *spec.BudgetRequest) { r.Resource.Id = strPtr("anthropic") }, utils.ErrCodeReferenceNotFound, "resource.id"},
-		{"unknown environment", func(r *spec.BudgetRequest) {
-			r.Environments.Ids = []string{"production"}
-		}, utils.ErrCodeReferenceNotFound, "environments.ids[0]"},
 		{"unknown channel", func(r *spec.BudgetRequest) {
 			r.Warnings.ChannelIds = []string{uuid.NewString()}
 		}, utils.ErrCodeChannelNotAvailable, "warnings.channelIds[0]"},
@@ -349,7 +409,7 @@ func TestBuildBudgetKind(t *testing.T) {
 }
 
 func TestGatewayBudgetConfigMapsTheKindsSpec(t *testing.T) {
-	cfg, err := gatewayBudgetConfig("research-monthly", json.RawMessage(`{
+	cfg, project, err := gatewayBudgetConfig("research-monthly", json.RawMessage(`{
 		"apiVersion": "gateway.api-platform.wso2.com/v1", "kind": "Budget",
 		"metadata": {"name": "research-monthly"},
 		"spec": {
@@ -359,6 +419,7 @@ func TestGatewayBudgetConfigMapsTheKindsSpec(t *testing.T) {
 		}
 	}`))
 	require.NoError(t, err)
+	assert.Empty(t, project, "no project-id annotation: an organization budget")
 	assert.Equal(t, "research-monthly", cfg.DisplayName, "a gateway budget shows its name")
 	assert.Equal(t, "active", cfg.Status)
 	assert.Equal(t, "USD", cfg.Limit.Currency)
@@ -367,7 +428,7 @@ func TestGatewayBudgetConfigMapsTheKindsSpec(t *testing.T) {
 	assert.Equal(t, "shared", cfg.Consumers[0].Allocation)
 	assert.NotNil(t, cfg.Exemptions)
 
-	_, err = gatewayBudgetConfig("x", json.RawMessage(`not json`))
+	_, _, err = gatewayBudgetConfig("x", json.RawMessage(`not json`))
 	assert.Error(t, err)
 }
 
@@ -410,20 +471,20 @@ func TestBudgetService_ListFiltersAndPages(t *testing.T) {
 	other.Configuration.Exemptions = []models.BudgetExemption{}
 	env.store["c"] = other
 
-	page, err := env.svc.List(context.Background(), budgetTestOrg, nil, 2, 0)
+	page, err := env.svc.List(context.Background(), budgetTestOrg, "", nil, 2, 0)
 	require.NoError(t, err)
 	assert.Equal(t, int32(3), page.Total)
 	assert.Equal(t, int32(2), page.Limit)
 	require.Len(t, page.Budgets, 2)
 	assert.Equal(t, "a", page.Budgets[0].Name)
 
-	page, err = env.svc.List(context.Background(), budgetTestOrg, nil, 0, 2)
+	page, err = env.svc.List(context.Background(), budgetTestOrg, "", nil, 0, 2)
 	require.NoError(t, err)
 	assert.Equal(t, int32(20), page.Limit, "default page size")
 	require.Len(t, page.Budgets, 1)
 	assert.Equal(t, "c", page.Budgets[0].Name)
 
-	page, err = env.svc.List(context.Background(), budgetTestOrg, nil, 20, 10)
+	page, err = env.svc.List(context.Background(), budgetTestOrg, "", nil, 20, 10)
 	require.NoError(t, err)
 	assert.Empty(t, page.Budgets)
 	assert.Equal(t, int32(3), page.Total)
@@ -434,19 +495,19 @@ func TestBudgetService_ListFiltersAndPages(t *testing.T) {
 		"agent:hotel-booking":  0,
 		"llmProvider:other":    0,
 	} {
-		page, err = env.svc.List(context.Background(), budgetTestOrg, []string{filter}, 20, 0)
+		page, err = env.svc.List(context.Background(), budgetTestOrg, "", []string{filter}, 20, 0)
 		require.NoError(t, err)
 		assert.Len(t, page.Budgets, want, filter)
 	}
-	page, err = env.svc.List(context.Background(), budgetTestOrg, []string{"project:api-platform", "llmProvider:other"}, 20, 0)
+	page, err = env.svc.List(context.Background(), budgetTestOrg, "", []string{"project:api-platform", "llmProvider:other"}, 20, 0)
 	require.NoError(t, err)
 	assert.Empty(t, page.Budgets, "filters combine with AND")
 
 	for _, bad := range [][]string{{"team:a"}, {"project"}, {"project:"}} {
-		_, err = env.svc.List(context.Background(), budgetTestOrg, bad, 20, 0)
+		_, err = env.svc.List(context.Background(), budgetTestOrg, "", bad, 20, 0)
 		assert.Equal(t, utils.ErrCodeValidation, budgetErrorCode(t, err), bad)
 	}
-	_, err = env.svc.List(context.Background(), budgetTestOrg, nil, 101, 0)
+	_, err = env.svc.List(context.Background(), budgetTestOrg, "", nil, 101, 0)
 	assert.Equal(t, utils.ErrCodeValidation, budgetErrorCode(t, err))
 }
 
@@ -455,7 +516,7 @@ func TestBudgetService_UpdateReplacesTheEditableFields(t *testing.T) {
 	createTestBudget(t, env, "team-a")
 	inactive := "inactive"
 	resp, err := env.svc.Update(context.Background(), budgetTestOrg, "team-a", spec.BudgetUpdateRequest{
-		DisplayName: "Team A",
+		DisplayName: strPtr("Team A"),
 		Status:      &inactive,
 		Limit:       spec.BudgetUpdateLimit{Amount: "150.00", Action: "block", BlockAt: budgetI32(90)},
 		Warnings:    &spec.BudgetWarnings{Thresholds: []int32{100}, ChannelIds: []string{budgetOrgChannel}},
@@ -474,7 +535,7 @@ func TestBudgetService_UpdateReplacesTheEditableFields(t *testing.T) {
 	assert.Equal(t, "inactive", env.store["team-a"].Configuration.Status)
 
 	resp, err = env.svc.Update(context.Background(), budgetTestOrg, "team-a", spec.BudgetUpdateRequest{
-		DisplayName: "Team A", Limit: spec.BudgetUpdateLimit{Amount: "150.00", Action: "allow"},
+		DisplayName: strPtr("Team A"), Limit: spec.BudgetUpdateLimit{Amount: "150.00", Action: "allow"},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "active", resp.Status, "status defaults to active")
@@ -483,7 +544,7 @@ func TestBudgetService_UpdateReplacesTheEditableFields(t *testing.T) {
 
 func TestBudgetService_UpdateRefusals(t *testing.T) {
 	ok := func() spec.BudgetUpdateRequest {
-		return spec.BudgetUpdateRequest{DisplayName: "Team A", Limit: spec.BudgetUpdateLimit{Amount: "150.00", Action: "block"}}
+		return spec.BudgetUpdateRequest{DisplayName: strPtr("Team A"), Limit: spec.BudgetUpdateLimit{Amount: "150.00", Action: "block"}}
 	}
 	tests := []struct {
 		name   string
@@ -550,7 +611,7 @@ func TestBudgetService_SendsBudgetsToGateways(t *testing.T) {
 	createTestBudget(t, env, "team-a")
 	inactive := "inactive"
 	_, err := env.svc.Update(context.Background(), budgetTestOrg, "team-a", spec.BudgetUpdateRequest{
-		DisplayName: "Team A", Status: &inactive, Limit: spec.BudgetUpdateLimit{Amount: "150.00", Action: "block"},
+		DisplayName: strPtr("Team A"), Status: &inactive, Limit: spec.BudgetUpdateLimit{Amount: "150.00", Action: "block"},
 	})
 	require.NoError(t, err)
 	require.NoError(t, env.svc.Delete(auditableCtx(t), budgetTestOrg, "team-a"))
@@ -558,23 +619,21 @@ func TestBudgetService_SendsBudgetsToGateways(t *testing.T) {
 		"disabling is an update")
 
 	_, err = env.svc.Update(context.Background(), budgetTestOrg, "team-a", spec.BudgetUpdateRequest{
-		DisplayName: "x", Limit: spec.BudgetUpdateLimit{Amount: "1", Action: "allow"},
+		DisplayName: strPtr("x"), Limit: spec.BudgetUpdateLimit{Amount: "1", Action: "allow"},
 	})
 	require.Error(t, err)
 	assert.Len(t, env.sender.sent, 3, "a refused request sends nothing")
 }
 
-func TestBuildBudgetKind_ForGatewayNamesAResourceAndNoEnvironments(t *testing.T) {
+func TestBuildBudgetKind_ForGatewayNamesAResource(t *testing.T) {
 	cfg := models.BudgetConfig{
 		DisplayName: "Org", Status: "active",
-		Limit:        models.BudgetLimit{Amount: "10", Currency: "USD", Period: "day", Action: "allow"},
-		Environments: &models.BudgetEnvironments{Allocation: "shared", IDs: []string{"default"}},
-		Consumers:    []models.BudgetConsumer{}, Exemptions: []models.BudgetExemption{},
+		Limit:     models.BudgetLimit{Amount: "10", Currency: "USD", Period: "day", Action: "allow"},
+		Consumers: []models.BudgetConsumer{}, Exemptions: []models.BudgetExemption{},
 	}
 	gw, err := json.Marshal(BuildBudgetKind("org", cfg, true))
 	require.NoError(t, err)
 	assert.Contains(t, string(gw), `"resource":{"type":"llmProvider","allocation":"shared"}`, "every provider, shared")
-	assert.NotContains(t, string(gw), "environments")
 	assert.Nil(t, cfg.Resource, "the stored budget is not changed")
 }
 
@@ -593,7 +652,7 @@ func TestBudgetService_GatewayBudgetsTakeOnlyAgentManagerFields(t *testing.T) {
 	}
 	same := func() spec.BudgetUpdateRequest {
 		return spec.BudgetUpdateRequest{
-			DisplayName: "Research, monthly", Description: strPtr("Set on the research gateway."),
+			DisplayName: strPtr("Research, monthly"), Description: strPtr("Set on the research gateway."),
 			Limit:    spec.BudgetUpdateLimit{Amount: "500.00", Action: "block"},
 			Warnings: &spec.BudgetWarnings{Thresholds: []int32{80, 100}, ChannelIds: []string{budgetOrgChannel}},
 		}
@@ -650,7 +709,86 @@ func TestBudgetService_ProjectAgentAndAPIKeyBudgets(t *testing.T) {
 	assert.Equal(t, "api-platform", *agent.Project)
 	assert.Equal(t, "hotel-booking", *agent.ID)
 
-	page, err := env.svc.List(context.Background(), budgetTestOrg, []string{"agent:hotel-booking", "project:api-platform"}, 20, 0)
+	page, err := env.svc.List(context.Background(), budgetTestOrg, "", []string{"agent:hotel-booking", "project:api-platform"}, 20, 0)
 	require.NoError(t, err)
 	assert.Len(t, page.Budgets, 1)
+}
+
+func spendRow(budgetID uuid.UUID, allowance map[string]string, start time.Time, spent string, unpriced int64) models.BudgetUsage {
+	return models.BudgetUsage{
+		BudgetID: budgetID, AllowanceID: uuid.New(), Allowance: allowance, PeriodStart: start, Spent: spent, UnpricedRequests: unpriced,
+	}
+}
+
+func TestBudgetPeriodStart(t *testing.T) {
+	assert.Equal(t, time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC), budgetPeriodStart("day", budgetTestNow))
+	assert.Equal(t, time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), budgetPeriodStart("week", budgetTestNow), "weeks start Monday")
+	sunday := time.Date(2026, 11, 15, 23, 0, 0, 0, time.UTC)
+	assert.Equal(t, time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), budgetPeriodStart("week", sunday), "Sunday ends the week")
+	assert.Equal(t, time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), budgetPeriodStart("month", budgetTestNow))
+	ist := time.FixedZone("IST", 5*3600+1800)
+	assert.Equal(t, time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC),
+		budgetPeriodStart("day", time.Date(2026, 11, 1, 2, 0, 0, 0, ist)), "UTC calendar, whatever the caller's zone")
+}
+
+func TestBudgetService_CurrentPeriodSumsThisPeriodsSpend(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	createTestBudget(t, env, "team-a")
+	createTestBudget(t, env, "team-b")
+	a, b := env.store["team-a"].ID, env.store["team-b"].ID
+	november := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	october := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	env.usage = []models.BudgetUsage{
+		spendRow(a, map[string]string{"user": "alice"}, november, "80.144", 2),
+		spendRow(a, map[string]string{"user": "bob"}, november, "20.006", 1),
+		spendRow(a, map[string]string{"user": "carol"}, october, "99", 7),
+		spendRow(b, map[string]string{"user": "dave"}, november, "5", 0),
+	}
+
+	got, err := env.svc.Get(context.Background(), budgetTestOrg, "team-a")
+	require.NoError(t, err)
+	require.NotNil(t, got.CurrentPeriod)
+	assert.Equal(t, spec.BudgetCurrentPeriod{PeriodStart: "2026-11-01", Spent: "100.15", UnpricedRequests: 3}, *got.CurrentPeriod,
+		"October's row counts as $0")
+
+	list, err := env.svc.List(context.Background(), budgetTestOrg, "", nil, 20, 0)
+	require.NoError(t, err)
+	spent := map[string]string{}
+	for _, r := range list.Budgets {
+		spent[r.Name] = r.CurrentPeriod.Spent
+	}
+	assert.Equal(t, map[string]string{"team-a": "100.15", "team-b": "5.00"}, spent)
+}
+
+func TestBudgetService_UsageListsAllowancesByHighestSpend(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	createTestBudget(t, env, "team-a")
+	id := env.store["team-a"].ID
+	november := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	env.usage = []models.BudgetUsage{
+		spendRow(id, map[string]string{"user": "bob"}, november, "20", 1),
+		spendRow(id, map[string]string{"user": "alice"}, november, "80.14", 2),
+		spendRow(id, map[string]string{"user": "carol"}, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), "99", 7),
+		spendRow(id, map[string]string{"user": "erin"}, november, "20", 0),
+	}
+
+	page, err := env.svc.Usage(context.Background(), budgetTestOrg, "team-a", 3, 0)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-11-01", page.PeriodStart)
+	assert.Equal(t, int32(4), page.Total)
+	require.Len(t, page.Allowances, 3)
+	assert.Equal(t, spec.BudgetAllowanceUsage{Allowance: map[string]string{"user": "alice"}, Spent: "80.14", UnpricedRequests: 2}, page.Allowances[0])
+	assert.Equal(t, "bob", page.Allowances[1].Allowance["user"], "equal spend: ordered by allowance")
+	assert.Equal(t, "erin", page.Allowances[2].Allowance["user"])
+
+	last, err := env.svc.Usage(context.Background(), budgetTestOrg, "team-a", 3, 3)
+	require.NoError(t, err)
+	require.Len(t, last.Allowances, 1)
+	assert.Equal(t, spec.BudgetAllowanceUsage{Allowance: map[string]string{"user": "carol"}, Spent: "0.00", UnpricedRequests: 0}, last.Allowances[0],
+		"a row from an earlier period has spent nothing this period")
+
+	_, err = env.svc.Usage(context.Background(), budgetTestOrg, "nope", 20, 0)
+	assert.Equal(t, utils.ErrCodeBudgetNotFound, budgetErrorCode(t, err))
+	_, err = env.svc.Usage(context.Background(), budgetTestOrg, "team-a", 101, 0)
+	assert.Equal(t, utils.ErrCodeValidation, budgetErrorCode(t, err))
 }

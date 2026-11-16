@@ -20,12 +20,15 @@ var _ MappedNullable = &BudgetRequest{}
 // BudgetRequest A spend limit on LLM traffic
 type BudgetRequest struct {
 	// Handle, unique in the organization; cannot change
-	Name         string              `json:"name"`
-	DisplayName  string              `json:"displayName"`
-	Description  *string             `json:"description,omitempty"`
-	Limit        BudgetLimit         `json:"limit"`
-	Resource     *BudgetResource     `json:"resource,omitempty"`
-	Environments *BudgetEnvironments `json:"environments,omitempty"`
+	Name string `json:"name"`
+	// Handle of the organization that owns the budget; the token's organization. Cannot change
+	OrgId string `json:"orgId"`
+	// Handle of the project that owns the budget; omitted for an organization budget. A project budget counts only that project's traffic: its project consumer is implied. Cannot change
+	ProjectId   *string         `json:"projectId,omitempty"`
+	DisplayName *string         `json:"displayName,omitempty"`
+	Description *string         `json:"description,omitempty"`
+	Limit       BudgetLimit     `json:"limit"`
+	Resource    *BudgetResource `json:"resource,omitempty"`
 	// Combined with AND
 	Consumers []BudgetConsumer `json:"consumers,omitempty"`
 	// Traffic not counted or blocked by this budget
@@ -37,10 +40,10 @@ type BudgetRequest struct {
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewBudgetRequest(name string, displayName string, limit BudgetLimit) *BudgetRequest {
+func NewBudgetRequest(name string, orgId string, limit BudgetLimit) *BudgetRequest {
 	this := BudgetRequest{}
 	this.Name = name
-	this.DisplayName = displayName
+	this.OrgId = orgId
 	this.Limit = limit
 	return &this
 }
@@ -77,28 +80,92 @@ func (o *BudgetRequest) SetName(v string) {
 	o.Name = v
 }
 
-// GetDisplayName returns the DisplayName field value
-func (o *BudgetRequest) GetDisplayName() string {
+// GetOrgId returns the OrgId field value
+func (o *BudgetRequest) GetOrgId() string {
 	if o == nil {
 		var ret string
 		return ret
 	}
 
-	return o.DisplayName
+	return o.OrgId
 }
 
-// GetDisplayNameOk returns a tuple with the DisplayName field value
+// GetOrgIdOk returns a tuple with the OrgId field value
 // and a boolean to check if the value has been set.
-func (o *BudgetRequest) GetDisplayNameOk() (*string, bool) {
+func (o *BudgetRequest) GetOrgIdOk() (*string, bool) {
 	if o == nil {
 		return nil, false
 	}
-	return &o.DisplayName, true
+	return &o.OrgId, true
 }
 
-// SetDisplayName sets field value
+// SetOrgId sets field value
+func (o *BudgetRequest) SetOrgId(v string) {
+	o.OrgId = v
+}
+
+// GetProjectId returns the ProjectId field value if set, zero value otherwise.
+func (o *BudgetRequest) GetProjectId() string {
+	if o == nil || IsNil(o.ProjectId) {
+		var ret string
+		return ret
+	}
+	return *o.ProjectId
+}
+
+// GetProjectIdOk returns a tuple with the ProjectId field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *BudgetRequest) GetProjectIdOk() (*string, bool) {
+	if o == nil || IsNil(o.ProjectId) {
+		return nil, false
+	}
+	return o.ProjectId, true
+}
+
+// HasProjectId returns a boolean if a field has been set.
+func (o *BudgetRequest) HasProjectId() bool {
+	if o != nil && !IsNil(o.ProjectId) {
+		return true
+	}
+
+	return false
+}
+
+// SetProjectId gets a reference to the given string and assigns it to the ProjectId field.
+func (o *BudgetRequest) SetProjectId(v string) {
+	o.ProjectId = &v
+}
+
+// GetDisplayName returns the DisplayName field value if set, zero value otherwise.
+func (o *BudgetRequest) GetDisplayName() string {
+	if o == nil || IsNil(o.DisplayName) {
+		var ret string
+		return ret
+	}
+	return *o.DisplayName
+}
+
+// GetDisplayNameOk returns a tuple with the DisplayName field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *BudgetRequest) GetDisplayNameOk() (*string, bool) {
+	if o == nil || IsNil(o.DisplayName) {
+		return nil, false
+	}
+	return o.DisplayName, true
+}
+
+// HasDisplayName returns a boolean if a field has been set.
+func (o *BudgetRequest) HasDisplayName() bool {
+	if o != nil && !IsNil(o.DisplayName) {
+		return true
+	}
+
+	return false
+}
+
+// SetDisplayName gets a reference to the given string and assigns it to the DisplayName field.
 func (o *BudgetRequest) SetDisplayName(v string) {
-	o.DisplayName = v
+	o.DisplayName = &v
 }
 
 // GetDescription returns the Description field value if set, zero value otherwise.
@@ -187,38 +254,6 @@ func (o *BudgetRequest) HasResource() bool {
 // SetResource gets a reference to the given BudgetResource and assigns it to the Resource field.
 func (o *BudgetRequest) SetResource(v BudgetResource) {
 	o.Resource = &v
-}
-
-// GetEnvironments returns the Environments field value if set, zero value otherwise.
-func (o *BudgetRequest) GetEnvironments() BudgetEnvironments {
-	if o == nil || IsNil(o.Environments) {
-		var ret BudgetEnvironments
-		return ret
-	}
-	return *o.Environments
-}
-
-// GetEnvironmentsOk returns a tuple with the Environments field value if set, nil otherwise
-// and a boolean to check if the value has been set.
-func (o *BudgetRequest) GetEnvironmentsOk() (*BudgetEnvironments, bool) {
-	if o == nil || IsNil(o.Environments) {
-		return nil, false
-	}
-	return o.Environments, true
-}
-
-// HasEnvironments returns a boolean if a field has been set.
-func (o *BudgetRequest) HasEnvironments() bool {
-	if o != nil && !IsNil(o.Environments) {
-		return true
-	}
-
-	return false
-}
-
-// SetEnvironments gets a reference to the given BudgetEnvironments and assigns it to the Environments field.
-func (o *BudgetRequest) SetEnvironments(v BudgetEnvironments) {
-	o.Environments = &v
 }
 
 // GetConsumers returns the Consumers field value if set, zero value otherwise.
@@ -328,16 +363,19 @@ func (o BudgetRequest) MarshalJSON() ([]byte, error) {
 func (o BudgetRequest) ToMap() (map[string]interface{}, error) {
 	toSerialize := map[string]interface{}{}
 	toSerialize["name"] = o.Name
-	toSerialize["displayName"] = o.DisplayName
+	toSerialize["orgId"] = o.OrgId
+	if !IsNil(o.ProjectId) {
+		toSerialize["projectId"] = o.ProjectId
+	}
+	if !IsNil(o.DisplayName) {
+		toSerialize["displayName"] = o.DisplayName
+	}
 	if !IsNil(o.Description) {
 		toSerialize["description"] = o.Description
 	}
 	toSerialize["limit"] = o.Limit
 	if !IsNil(o.Resource) {
 		toSerialize["resource"] = o.Resource
-	}
-	if !IsNil(o.Environments) {
-		toSerialize["environments"] = o.Environments
 	}
 	if !IsNil(o.Consumers) {
 		toSerialize["consumers"] = o.Consumers

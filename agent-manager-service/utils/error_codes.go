@@ -58,6 +58,7 @@ const (
 	ErrCodeBudgetAlreadyExists     = "BUDGET_ALREADY_EXISTS"
 	ErrCodeBudgetNotFound          = "BUDGET_NOT_FOUND"
 	ErrCodeBudgetReadOnly          = "BUDGET_READ_ONLY"
+	ErrCodeInvalidCSV              = "INVALID_CSV"
 	ErrCodeProjectAlreadyExists    = "PROJECT_ALREADY_EXISTS"
 	ErrCodeOrganizationNotFound    = "ORGANIZATION_NOT_FOUND"
 	ErrCodeEnvironmentNotFound     = "ENVIRONMENT_NOT_FOUND"

@@ -45,7 +45,7 @@ import (
 // discard logger. Note: strPtr is already declared in llm_deployment_service_test.go.
 func newInfraManager(oc *repomocks.PlatformRepositoryMock) InfraResourceManager {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewInfraResourceManager(oc, logger)
+	return NewInfraResourceManager(oc, nil, nil, logger)
 }
 
 // okOrg returns a GetOrganization func that always resolves — used to get past

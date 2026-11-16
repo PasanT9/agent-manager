@@ -26,7 +26,9 @@ func registerBudgetRoutes(rr *middleware.RouteRegistrar, controller controllers.
 	base := "/orgs/{orgName}/budgets"
 	rr.HandleFuncWithValidationAndAuthz(route("GET", base), rbac.BudgetRead, controller.ListBudgets)
 	rr.HandleFuncWithValidationAndAuthz(route("POST", base), rbac.BudgetCreate, controller.CreateBudget)
+	rr.HandleFuncWithValidationAndAuthz(route("POST", base+"/import"), rbac.BudgetCreate, controller.ImportBudgets)
 	rr.HandleFuncWithValidationAndAuthz(route("GET", base+"/{budgetName}"), rbac.BudgetRead, controller.GetBudget)
+	rr.HandleFuncWithValidationAndAuthz(route("GET", base+"/{budgetName}/budget-usage"), rbac.BudgetRead, controller.GetBudgetUsage)
 	rr.HandleFuncWithValidationAndAuthz(route("PUT", base+"/{budgetName}"), rbac.BudgetUpdate, controller.UpdateBudget)
 	rr.HandleFuncWithValidationAndAuthz(route("DELETE", base+"/{budgetName}"), rbac.BudgetDelete, controller.DeleteBudget)
 }

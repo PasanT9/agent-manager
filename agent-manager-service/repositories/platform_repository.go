@@ -245,6 +245,18 @@ func (r *platformRepo) DeleteProject(ctx context.Context, ouID, projectName stri
 		if len(left) > 0 {
 			return fmt.Errorf("%w: project %q still has %s", utils.ErrConflict, projectName, strings.Join(left, ", "))
 		}
+		// Its control-plane budgets go with it; the budgets a gateway created for it become
+		// the organization's, as the gateway owns them (Interfaces 1.1).
+		owned := tx.Model(&models.Budget{}).Select("id").
+			Where("org_id = ? AND project_id = ? AND origin = ?", org.ID, p.ID, models.BudgetOriginControlPlane)
+		if err := tx.Where("org_id = ? AND kind = ? AND id IN (?)", org.ID, models.KindBudget, owned).
+			Delete(&models.Artifact{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&models.Budget{}).Where("org_id = ? AND project_id = ?", org.ID, p.ID).
+			Update("project_id", nil).Error; err != nil {
+			return err
+		}
 		// Event settings scoped to the project go with it.
 		if err := tx.Where("org_id = ? AND project_id = ?", org.ID, p.ID).Delete(&models.EventSubscription{}).Error; err != nil {
 			return err

@@ -20,6 +20,9 @@ import (
 //			CreateForControlPlaneFunc: func(ctx context.Context, budget *models.Budget, name string) error {
 //				panic("mock out the CreateForControlPlane method")
 //			},
+//			CreateManyForControlPlaneFunc: func(ctx context.Context, budgets []*models.Budget, names []string) error {
+//				panic("mock out the CreateManyForControlPlane method")
+//			},
 //			DeleteFunc: func(ctx context.Context, ouID string, name string) error {
 //				panic("mock out the Delete method")
 //			},
@@ -38,6 +41,9 @@ import (
 //			SaveForGatewayFunc: func(ctx context.Context, budget *models.Budget, name string) (bool, error) {
 //				panic("mock out the SaveForGateway method")
 //			},
+//			TakenNamesFunc: func(ctx context.Context, ouID string, names []string) ([]string, error) {
+//				panic("mock out the TakenNames method")
+//			},
 //			UpdateFunc: func(ctx context.Context, budget *models.Budget) error {
 //				panic("mock out the Update method")
 //			},
@@ -50,6 +56,9 @@ import (
 type BudgetRepositoryMock struct {
 	// CreateForControlPlaneFunc mocks the CreateForControlPlane method.
 	CreateForControlPlaneFunc func(ctx context.Context, budget *models.Budget, name string) error
+
+	// CreateManyForControlPlaneFunc mocks the CreateManyForControlPlane method.
+	CreateManyForControlPlaneFunc func(ctx context.Context, budgets []*models.Budget, names []string) error
 
 	// DeleteFunc mocks the Delete method.
 	DeleteFunc func(ctx context.Context, ouID string, name string) error
@@ -69,6 +78,9 @@ type BudgetRepositoryMock struct {
 	// SaveForGatewayFunc mocks the SaveForGateway method.
 	SaveForGatewayFunc func(ctx context.Context, budget *models.Budget, name string) (bool, error)
 
+	// TakenNamesFunc mocks the TakenNames method.
+	TakenNamesFunc func(ctx context.Context, ouID string, names []string) ([]string, error)
+
 	// UpdateFunc mocks the Update method.
 	UpdateFunc func(ctx context.Context, budget *models.Budget) error
 
@@ -82,6 +94,15 @@ type BudgetRepositoryMock struct {
 			Budget *models.Budget
 			// Name is the name argument value.
 			Name string
+		}
+		// CreateManyForControlPlane holds details about calls to the CreateManyForControlPlane method.
+		CreateManyForControlPlane []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// Budgets is the budgets argument value.
+			Budgets []*models.Budget
+			// Names is the names argument value.
+			Names []string
 		}
 		// Delete holds details about calls to the Delete method.
 		Delete []struct {
@@ -139,6 +160,15 @@ type BudgetRepositoryMock struct {
 			// Name is the name argument value.
 			Name string
 		}
+		// TakenNames holds details about calls to the TakenNames method.
+		TakenNames []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// OuID is the ouID argument value.
+			OuID string
+			// Names is the names argument value.
+			Names []string
+		}
 		// Update holds details about calls to the Update method.
 		Update []struct {
 			// Ctx is the ctx argument value.
@@ -147,14 +177,16 @@ type BudgetRepositoryMock struct {
 			Budget *models.Budget
 		}
 	}
-	lockCreateForControlPlane  sync.RWMutex
-	lockDelete                 sync.RWMutex
-	lockDeleteForGateway       sync.RWMutex
-	lockDeleteForGatewayExcept sync.RWMutex
-	lockGet                    sync.RWMutex
-	lockList                   sync.RWMutex
-	lockSaveForGateway         sync.RWMutex
-	lockUpdate                 sync.RWMutex
+	lockCreateForControlPlane     sync.RWMutex
+	lockCreateManyForControlPlane sync.RWMutex
+	lockDelete                    sync.RWMutex
+	lockDeleteForGateway          sync.RWMutex
+	lockDeleteForGatewayExcept    sync.RWMutex
+	lockGet                       sync.RWMutex
+	lockList                      sync.RWMutex
+	lockSaveForGateway            sync.RWMutex
+	lockTakenNames                sync.RWMutex
+	lockUpdate                    sync.RWMutex
 }
 
 // CreateForControlPlane calls CreateForControlPlaneFunc.
@@ -194,6 +226,46 @@ func (mock *BudgetRepositoryMock) CreateForControlPlaneCalls() []struct {
 	mock.lockCreateForControlPlane.RLock()
 	calls = mock.calls.CreateForControlPlane
 	mock.lockCreateForControlPlane.RUnlock()
+	return calls
+}
+
+// CreateManyForControlPlane calls CreateManyForControlPlaneFunc.
+func (mock *BudgetRepositoryMock) CreateManyForControlPlane(ctx context.Context, budgets []*models.Budget, names []string) error {
+	if mock.CreateManyForControlPlaneFunc == nil {
+		panic("BudgetRepositoryMock.CreateManyForControlPlaneFunc: method is nil but BudgetRepository.CreateManyForControlPlane was just called")
+	}
+	callInfo := struct {
+		Ctx     context.Context
+		Budgets []*models.Budget
+		Names   []string
+	}{
+		Ctx:     ctx,
+		Budgets: budgets,
+		Names:   names,
+	}
+	mock.lockCreateManyForControlPlane.Lock()
+	mock.calls.CreateManyForControlPlane = append(mock.calls.CreateManyForControlPlane, callInfo)
+	mock.lockCreateManyForControlPlane.Unlock()
+	return mock.CreateManyForControlPlaneFunc(ctx, budgets, names)
+}
+
+// CreateManyForControlPlaneCalls gets all the calls that were made to CreateManyForControlPlane.
+// Check the length with:
+//
+//	len(mockedBudgetRepository.CreateManyForControlPlaneCalls())
+func (mock *BudgetRepositoryMock) CreateManyForControlPlaneCalls() []struct {
+	Ctx     context.Context
+	Budgets []*models.Budget
+	Names   []string
+} {
+	var calls []struct {
+		Ctx     context.Context
+		Budgets []*models.Budget
+		Names   []string
+	}
+	mock.lockCreateManyForControlPlane.RLock()
+	calls = mock.calls.CreateManyForControlPlane
+	mock.lockCreateManyForControlPlane.RUnlock()
 	return calls
 }
 
@@ -438,6 +510,46 @@ func (mock *BudgetRepositoryMock) SaveForGatewayCalls() []struct {
 	mock.lockSaveForGateway.RLock()
 	calls = mock.calls.SaveForGateway
 	mock.lockSaveForGateway.RUnlock()
+	return calls
+}
+
+// TakenNames calls TakenNamesFunc.
+func (mock *BudgetRepositoryMock) TakenNames(ctx context.Context, ouID string, names []string) ([]string, error) {
+	if mock.TakenNamesFunc == nil {
+		panic("BudgetRepositoryMock.TakenNamesFunc: method is nil but BudgetRepository.TakenNames was just called")
+	}
+	callInfo := struct {
+		Ctx   context.Context
+		OuID  string
+		Names []string
+	}{
+		Ctx:   ctx,
+		OuID:  ouID,
+		Names: names,
+	}
+	mock.lockTakenNames.Lock()
+	mock.calls.TakenNames = append(mock.calls.TakenNames, callInfo)
+	mock.lockTakenNames.Unlock()
+	return mock.TakenNamesFunc(ctx, ouID, names)
+}
+
+// TakenNamesCalls gets all the calls that were made to TakenNames.
+// Check the length with:
+//
+//	len(mockedBudgetRepository.TakenNamesCalls())
+func (mock *BudgetRepositoryMock) TakenNamesCalls() []struct {
+	Ctx   context.Context
+	OuID  string
+	Names []string
+} {
+	var calls []struct {
+		Ctx   context.Context
+		OuID  string
+		Names []string
+	}
+	mock.lockTakenNames.RLock()
+	calls = mock.calls.TakenNames
+	mock.lockTakenNames.RUnlock()
 	return calls
 }
 

@@ -33,14 +33,13 @@ import (
 )
 
 var (
-	budgetEnvDefault = "0193f1c2-0000-7000-8000-0000000000e1"
-	budgetGwEgress   = uuid.MustParse("0193f1c2-0000-7000-8000-0000000000f1")
-	budgetGwBoth     = uuid.MustParse("0193f1c2-0000-7000-8000-0000000000f2")
-	budgetGwIngress  = uuid.MustParse("0193f1c2-0000-7000-8000-0000000000f3")
+	budgetGwEgress  = uuid.MustParse("0193f1c2-0000-7000-8000-0000000000f1")
+	budgetGwBoth    = uuid.MustParse("0193f1c2-0000-7000-8000-0000000000f2")
+	budgetGwIngress = uuid.MustParse("0193f1c2-0000-7000-8000-0000000000f3")
 )
 
-// newBudgetGatewaysEnv has an egress and a both gateway in the default environment, an
-// ingress gateway, a control-plane budget and a gateway budget.
+// newBudgetGatewaysEnv has an egress and a both gateway, an ingress gateway, a
+// control-plane budget and a gateway budget.
 func newBudgetGatewaysEnv(t *testing.T) (*BudgetGateways, *recordingEventHub, *[]repositories.GatewayFilterOptions) {
 	t.Helper()
 	var filters []repositories.GatewayFilterOptions
@@ -54,23 +53,12 @@ func newBudgetGatewaysEnv(t *testing.T) (*BudgetGateways, *recordingEventHub, *[
 			filters = append(filters, f)
 			out := []*models.Gateway{}
 			for _, gw := range []uuid.UUID{budgetGwEgress, budgetGwBoth} {
-				if f.EnvironmentID == nil || *f.EnvironmentID == budgetEnvDefault {
-					out = append(out, gateways[gw])
-				}
+				out = append(out, gateways[gw])
 			}
 			return out, nil
 		},
 		GetByUUIDFunc: func(id string) (*models.Gateway, error) {
 			return gateways[uuid.MustParse(id)], nil
-		},
-		GetEnvironmentMappingsByGatewayIDFunc: func(string) ([]models.GatewayEnvironmentMapping, error) {
-			return []models.GatewayEnvironmentMapping{{EnvironmentUUID: uuid.MustParse(budgetEnvDefault)}}, nil
-		},
-	}
-	platform := &repomocks.PlatformRepositoryMock{
-		GetEnvironmentFunc: func(_ context.Context, _, name string) (*models.EnvironmentResponse, error) {
-			// Agent Manager has one environment; any name resolves to it.
-			return &models.EnvironmentResponse{UUID: budgetEnvDefault, Name: models.DefaultEnvironmentName}, nil
 		},
 	}
 	updated := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
@@ -83,10 +71,6 @@ func newBudgetGatewaysEnv(t *testing.T) (*BudgetGateways, *recordingEventHub, *[
 					Origin: models.BudgetOriginControlPlane, Configuration: budgetConfigForTest("Org monthly"), UpdatedAt: updated,
 				},
 				{
-					ID: uuid.New(), Name: "elsewhere", OrgID: budgetTestOrg, Origin: models.BudgetOriginControlPlane,
-					Configuration: withEnvironments(budgetConfigForTest("Elsewhere"), "production"), UpdatedAt: updated,
-				},
-				{
 					ID: uuid.New(), Name: "from-gateway", OrgID: budgetTestOrg, Origin: models.BudgetOriginGateway, GatewayID: &gw,
 					Configuration: budgetConfigForTest("from-gateway"), UpdatedAt: updated,
 				},
@@ -94,7 +78,7 @@ func newBudgetGatewaysEnv(t *testing.T) (*BudgetGateways, *recordingEventHub, *[
 		},
 	}
 	hub := &recordingEventHub{}
-	return NewBudgetGateways(NewGatewayEventsService(hub), gatewayRepo, platform, budgets), hub, &filters
+	return NewBudgetGateways(NewGatewayEventsService(hub), gatewayRepo, budgets), hub, &filters
 }
 
 func budgetConfigForTest(displayName string) models.BudgetConfig {
@@ -105,14 +89,6 @@ func budgetConfigForTest(displayName string) models.BudgetConfig {
 		Exemptions: []models.BudgetExemption{},
 		Warnings:   &models.BudgetWarnings{Thresholds: []int32{80}, ChannelIDs: []string{budgetOrgChannel}},
 	}
-}
-
-// withEnvironments limits a budget to environments whose names do not resolve to the
-// gateway's environment in this test (GetEnvironment returns the default for any name,
-// so the name check filters it out).
-func withEnvironments(c models.BudgetConfig, names ...string) models.BudgetConfig {
-	c.Environments = &models.BudgetEnvironments{Allocation: "shared", IDs: names}
-	return c
 }
 
 func TestBudgetGateways_SendsToTheEgressGatewaysOfTheBudget(t *testing.T) {
@@ -126,7 +102,7 @@ func TestBudgetGateways_SendsToTheEgressGatewaysOfTheBudget(t *testing.T) {
 
 	require.Len(t, *filters, 1)
 	assert.Equal(t, models.EgressGatewayRoles, (*filters)[0].FunctionalityTypeIn)
-	assert.Nil(t, (*filters)[0].EnvironmentID, "no environments: every environment")
+	assert.Nil(t, (*filters)[0].EnvironmentID, "every egress gateway of the organization")
 	require.Len(t, hub.published, 2)
 	assert.ElementsMatch(t, []string{budgetGwEgress.String(), budgetGwBoth.String()},
 		[]string{hub.published[0].GatewayID, hub.published[1].GatewayID})
@@ -166,24 +142,6 @@ func envelopePayload(t *testing.T, data string) string {
 	return string(envelope.Payload)
 }
 
-func TestBudgetGateways_LimitsToTheBudgetsEnvironments(t *testing.T) {
-	g, hub, filters := newBudgetGatewaysEnv(t)
-	b := &models.Budget{
-		ID: uuid.New(), Name: "default-only", OrgID: budgetTestOrg, Origin: models.BudgetOriginControlPlane,
-		Configuration: withEnvironments(budgetConfigForTest("x"), models.DefaultEnvironmentName),
-	}
-	g.SendBudget(context.Background(), b, true)
-	require.Len(t, *filters, 1)
-	require.NotNil(t, (*filters)[0].EnvironmentID)
-	assert.Equal(t, budgetEnvDefault, *(*filters)[0].EnvironmentID)
-	assert.Len(t, hub.published, 2)
-
-	hub.published, *filters = nil, nil
-	b.Configuration = withEnvironments(budgetConfigForTest("x"), "production")
-	g.SendBudget(context.Background(), b, true)
-	assert.Empty(t, hub.published, "an environment that does not exist covers no gateway")
-}
-
 func TestBudgetGateways_NeverSendsAGatewaysOwnBudget(t *testing.T) {
 	g, hub, _ := newBudgetGatewaysEnv(t)
 	gw := budgetGwEgress
@@ -198,7 +156,7 @@ func TestBudgetGateways_ForGatewayListsTheControlPlaneBudgetsItEnforces(t *testi
 	g, _, _ := newBudgetGatewaysEnv(t)
 	got, err := g.ForGatewayID(context.Background(), budgetTestOrg, budgetGwEgress.String())
 	require.NoError(t, err)
-	require.Len(t, got, 1, "the gateway's own budget and a budget for another environment are left out")
+	require.Len(t, got, 1, "the gateway's own budget is left out")
 	assert.Equal(t, "0193f1c2-0000-7000-8000-0000000000b1", got[0].BudgetID)
 	assert.Equal(t, "org-monthly", got[0].Budget.Metadata.Name)
 

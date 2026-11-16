@@ -358,15 +358,32 @@ CREATE TABLE budgets (
     org_id UUID NOT NULL,
     origin VARCHAR(16) NOT NULL,
     gateway_id UUID,
+    project_id UUID,
     configuration JSONB NOT NULL,
     created_by VARCHAR(255),
     CONSTRAINT pk_budgets PRIMARY KEY (id),
     CONSTRAINT fk_budgets_org_id_id FOREIGN KEY (org_id, id) REFERENCES artifacts (org_id, id) ON DELETE CASCADE,
     CONSTRAINT fk_budgets_org_id_gateway_id FOREIGN KEY (org_id, gateway_id) REFERENCES gateways (org_id, id),
+    CONSTRAINT fk_budgets_org_id_project_id FOREIGN KEY (org_id, project_id) REFERENCES projects (org_id, id),
     CONSTRAINT ck_budgets_1 CHECK (origin IN ('control_plane', 'gateway_api')),
     CONSTRAINT ck_budgets_2 CHECK ((origin = 'gateway_api') = (gateway_id IS NOT NULL))
 );
 CREATE INDEX idx_budgets_gateway_id ON budgets (gateway_id);
+CREATE INDEX idx_budgets_project_id ON budgets (project_id);
+
+CREATE TABLE budget_usage (
+    budget_id UUID NOT NULL,
+    allowance_id UUID NOT NULL,
+    org_id UUID NOT NULL,
+    allowance JSONB NOT NULL,
+    period_start TIMESTAMPTZ NOT NULL,
+    spent VARCHAR(32) NOT NULL,
+    unpriced_requests BIGINT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT pk_budget_usage PRIMARY KEY (budget_id, allowance_id),
+    CONSTRAINT fk_budget_usage_budget_id FOREIGN KEY (budget_id) REFERENCES budgets (id) ON DELETE CASCADE
+);
+CREATE INDEX idx_budget_usage_org_id ON budget_usage (org_id);
 
 CREATE TABLE llm_proxies (
     id UUID NOT NULL,
@@ -741,6 +758,7 @@ CREATE TABLE event_deliveries (
     project_id UUID,
     agent_id UUID,
     environment_id UUID,
+    budget_id UUID,
     status VARCHAR(16) NOT NULL,
     attempts INTEGER NOT NULL,
     response_code INTEGER,

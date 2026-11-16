@@ -19,7 +19,7 @@ var _ MappedNullable = &BudgetUpdateRequest{}
 
 // BudgetUpdateRequest The editable fields of a budget; the others are fixed after creation
 type BudgetUpdateRequest struct {
-	DisplayName string            `json:"displayName"`
+	DisplayName *string           `json:"displayName,omitempty"`
 	Description *string           `json:"description,omitempty"`
 	Status      *string           `json:"status,omitempty"`
 	Limit       BudgetUpdateLimit `json:"limit"`
@@ -31,9 +31,8 @@ type BudgetUpdateRequest struct {
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewBudgetUpdateRequest(displayName string, limit BudgetUpdateLimit) *BudgetUpdateRequest {
+func NewBudgetUpdateRequest(limit BudgetUpdateLimit) *BudgetUpdateRequest {
 	this := BudgetUpdateRequest{}
-	this.DisplayName = displayName
 	var status string = "active"
 	this.Status = &status
 	this.Limit = limit
@@ -50,28 +49,36 @@ func NewBudgetUpdateRequestWithDefaults() *BudgetUpdateRequest {
 	return &this
 }
 
-// GetDisplayName returns the DisplayName field value
+// GetDisplayName returns the DisplayName field value if set, zero value otherwise.
 func (o *BudgetUpdateRequest) GetDisplayName() string {
-	if o == nil {
+	if o == nil || IsNil(o.DisplayName) {
 		var ret string
 		return ret
 	}
-
-	return o.DisplayName
+	return *o.DisplayName
 }
 
-// GetDisplayNameOk returns a tuple with the DisplayName field value
+// GetDisplayNameOk returns a tuple with the DisplayName field value if set, nil otherwise
 // and a boolean to check if the value has been set.
 func (o *BudgetUpdateRequest) GetDisplayNameOk() (*string, bool) {
-	if o == nil {
+	if o == nil || IsNil(o.DisplayName) {
 		return nil, false
 	}
-	return &o.DisplayName, true
+	return o.DisplayName, true
 }
 
-// SetDisplayName sets field value
+// HasDisplayName returns a boolean if a field has been set.
+func (o *BudgetUpdateRequest) HasDisplayName() bool {
+	if o != nil && !IsNil(o.DisplayName) {
+		return true
+	}
+
+	return false
+}
+
+// SetDisplayName gets a reference to the given string and assigns it to the DisplayName field.
 func (o *BudgetUpdateRequest) SetDisplayName(v string) {
-	o.DisplayName = v
+	o.DisplayName = &v
 }
 
 // GetDescription returns the Description field value if set, zero value otherwise.
@@ -236,7 +243,9 @@ func (o BudgetUpdateRequest) MarshalJSON() ([]byte, error) {
 
 func (o BudgetUpdateRequest) ToMap() (map[string]interface{}, error) {
 	toSerialize := map[string]interface{}{}
-	toSerialize["displayName"] = o.DisplayName
+	if !IsNil(o.DisplayName) {
+		toSerialize["displayName"] = o.DisplayName
+	}
 	if !IsNil(o.Description) {
 		toSerialize["description"] = o.Description
 	}

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 
@@ -420,6 +421,9 @@ func eventFanoutDelay(attempt int) time.Duration {
 func (d *eventDispatcher) stillWanted(
 	ctx context.Context, delivery *models.EventDelivery, dest *models.EventDestination, e events.Event,
 ) (bool, error) {
+	if delivery.BudgetID != nil {
+		return d.budgetWants(ctx, delivery, dest)
+	}
 	if delivery.MonitorAlertID != nil {
 		if !dest.UsableBy(models.EventScopeAgent, delivery.ProjectName) {
 			return false, nil
@@ -442,6 +446,21 @@ func (d *eventDispatcher) stillWanted(
 		}
 	}
 	return false, nil
+}
+
+// budgetWants checks that a budget warning's budget still exists, is active and names the
+// destination among its notification channels, and that the destination is still
+// available to it.
+func (d *eventDispatcher) budgetWants(ctx context.Context, delivery *models.EventDelivery, dest *models.EventDestination) (bool, error) {
+	cfg, err := d.repo.BudgetConfig(ctx, delivery.OUID, *delivery.BudgetID)
+	if err != nil || cfg == nil {
+		return false, err
+	}
+	if cfg.Status != budgetStatusActive || cfg.Warnings == nil ||
+		!slices.Contains(cfg.Warnings.ChannelIDs, dest.ID.String()) {
+		return false, nil
+	}
+	return dest.AvailableToBudget(budgetProject(cfg)), nil
 }
 
 func (d *eventDispatcher) maxAttempts() int {

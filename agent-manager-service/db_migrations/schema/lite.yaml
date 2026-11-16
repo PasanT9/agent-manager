@@ -393,16 +393,35 @@ tables:
       - {name: org_id, type: id}
       - {name: origin, type: text, size: 16}
       - {name: gateway_id, type: id, nullable: true}
+      - {name: project_id, type: id, nullable: true}
       - {name: configuration, type: json}
       - {name: created_by, type: text, size: 255, nullable: true}
     primary_key: [id]
     foreign_keys:
       - {columns: [org_id, id], references: artifacts, ref_columns: [org_id, id], on_delete: cascade}
       - {columns: [org_id, gateway_id], references: gateways, ref_columns: [org_id, id]}
+      - {columns: [org_id, project_id], references: projects, ref_columns: [org_id, id]}
     checks:
       - "origin IN ('control_plane', 'gateway_api')"
       - "(origin = 'gateway_api') = (gateway_id IS NOT NULL)"
-    indexes: [[gateway_id]]
+    indexes: [[gateway_id], [project_id]]
+
+  # One row per budget allowance: its spend in the current period, as gateways report it
+  # (Interfaces 1.2). Spend is a decimal string in USD, compared in code.
+  - name: budget_usage
+    columns:
+      - {name: budget_id, type: id}
+      - {name: allowance_id, type: id}
+      - {name: org_id, type: id}
+      - {name: allowance, type: json}
+      - {name: period_start, type: time}
+      - {name: spent, type: text, size: 32}
+      - {name: unpriced_requests, type: bigint}
+      - {name: updated_at, type: time}
+    primary_key: [budget_id, allowance_id]
+    foreign_keys:
+      - {columns: [budget_id], references: budgets, ref_columns: [id], on_delete: cascade}
+    indexes: [[org_id]]
 
   - name: llm_proxies
     columns:
@@ -802,6 +821,9 @@ tables:
       - {name: project_id, type: id, nullable: true}
       - {name: agent_id, type: id, nullable: true}
       - {name: environment_id, type: id, nullable: true}
+      # The budget whose warning this is; the dispatcher checks it still names the
+      # destination before each attempt (Interfaces 6).
+      - {name: budget_id, type: id, nullable: true}
       - {name: status, type: text, size: 16}
       - {name: attempts, type: int}
       - {name: response_code, type: int, nullable: true}
