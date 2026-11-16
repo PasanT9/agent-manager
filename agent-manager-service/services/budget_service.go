@@ -382,7 +382,7 @@ func withProjectConsumer(consumers []spec.BudgetConsumer, project *string) []spe
 // ownByProject checks a budget owned by a project (the project-id annotation) is that
 // project's own (Interfaces 2.2): it lists that project as a shared consumer, so it counts
 // only that project's traffic, and it exempts only agents of that project. Create adds
-// the consumer when it is left out (withProjectConsumer); a gateway's budget must list it.
+// the consumer when it is left out (withProjectConsumer), as gateways do before pushing.
 func ownByProject(cfg *models.BudgetConfig, project string) error {
 	listed := false
 	for i, c := range cfg.Consumers {
