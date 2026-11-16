@@ -496,6 +496,7 @@ type ApiImportBudgetsRequest struct {
 	orgName    string
 	body       *string
 	dryRun     *bool
+	onExisting *string
 }
 
 // UTF-8 CSV with a header row; at most 500 rows and 1 MB.
@@ -507,6 +508,12 @@ func (r ApiImportBudgetsRequest) Body(body string) ApiImportBudgetsRequest {
 // Check every row and save nothing.
 func (r ApiImportBudgetsRequest) DryRun(dryRun bool) ApiImportBudgetsRequest {
 	r.dryRun = &dryRun
+	return r
+}
+
+// What a row naming an existing budget does: fail (the row fails and nothing is saved), skip (the budget is left as it is) or update (its editable fields are replaced; fixed fields must match, and a gateway&#39;s budget cannot be updated).
+func (r ApiImportBudgetsRequest) OnExisting(onExisting string) ApiImportBudgetsRequest {
+	r.onExisting = &onExisting
 	return r
 }
 
@@ -561,6 +568,9 @@ func (a *BudgetsAPIService) ImportBudgetsExecute(r ApiImportBudgetsRequest) (*Bu
 
 	if r.dryRun != nil {
 		parameterAddToHeaderOrQuery(localVarQueryParams, "dryRun", r.dryRun, "")
+	}
+	if r.onExisting != nil {
+		parameterAddToHeaderOrQuery(localVarQueryParams, "onExisting", r.onExisting, "")
 	}
 	// to determine the Content-Type header
 	localVarHTTPContentTypes := []string{"text/csv"}

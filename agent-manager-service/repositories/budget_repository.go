@@ -39,10 +39,11 @@ type BudgetRepository interface {
 	// row. budget.ID is set when nil, and Name and the timestamps are filled in. It returns
 	// utils.ErrBudgetAlreadyExists when another artifact holds the name.
 	CreateForControlPlane(ctx context.Context, budget *models.Budget, name string) error
-	// CreateManyForControlPlane creates control-plane budgets in one transaction, all or
-	// none: budgets[i] is named names[i]. When a name is held by another artifact nothing
-	// is created and the error is a *BudgetNameTakenError naming it.
-	CreateManyForControlPlane(ctx context.Context, budgets []*models.Budget, names []string) error
+	// CreateManyForControlPlane creates control-plane budgets and updates others in one
+	// transaction, all or none: budgets[i] is named names[i]; updates replace stored
+	// budgets' configurations, as Update does. When a name is held by another artifact
+	// nothing is saved and the error is a *BudgetNameTakenError naming it.
+	CreateManyForControlPlane(ctx context.Context, budgets []*models.Budget, names []string, updates []*models.Budget) error
 	// TakenNames returns which of names another artifact of the organization holds, of any kind.
 	TakenNames(ctx context.Context, ouID string, names []string) ([]string, error)
 	// SaveForGateway stores a budget a gateway pushed, matched by name (the artifact
@@ -90,13 +91,18 @@ func (r *budgetRepository) CreateForControlPlane(ctx context.Context, budget *mo
 	})
 }
 
-func (r *budgetRepository) CreateManyForControlPlane(ctx context.Context, budgets []*models.Budget, names []string) error {
+func (r *budgetRepository) CreateManyForControlPlane(ctx context.Context, budgets []*models.Budget, names []string, updates []*models.Budget) error {
 	if len(budgets) != len(names) {
 		return fmt.Errorf("got %d budgets and %d names", len(budgets), len(names))
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for i, b := range budgets {
 			if err := createControlPlaneBudget(tx, b, names[i]); err != nil {
+				return err
+			}
+		}
+		for _, b := range updates {
+			if err := updateBudget(tx, b); err != nil {
 				return err
 			}
 		}
@@ -325,21 +331,26 @@ func (r *budgetRepository) Get(ctx context.Context, ouID, name string) (*models.
 
 func (r *budgetRepository) Update(ctx context.Context, budget *models.Budget) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		res := tx.Model(&models.Budget{}).Where("id = ? AND org_id = ?", budget.ID, budget.OrgID).
-			Update("configuration", dbx.JSON(budget.Configuration))
-		if res.Error != nil {
-			return fmt.Errorf("failed to update budget %q: %w", budget.Name, res.Error)
-		}
-		if res.RowsAffected == 0 {
-			return utils.ErrBudgetNotFound
-		}
-		artifact := &models.Artifact{UUID: budget.ID, OUID: budget.OrgID}
-		if err := NewArtifactRepo(tx).Update(tx, artifact); err != nil {
-			return fmt.Errorf("failed to update budget artifact %q: %w", budget.Name, err)
-		}
-		budget.UpdatedAt = artifact.UpdatedAt
-		return nil
+		return updateBudget(tx, budget)
 	})
+}
+
+// updateBudget replaces a budget's configuration and touches its artifact in tx.
+func updateBudget(tx *gorm.DB, budget *models.Budget) error {
+	res := tx.Model(&models.Budget{}).Where("id = ? AND org_id = ?", budget.ID, budget.OrgID).
+		Update("configuration", dbx.JSON(budget.Configuration))
+	if res.Error != nil {
+		return fmt.Errorf("failed to update budget %q: %w", budget.Name, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return utils.ErrBudgetNotFound
+	}
+	artifact := &models.Artifact{UUID: budget.ID, OUID: budget.OrgID}
+	if err := NewArtifactRepo(tx).Update(tx, artifact); err != nil {
+		return fmt.Errorf("failed to update budget artifact %q: %w", budget.Name, err)
+	}
+	budget.UpdatedAt = artifact.UpdatedAt
+	return nil
 }
 
 func (r *budgetRepository) Delete(ctx context.Context, ouID, name string) error {

@@ -282,6 +282,13 @@ func Run(secretProvider secretmanagersvc.Provider, opts Options) {
 		os.Exit(1)
 	}
 
+	// Deletes AI cost stats older than the kept months, once a day.
+	costRetentionCtx, costRetentionCancel := context.WithCancel(backgroundCtx)
+	if err := dependencies.CostService.Start(costRetentionCtx); err != nil {
+		slog.Error("failed to start cost usage retention", "error", err)
+		os.Exit(1)
+	}
+
 	reconcileWorkerCtx, reconcileWorkerCancel := context.WithCancel(backgroundCtx)
 	if err := dependencies.ReconcileWorker.Start(reconcileWorkerCtx); err != nil {
 		slog.Error("failed to start reconcile worker", "error", err)
@@ -358,6 +365,11 @@ func Run(secretProvider secretmanagersvc.Provider, opts Options) {
 		deploymentTimeoutSweeperCancel()
 		if err := dependencies.DeploymentTimeoutSweeper.Stop(); err != nil {
 			slog.Error("error stopping deployment timeout sweeper", "error", err)
+		}
+
+		costRetentionCancel()
+		if err := dependencies.CostService.Stop(); err != nil {
+			slog.Error("error stopping cost usage retention", "error", err)
 		}
 
 		reconcileWorkerCancel()

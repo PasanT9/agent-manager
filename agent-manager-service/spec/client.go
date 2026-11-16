@@ -50,6 +50,8 @@ type APIClient struct {
 
 	A2AProxyAPI *A2AProxyAPIService
 
+	AICostsAPI *AICostsAPIService
+
 	AgentAPIKeysAPI *AgentAPIKeysAPIService
 
 	AgentCardAPI *AgentCardAPIService
@@ -136,6 +138,7 @@ func NewAPIClient(cfg *Configuration) *APIClient {
 
 	// API Services
 	c.A2AProxyAPI = (*A2AProxyAPIService)(&c.common)
+	c.AICostsAPI = (*AICostsAPIService)(&c.common)
 	c.AgentAPIKeysAPI = (*AgentAPIKeysAPIService)(&c.common)
 	c.AgentCardAPI = (*AgentCardAPIService)(&c.common)
 	c.AgentIdentitiesAPI = (*AgentIdentitiesAPIService)(&c.common)

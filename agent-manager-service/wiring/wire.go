@@ -115,6 +115,8 @@ var serviceProviderSet = wire.NewSet(
 	services.NewBudgetGateways,
 	wire.Bind(new(services.BudgetGatewaySender), new(*services.BudgetGateways)),
 	services.NewBudgetWarningService,
+	services.NewCostService,
+	wire.Bind(new(services.CostRecorder), new(services.CostService)),
 	wire.Bind(new(services.BudgetWarner), new(*services.BudgetWarningService)),
 	services.NewMonitorScoresService,
 	services.NewCatalogService,
@@ -164,6 +166,7 @@ var controllerProviderSet = wire.NewSet(
 	controllers.NewAgentIdentityController,
 	controllers.NewEventsController,
 	controllers.NewBudgetController,
+	controllers.NewCostController,
 	controllers.NewMonitorAlertController,
 )
 
@@ -257,6 +260,7 @@ var repositoryProviderSet = wire.NewSet(
 	ProvideGatewayRepository,
 	repositories.NewBudgetRepository,
 	repositories.NewBudgetUsageRepository,
+	repositories.NewCostUsageRepository,
 	ProvideLLMProviderTemplateRepository,
 	ProvideLLMProviderRepository,
 	ProvideLLMProxyRepository,

@@ -385,6 +385,25 @@ CREATE TABLE budget_usage (
 );
 CREATE INDEX idx_budget_usage_org_id ON budget_usage (org_id);
 
+CREATE TABLE cost_usage (
+    org_id UUID NOT NULL,
+    month TIMESTAMPTZ NOT NULL,
+    cost_key UUID NOT NULL,
+    project VARCHAR(63),
+    agent VARCHAR(63),
+    api_key VARCHAR(255),
+    user_id VARCHAR(255),
+    llm_provider VARCHAR(255) NOT NULL,
+    model VARCHAR(255),
+    cost VARCHAR(32) NOT NULL,
+    missing_price_requests BIGINT NOT NULL,
+    usage_unavailable_requests BIGINT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT pk_cost_usage PRIMARY KEY (org_id, month, cost_key),
+    CONSTRAINT fk_cost_usage_org_id FOREIGN KEY (org_id) REFERENCES organizations (id)
+);
+CREATE INDEX idx_cost_usage_month ON cost_usage (month);
+
 CREATE TABLE llm_proxies (
     id UUID NOT NULL,
     org_id UUID NOT NULL,

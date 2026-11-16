@@ -79,6 +79,8 @@ type AppParams struct {
 	AgentIdentityController          controllers.AgentIdentityController
 	EventsController                 controllers.EventsController
 	BudgetController                 controllers.BudgetController
+	CostController                   controllers.CostController
+	CostService                      services.CostService
 	MonitorAlertController           controllers.MonitorAlertController
 	MonitorScheduler                 services.MonitorSchedulerService
 	AgentThunderReconciler           services.AgentThunderReconcilerService

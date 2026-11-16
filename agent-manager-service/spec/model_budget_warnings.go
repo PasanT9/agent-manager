@@ -21,18 +21,18 @@ var _ MappedNullable = &BudgetWarnings{}
 type BudgetWarnings struct {
 	// Whole percentages of the amount, 1-1000; each once per allowance per period
 	Thresholds []int32 `json:"thresholds"`
-	// Notification channel (event destination) IDs available to the budget
-	ChannelIds []string `json:"channelIds"`
+	// Names of notification channels (event destinations, unique in the organization) available to the budget
+	Channels []string `json:"channels"`
 }
 
 // NewBudgetWarnings instantiates a new BudgetWarnings object
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewBudgetWarnings(thresholds []int32, channelIds []string) *BudgetWarnings {
+func NewBudgetWarnings(thresholds []int32, channels []string) *BudgetWarnings {
 	this := BudgetWarnings{}
 	this.Thresholds = thresholds
-	this.ChannelIds = channelIds
+	this.Channels = channels
 	return &this
 }
 
@@ -68,28 +68,28 @@ func (o *BudgetWarnings) SetThresholds(v []int32) {
 	o.Thresholds = v
 }
 
-// GetChannelIds returns the ChannelIds field value
-func (o *BudgetWarnings) GetChannelIds() []string {
+// GetChannels returns the Channels field value
+func (o *BudgetWarnings) GetChannels() []string {
 	if o == nil {
 		var ret []string
 		return ret
 	}
 
-	return o.ChannelIds
+	return o.Channels
 }
 
-// GetChannelIdsOk returns a tuple with the ChannelIds field value
+// GetChannelsOk returns a tuple with the Channels field value
 // and a boolean to check if the value has been set.
-func (o *BudgetWarnings) GetChannelIdsOk() ([]string, bool) {
+func (o *BudgetWarnings) GetChannelsOk() ([]string, bool) {
 	if o == nil {
 		return nil, false
 	}
-	return o.ChannelIds, true
+	return o.Channels, true
 }
 
-// SetChannelIds sets field value
-func (o *BudgetWarnings) SetChannelIds(v []string) {
-	o.ChannelIds = v
+// SetChannels sets field value
+func (o *BudgetWarnings) SetChannels(v []string) {
+	o.Channels = v
 }
 
 func (o BudgetWarnings) MarshalJSON() ([]byte, error) {
@@ -103,7 +103,7 @@ func (o BudgetWarnings) MarshalJSON() ([]byte, error) {
 func (o BudgetWarnings) ToMap() (map[string]interface{}, error) {
 	toSerialize := map[string]interface{}{}
 	toSerialize["thresholds"] = o.Thresholds
-	toSerialize["channelIds"] = o.ChannelIds
+	toSerialize["channels"] = o.Channels
 	return toSerialize, nil
 }
 

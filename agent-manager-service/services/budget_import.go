@@ -25,9 +25,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/google/uuid"
 
 	"github.com/wso2/agent-manager/agent-manager-service/models"
 	"github.com/wso2/agent-manager/agent-manager-service/repositories"
@@ -97,12 +100,27 @@ func invalidCSV(format string, args ...any) error {
 	return &BudgetError{Code: utils.ErrCodeInvalidCSV, Message: fmt.Sprintf(format, args...)}
 }
 
+// What an import does with a row naming an existing budget (onExisting).
+const (
+	OnExistingFail   = "fail"
+	OnExistingSkip   = "skip"
+	OnExistingUpdate = "update"
+)
+
+// Row actions.
+const (
+	importCreate = "create"
+	importUpdate = "update"
+	importSkip   = "skip"
+)
+
 // importRow is one CSV row on its way to becoming a budget.
 type importRow struct {
 	row    int32
 	name   string
 	req    spec.BudgetRequest
-	budget *models.Budget
+	budget *models.Budget // the budget the row creates, or the stored budget it updates
+	action string
 	errs   []spec.BudgetImportRowError
 }
 
@@ -114,9 +132,15 @@ func (r *importRow) fail(column, code, message string) {
 	r.errs = append(r.errs, e)
 }
 
-func (s *budgetService) Import(ctx context.Context, ouID, createdBy string, file io.Reader, dryRun bool) (*spec.BudgetImportResult, error) {
+func (s *budgetService) Import(ctx context.Context, ouID, createdBy string, file io.Reader, dryRun bool, onExisting string) (*spec.BudgetImportResult, error) {
 	if ouID == "" {
 		return nil, utils.ErrOrganizationNotFound
+	}
+	if onExisting == "" {
+		onExisting = OnExistingFail
+	}
+	if onExisting != OnExistingFail && onExisting != OnExistingSkip && onExisting != OnExistingUpdate {
+		return nil, invalidBudget("onExisting", "onExisting must be fail, skip or update.")
 	}
 	header, records, err := readBudgetCSV(file)
 	if err != nil {
@@ -124,10 +148,6 @@ func (s *budgetService) Import(ctx context.Context, ouID, createdBy string, file
 	}
 	// An empty orgId cell means the organization the file is imported into.
 	orgName, err := s.orgHandle(ctx, ouID)
-	if err != nil {
-		return nil, err
-	}
-	channels, err := s.channelIDsByName(ctx, ouID)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +161,7 @@ func (s *budgetService) Import(ctx context.Context, ouID, createdBy string, file
 		}
 		row := &importRow{row: int32(i + 2), name: cells[csvName]}
 		rows = append(rows, row)
-		row.req = budgetRequestFromCSV(cells, orgName, channels, row)
+		row.req = budgetRequestFromCSV(cells, orgName, row)
 		if row.name != "" {
 			if first, seen := firstRow[row.name]; seen {
 				row.fail(csvName, utils.ErrCodeBudgetAlreadyExists, fmt.Sprintf("Row %d already uses the name %s.", first, row.name))
@@ -160,10 +180,10 @@ func (s *budgetService) Import(ctx context.Context, ouID, createdBy string, file
 		case err != nil:
 			return nil, err
 		default:
-			row.budget = budget
+			row.budget, row.action = budget, importCreate
 		}
 	}
-	if err := s.markTakenNames(ctx, ouID, rows); err != nil {
+	if err := s.resolveExisting(ctx, ouID, rows, onExisting); err != nil {
 		return nil, err
 	}
 
@@ -171,12 +191,17 @@ func (s *budgetService) Import(ctx context.Context, ouID, createdBy string, file
 	if dryRun || result.Summary.Error > 0 {
 		return result, nil
 	}
-	budgets := make([]*models.Budget, len(rows))
-	names := make([]string, len(rows))
-	for i, row := range rows {
-		budgets[i], names[i] = row.budget, row.name
+	var creates, updates []*models.Budget
+	var names []string
+	for _, row := range rows {
+		switch row.action {
+		case importCreate:
+			creates, names = append(creates, row.budget), append(names, row.name)
+		case importUpdate:
+			updates = append(updates, row.budget)
+		}
 	}
-	if err := s.budgetRepo.CreateManyForControlPlane(ctx, budgets, names); err != nil {
+	if err := s.budgetRepo.CreateManyForControlPlane(ctx, creates, names, updates); err != nil {
 		// Another request took a name after the check: nothing was saved.
 		var taken *repositories.BudgetNameTakenError
 		if !errors.As(err, &taken) {
@@ -190,8 +215,15 @@ func (s *budgetService) Import(ctx context.Context, ouID, createdBy string, file
 		return importResult(rows, dryRun), nil
 	}
 	result.Applied = true
-	for _, b := range budgets {
+	for _, b := range creates {
 		s.gateways.SendBudget(ctx, b, true)
+	}
+	for _, b := range updates {
+		s.gateways.SendBudget(ctx, b, false)
+		if s.warner != nil {
+			// A lower limit or a new threshold may already be crossed.
+			s.warner.CheckBudget(ctx, b)
+		}
 	}
 	return result, nil
 }
@@ -249,8 +281,8 @@ func readBudgetCSV(file io.Reader) ([]string, [][]string, error) {
 }
 
 // budgetRequestFromCSV maps a row onto the payload of POST /budgets. Cells that cannot be
-// read (a number, JSON, an unknown channel) fail their column on row.
-func budgetRequestFromCSV(cells map[string]string, orgName string, channels map[string]string, row *importRow) spec.BudgetRequest {
+// read (a number, JSON) fail their column on row.
+func budgetRequestFromCSV(cells map[string]string, orgName string, row *importRow) spec.BudgetRequest {
 	optional := func(column string) *string {
 		if v := cells[column]; v != "" {
 			return &v
@@ -307,7 +339,7 @@ func budgetRequestFromCSV(cells map[string]string, orgName string, channels map[
 		}
 	}
 	if cells[csvThresholds] != "" || cells[csvChannels] != "" {
-		warnings := &spec.BudgetWarnings{Thresholds: []int32{}, ChannelIds: []string{}}
+		warnings := &spec.BudgetWarnings{Thresholds: []int32{}, Channels: csvList(cells[csvChannels])}
 		for _, v := range csvList(cells[csvThresholds]) {
 			n, err := strconv.ParseInt(v, 10, 32)
 			if err != nil {
@@ -315,14 +347,6 @@ func budgetRequestFromCSV(cells map[string]string, orgName string, channels map[
 				break
 			}
 			warnings.Thresholds = append(warnings.Thresholds, int32(n))
-		}
-		for _, name := range csvList(cells[csvChannels]) {
-			id, ok := channels[name]
-			if !ok {
-				row.fail(csvChannels, utils.ErrCodeChannelNotAvailable, fmt.Sprintf("Notification channel %s does not exist.", name))
-				continue
-			}
-			warnings.ChannelIds = append(warnings.ChannelIds, id)
 		}
 		req.Warnings = warnings
 	}
@@ -361,7 +385,7 @@ func budgetCSVColumn(field string, req spec.BudgetRequest) string {
 		return csvProvider
 	case strings.HasPrefix(field, "exemptions"):
 		return csvExemptions
-	case strings.HasPrefix(field, "warnings.channelIds"):
+	case strings.HasPrefix(field, "warnings.channels"):
 		return csvChannels
 	case strings.HasPrefix(field, "warnings"):
 		return csvThresholds
@@ -386,22 +410,10 @@ func budgetCSVColumn(field string, req spec.BudgetRequest) string {
 	return ""
 }
 
-// channelIDsByName maps the organization's notification channel names, unique in it, to
-// their IDs: the CSV names channels, the payload takes IDs.
-func (s *budgetService) channelIDsByName(ctx context.Context, ouID string) (map[string]string, error) {
-	destinations, err := s.eventRepo.ListDestinations(ctx, ouID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list notification channels: %w", err)
-	}
-	out := make(map[string]string, len(destinations))
-	for _, d := range destinations {
-		out[d.Name] = d.ID.String()
-	}
-	return out, nil
-}
-
-// markTakenNames fails the rows whose name another artifact of the organization holds.
-func (s *budgetService) markTakenNames(ctx context.Context, ouID string, rows []*importRow) error {
+// resolveExisting decides each valid row whose name is already taken (Interfaces 2.5): a
+// name held by another kind always fails; an existing budget fails the row (fail, the
+// default), is left as it is (skip), or has its editable fields replaced (update).
+func (s *budgetService) resolveExisting(ctx context.Context, ouID string, rows []*importRow, onExisting string) error {
 	names := []string{}
 	for _, row := range rows {
 		if row.budget != nil {
@@ -416,15 +428,90 @@ func (s *budgetService) markTakenNames(ctx context.Context, ouID string, rows []
 		return err
 	}
 	for _, row := range rows {
-		if row.budget != nil && containsString(taken, row.name) {
-			row.budget = nil
-			row.fail(csvName, utils.ErrCodeBudgetAlreadyExists, budgetNameTaken(row.name).Error())
+		if row.budget == nil || !containsString(taken, row.name) {
+			continue
+		}
+		incoming := row.budget
+		row.budget, row.action = nil, ""
+		existing, err := s.budgetRepo.Get(ctx, ouID, row.name)
+		if errors.Is(err, utils.ErrBudgetNotFound) {
+			row.fail(csvName, utils.ErrCodeBudgetAlreadyExists,
+				fmt.Sprintf("%s is already the name of another resource in the organization; choose another name.", row.name))
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		switch onExisting {
+		case OnExistingSkip:
+			row.action = importSkip
+		case OnExistingUpdate:
+			if column, message := importUpdateRefusal(existing, incoming); message != "" {
+				row.fail(column, importUpdateCode(existing), message)
+				continue
+			}
+			updated := *existing
+			updated.Configuration = updatedConfig(existing.Configuration, incoming.Configuration)
+			row.budget, row.action = &updated, importUpdate
+		default:
+			row.fail(csvName, utils.ErrCodeBudgetAlreadyExists, fmt.Sprintf(
+				"Budget %s already exists. Import with onExisting=update to update it, or onExisting=skip to leave it as it is.", row.name))
 		}
 	}
 	return nil
 }
 
-// importResult reports every row, in file order, with its errors.
+// importUpdateRefusal returns why a row cannot update an existing budget, and the column
+// to fix: a gateway's budget is changed only on the gateway, and what a budget covers is
+// fixed after creation (BR-15).
+func importUpdateRefusal(existing, incoming *models.Budget) (column, message string) {
+	if existing.Origin != models.BudgetOriginControlPlane {
+		return csvName, fmt.Sprintf("Budget %s was created on a gateway; change it there.", existing.Name)
+	}
+	fixed := func(what string) string {
+		return fmt.Sprintf("Budget %s already exists with a different %s, which cannot change; create a new budget instead.", existing.Name, what)
+	}
+	was, now := existing.Configuration, incoming.Configuration
+	switch {
+	case !sameProject(existing.ProjectID, incoming.ProjectID):
+		return csvProjectID, fixed("owning project")
+	case was.Limit.Period != now.Limit.Period:
+		return csvPeriod, fixed("period")
+	case was.Limit.Currency != now.Limit.Currency:
+		return csvCurrency, fixed("currency")
+	case !reflect.DeepEqual(was.Resource, now.Resource):
+		return csvProvider, fixed("provider")
+	case !reflect.DeepEqual(was.Consumers, now.Consumers):
+		return "", fixed("set of consumers")
+	}
+	return "", ""
+}
+
+func importUpdateCode(existing *models.Budget) string {
+	if existing.Origin != models.BudgetOriginControlPlane {
+		return utils.ErrCodeBudgetReadOnly
+	}
+	return utils.ErrCodeValidation
+}
+
+func sameProject(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// updatedConfig is a stored budget with a row's editable fields, as PUT replaces them; its
+// status stays.
+func updatedConfig(stored, incoming models.BudgetConfig) models.BudgetConfig {
+	out := stored
+	out.DisplayName, out.Description = incoming.DisplayName, incoming.Description
+	out.Limit.Amount, out.Limit.Action, out.Limit.BlockAt = incoming.Limit.Amount, incoming.Limit.Action, incoming.Limit.BlockAt
+	out.Exemptions, out.Warnings = incoming.Exemptions, incoming.Warnings
+	return out
+}
+
+// importResult reports every row, in file order, with its errors or what it does.
 func importResult(rows []*importRow, dryRun bool) *spec.BudgetImportResult {
 	result := &spec.BudgetImportResult{DryRun: dryRun, Results: make([]spec.BudgetImportRowResult, 0, len(rows))}
 	for _, row := range rows {
@@ -438,6 +525,16 @@ func importResult(rows []*importRow, dryRun bool) *spec.BudgetImportResult {
 			result.Summary.Error++
 		} else {
 			result.Summary.Valid++
+			action := row.action
+			r.Action = &action
+			switch action {
+			case importCreate:
+				result.Summary.Created++
+			case importUpdate:
+				result.Summary.Updated++
+			case importSkip:
+				result.Summary.Skipped++
+			}
 		}
 		result.Results = append(result.Results, r)
 	}

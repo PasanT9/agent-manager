@@ -106,7 +106,8 @@ func (c *budgetController) ImportBudgets(w http.ResponseWriter, r *http.Request)
 	if claims := jwtassertion.GetTokenClaims(r.Context()); claims != nil {
 		createdBy = claims.Sub
 	}
-	result, err := c.budgets.Import(r.Context(), middleware.OUIDFromRequest(r), createdBy, bytes.NewReader(file), dryRun)
+	result, err := c.budgets.Import(r.Context(), middleware.OUIDFromRequest(r), createdBy, bytes.NewReader(file), dryRun,
+		r.URL.Query().Get("onExisting"))
 	if err != nil {
 		writeBudgetError(w, r, err, "Failed to import budgets")
 		return

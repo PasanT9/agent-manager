@@ -88,7 +88,7 @@ func budgetTestRequest() spec.BudgetRequest {
 			{Type: "attribute", Allocation: strPtr("separate"), Expression: strPtr(budgetEmailExpr)},
 		},
 		Exemptions: []spec.BudgetExemption{{Type: "attribute", Expression: strPtr(budgetAdminExpr)}},
-		Warnings:   &spec.BudgetWarnings{Thresholds: []int32{80, 100}, ChannelIds: []string{budgetOrgChannel}},
+		Warnings:   &spec.BudgetWarnings{Thresholds: []int32{80, 100}, Channels: []string{"finance-email"}},
 	}
 }
 
@@ -135,7 +135,7 @@ func newBudgetTestEnv(t *testing.T) *budgetTestEnv {
 			delete(env.store, name)
 			return nil
 		},
-		CreateManyForControlPlaneFunc: func(_ context.Context, bs []*models.Budget, names []string) error {
+		CreateManyForControlPlaneFunc: func(_ context.Context, bs []*models.Budget, names []string, updates []*models.Budget) error {
 			for i := range bs {
 				if _, ok := env.store[names[i]]; ok {
 					return &repositories.BudgetNameTakenError{Name: names[i]}
@@ -147,6 +147,9 @@ func newBudgetTestEnv(t *testing.T) *budgetTestEnv {
 				b.UpdatedAt = b.CreatedAt
 				env.created = append(env.created, *b)
 				env.store[names[i]] = *b
+			}
+			for _, b := range updates {
+				env.store[b.Name] = *b
 			}
 			return nil
 		},
@@ -265,6 +268,7 @@ func TestBudgetService_CreateStoresTheBudgetKindWithDefaults(t *testing.T) {
 		"warnings": {"thresholds": [80, 100], "channelIds": ["`+budgetOrgChannel+`"]}
 	}`, string(stored), "the kind's spec, without apiVersion, kind and metadata")
 
+	assert.Equal(t, []string{"finance-email"}, resp.Warnings.Channels, "stored by ID, returned by name")
 	assert.Equal(t, "api-platform-per-agent-openai", resp.Name)
 	assert.Equal(t, "active", resp.Status)
 	assert.Equal(t, "control_plane", resp.Origin)
@@ -345,16 +349,16 @@ func TestBudgetService_CreateRefusesInvalidPayloads(t *testing.T) {
 		{"threshold out of range", func(r *spec.BudgetRequest) {
 			r.Warnings.Thresholds = []int32{1001}
 		}, utils.ErrCodeValidation, "warnings.thresholds[0]"},
-		{"bad channel id", func(r *spec.BudgetRequest) {
-			r.Warnings.ChannelIds = []string{"not-a-uuid"}
-		}, utils.ErrCodeValidation, "warnings.channelIds[0]"},
+		{"repeated channel", func(r *spec.BudgetRequest) {
+			r.Warnings.Channels = []string{"finance-email", "finance-email"}
+		}, utils.ErrCodeValidation, "warnings.channels[1]"},
 		{"unknown provider", func(r *spec.BudgetRequest) { r.Resource.Id = strPtr("anthropic") }, utils.ErrCodeReferenceNotFound, "resource.id"},
 		{"unknown channel", func(r *spec.BudgetRequest) {
-			r.Warnings.ChannelIds = []string{uuid.NewString()}
-		}, utils.ErrCodeChannelNotAvailable, "warnings.channelIds[0]"},
+			r.Warnings.Channels = []string{"pagerduty"}
+		}, utils.ErrCodeChannelNotAvailable, "warnings.channels[0]"},
 		{"project channel without that project", func(r *spec.BudgetRequest) {
-			r.Warnings.ChannelIds = []string{budgetProjectChannel}
-		}, utils.ErrCodeChannelNotAvailable, "warnings.channelIds[0]"},
+			r.Warnings.Channels = []string{"platform-slack"}
+		}, utils.ErrCodeChannelNotAvailable, "warnings.channels[0]"},
 		{"name taken", func(r *spec.BudgetRequest) { r.Name = "taken" }, utils.ErrCodeBudgetAlreadyExists, "name"},
 	}
 	for _, tt := range tests {
@@ -519,7 +523,7 @@ func TestBudgetService_UpdateReplacesTheEditableFields(t *testing.T) {
 		DisplayName: strPtr("Team A"),
 		Status:      &inactive,
 		Limit:       spec.BudgetUpdateLimit{Amount: "150.00", Action: "block", BlockAt: budgetI32(90)},
-		Warnings:    &spec.BudgetWarnings{Thresholds: []int32{100}, ChannelIds: []string{budgetOrgChannel}},
+		Warnings:    &spec.BudgetWarnings{Thresholds: []int32{100}, Channels: []string{"finance-email"}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "Team A", resp.DisplayName)
@@ -563,7 +567,7 @@ func TestBudgetService_UpdateRefusals(t *testing.T) {
 			r.Exemptions = []spec.BudgetExemption{{Type: "agent", Project: strPtr("api-platform"), Id: strPtr("nope")}}
 		}, utils.ErrCodeReferenceNotFound},
 		{"unknown channel", "team-a", func(r *spec.BudgetUpdateRequest) {
-			r.Warnings = &spec.BudgetWarnings{Thresholds: []int32{80}, ChannelIds: []string{uuid.NewString()}}
+			r.Warnings = &spec.BudgetWarnings{Thresholds: []int32{80}, Channels: []string{"pagerduty"}}
 		}, utils.ErrCodeChannelNotAvailable},
 	}
 	for _, tt := range tests {
@@ -654,7 +658,7 @@ func TestBudgetService_GatewayBudgetsTakeOnlyAgentManagerFields(t *testing.T) {
 		return spec.BudgetUpdateRequest{
 			DisplayName: strPtr("Research, monthly"), Description: strPtr("Set on the research gateway."),
 			Limit:    spec.BudgetUpdateLimit{Amount: "500.00", Action: "block"},
-			Warnings: &spec.BudgetWarnings{Thresholds: []int32{80, 100}, ChannelIds: []string{budgetOrgChannel}},
+			Warnings: &spec.BudgetWarnings{Thresholds: []int32{80, 100}, Channels: []string{"finance-email"}},
 		}
 	}
 

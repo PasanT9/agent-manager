@@ -112,7 +112,7 @@ func newWarningsEnv(t *testing.T) *warningsEnv {
 	gateways := &repomocks.GatewayRepositoryMock{
 		GetByUUIDFunc: func(string) (*models.Gateway, error) { return &models.Gateway{OUID: budgetTestOrg}, nil },
 	}
-	env.svc = NewBudgetWarningService(budgets, usage, eventRepo, gateways, env.bus)
+	env.svc = NewBudgetWarningService(budgets, usage, eventRepo, gateways, env.bus, nil)
 	return env
 }
 
@@ -273,4 +273,35 @@ func TestBudgetWarnings_EventsOffRecordsSpendWithoutWarnings(t *testing.T) {
 	assert.Empty(t, env.queued, "nothing could send a warning")
 	env.svc.CheckBudget(context.Background(), env.budget)
 	assert.Empty(t, env.queued)
+}
+
+// recordedCosts records the cost totals passed on.
+type recordedCosts struct {
+	ouID  string
+	costs []GatewayCostUsage
+}
+
+func (r *recordedCosts) RecordCosts(_ context.Context, ouID string, costs []GatewayCostUsage) {
+	r.ouID, r.costs = ouID, append(r.costs, costs...)
+}
+
+// A usage message's costs (AI cost stats) are recorded for the gateway's organization,
+// whether or not it carries allowances, and even when its budget is unknown.
+func TestBudgetWarnings_UsageCostsAreRecorded(t *testing.T) {
+	env := newWarningsEnv(t)
+	recorder := &recordedCosts{}
+	env.svc.costs = recorder
+	cost := GatewayCostUsage{
+		Month: "2026-11-01", CostKey: uuid.New().String(), Project: "api-platform", Agent: "support-agent",
+		LLMProvider: "openai", Model: "gpt-4o", Cost: "80.14",
+	}
+	unknown := supportAgentUsage("1")
+	unknown.Budget = "gone"
+	data, err := json.Marshal(GatewayUsageMessage{Allowances: []GatewayAllowanceUsage{unknown}, Costs: []GatewayCostUsage{cost}})
+	require.NoError(t, err)
+
+	env.svc.HandleUsage(context.Background(), "gw-1", data)
+
+	assert.Equal(t, budgetTestOrg, recorder.ouID)
+	assert.Equal(t, []GatewayCostUsage{cost}, recorder.costs)
 }

@@ -42,7 +42,7 @@ ci-key-daily,,,20,day,block,,,,,,ci-pipeline,,,,
 
 func importBudgets(t *testing.T, env *budgetTestEnv, file string, dryRun bool) *spec.BudgetImportResult {
 	t.Helper()
-	result, err := env.svc.Import(context.Background(), budgetTestOrg, "alice", strings.NewReader(file), dryRun)
+	result, err := env.svc.Import(context.Background(), budgetTestOrg, "alice", strings.NewReader(file), dryRun, "")
 	require.NoError(t, err)
 	return result
 }
@@ -53,7 +53,7 @@ func TestBudgetImport_CreatesEveryRow(t *testing.T) {
 
 	assert.True(t, result.Applied)
 	assert.False(t, result.DryRun)
-	assert.Equal(t, spec.BudgetImportSummary{Valid: 5, Error: 0}, result.Summary)
+	assert.Equal(t, spec.BudgetImportSummary{Valid: 5, Created: 5}, result.Summary)
 	require.Len(t, result.Results, 5)
 	assert.Equal(t, int32(2), result.Results[0].Row, "the header is row 1")
 	assert.Equal(t, "wso2-monthly", *result.Results[0].Name)
@@ -130,7 +130,7 @@ good,50,day,allow,,,,,,,
 `
 	result := importBudgets(t, env, file, false)
 	assert.False(t, result.Applied)
-	assert.Equal(t, spec.BudgetImportSummary{Valid: 1, Error: 8}, result.Summary)
+	assert.Equal(t, spec.BudgetImportSummary{Valid: 1, Error: 8, Created: 1}, result.Summary)
 	assert.Empty(t, env.budgets.CreateManyForControlPlaneCalls(), "one bad row and nothing is saved")
 	assert.Empty(t, env.sender.sent)
 
@@ -173,7 +173,7 @@ func TestBudgetImport_RefusesAFileItCannotRead(t *testing.T) {
 	for name, file := range cases {
 		t.Run(name, func(t *testing.T) {
 			env := newBudgetTestEnv(t)
-			_, err := env.svc.Import(context.Background(), budgetTestOrg, "alice", strings.NewReader(file), false)
+			_, err := env.svc.Import(context.Background(), budgetTestOrg, "alice", strings.NewReader(file), false, "")
 			assert.Equal(t, utils.ErrCodeInvalidCSV, budgetErrorCode(t, err))
 			assert.Empty(t, env.created)
 		})
@@ -193,12 +193,12 @@ func TestBudgetImport_ReadsAnyColumnOrderAndAByteOrderMark(t *testing.T) {
 
 func TestBudgetImport_ANameTakenWhileSavingSavesNothing(t *testing.T) {
 	env := newBudgetTestEnv(t)
-	env.budgets.CreateManyForControlPlaneFunc = func(context.Context, []*models.Budget, []string) error {
+	env.budgets.CreateManyForControlPlaneFunc = func(context.Context, []*models.Budget, []string, []*models.Budget) error {
 		return &repositories.BudgetNameTakenError{Name: "second"}
 	}
 	result := importBudgets(t, env, "name,amount,period,action\nfirst,1,day,allow\nsecond,1,day,allow\n", false)
 	assert.False(t, result.Applied)
-	assert.Equal(t, spec.BudgetImportSummary{Valid: 1, Error: 1}, result.Summary)
+	assert.Equal(t, spec.BudgetImportSummary{Valid: 1, Error: 1, Created: 1}, result.Summary)
 	assert.Equal(t, "name", *result.Results[1].Errors[0].Column)
 	assert.Equal(t, utils.ErrCodeBudgetAlreadyExists, result.Results[1].Errors[0].Code)
 	assert.Empty(t, env.sender.sent)
@@ -225,4 +225,92 @@ func TestBudgetService_DisplayNameDefaultsToTheName(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, req.Name, updated.DisplayName)
+}
+
+// existingBudgetEnv has a control-plane budget "team-a" ($100 a month, project api-platform
+// consumer) and a gateway's budget "from-gateway".
+func existingBudgetEnv(t *testing.T) *budgetTestEnv {
+	t.Helper()
+	env := newBudgetTestEnv(t)
+	_, err := env.svc.Create(context.Background(), budgetTestOrg, "alice", spec.BudgetRequest{
+		Name: "team-a", OrgId: budgetTestOrgName, DisplayName: strPtr("Team A"),
+		Limit:     spec.BudgetLimit{Amount: "100", Period: "month", Action: "block"},
+		Consumers: []spec.BudgetConsumer{{Type: "project", Id: strPtr("api-platform")}},
+	})
+	require.NoError(t, err)
+	gw := env.store["team-a"]
+	gw.Name, gw.Origin = "from-gateway", models.BudgetOriginGateway
+	env.store["from-gateway"] = gw
+	env.created, env.sender.sent = nil, nil
+	return env
+}
+
+const existingCSV = "name,displayName,amount,period,action,project,thresholds,channels\n" +
+	"team-a,Team A (raised),250,month,allow,api-platform,80,finance-email\n" +
+	"new-one,,10,day,block,,,\n"
+
+func TestBudgetImport_AnExistingNameFailsWithAHintByDefault(t *testing.T) {
+	env := existingBudgetEnv(t)
+	result := importBudgets(t, env, existingCSV, false)
+	assert.False(t, result.Applied)
+	require.Len(t, result.Results[0].Errors, 1)
+	e := result.Results[0].Errors[0]
+	assert.Equal(t, utils.ErrCodeBudgetAlreadyExists, e.Code)
+	assert.Equal(t, "name", *e.Column)
+	assert.Contains(t, e.Message, "onExisting=update")
+	assert.Contains(t, e.Message, "onExisting=skip")
+	assert.Empty(t, env.created, "nothing is saved")
+}
+
+func TestBudgetImport_SkipLeavesAnExistingBudgetAsItIs(t *testing.T) {
+	env := existingBudgetEnv(t)
+	result, err := env.svc.Import(context.Background(), budgetTestOrg, "alice", strings.NewReader(existingCSV), false, OnExistingSkip)
+	require.NoError(t, err)
+	assert.True(t, result.Applied)
+	assert.Equal(t, spec.BudgetImportSummary{Valid: 2, Created: 1, Skipped: 1}, result.Summary)
+	assert.Equal(t, "skip", *result.Results[0].Action)
+	assert.Equal(t, "create", *result.Results[1].Action)
+	assert.Equal(t, "100", env.store["team-a"].Configuration.Limit.Amount, "left as it is")
+	assert.Equal(t, []string{"created:new-one:active"}, env.sender.sent)
+}
+
+func TestBudgetImport_UpdateReplacesTheEditableFields(t *testing.T) {
+	env := existingBudgetEnv(t)
+	result, err := env.svc.Import(context.Background(), budgetTestOrg, "alice", strings.NewReader(existingCSV), false, OnExistingUpdate)
+	require.NoError(t, err)
+	require.True(t, result.Applied, "%+v", result.Results)
+	assert.Equal(t, spec.BudgetImportSummary{Valid: 2, Created: 1, Updated: 1}, result.Summary)
+	assert.Equal(t, "update", *result.Results[0].Action)
+	updated := env.store["team-a"].Configuration
+	assert.Equal(t, "250", updated.Limit.Amount)
+	assert.Equal(t, "allow", updated.Limit.Action)
+	assert.Equal(t, "Team A (raised)", updated.DisplayName)
+	assert.Equal(t, []string{budgetOrgChannel}, updated.Warnings.ChannelIDs)
+	assert.Equal(t, "active", updated.Status, "the status stays")
+	assert.ElementsMatch(t, []string{"updated:team-a:active", "created:new-one:active"}, env.sender.sent)
+}
+
+func TestBudgetImport_UpdateRefusesFixedChangesAndGatewayBudgets(t *testing.T) {
+	env := existingBudgetEnv(t)
+	file := "name,amount,period,action,project\n" +
+		"team-a,250,day,allow,api-platform\n" +
+		"from-gateway,250,month,allow,api-platform\n" +
+		"openai,1,day,allow,\n"
+	result, err := env.svc.Import(context.Background(), budgetTestOrg, "alice", strings.NewReader(file), true, OnExistingUpdate)
+	require.NoError(t, err)
+	require.Equal(t, int32(3), result.Summary.Error)
+
+	period := result.Results[0].Errors[0]
+	assert.Equal(t, "period", *period.Column, "the period is fixed after creation")
+	assert.Equal(t, utils.ErrCodeValidation, period.Code)
+	assert.Equal(t, utils.ErrCodeBudgetReadOnly, result.Results[1].Errors[0].Code, "a gateway's budget is changed on the gateway")
+	other := result.Results[2].Errors[0]
+	assert.Equal(t, utils.ErrCodeBudgetAlreadyExists, other.Code, "a name held by another kind is never overwritten")
+	assert.Contains(t, other.Message, "another resource")
+}
+
+func TestBudgetImport_RefusesAnUnknownOnExisting(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	_, err := env.svc.Import(context.Background(), budgetTestOrg, "alice", strings.NewReader(existingCSV), true, "overwrite")
+	assert.Equal(t, utils.ErrCodeValidation, budgetErrorCode(t, err))
 }

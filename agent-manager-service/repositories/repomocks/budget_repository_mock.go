@@ -20,7 +20,7 @@ import (
 //			CreateForControlPlaneFunc: func(ctx context.Context, budget *models.Budget, name string) error {
 //				panic("mock out the CreateForControlPlane method")
 //			},
-//			CreateManyForControlPlaneFunc: func(ctx context.Context, budgets []*models.Budget, names []string) error {
+//			CreateManyForControlPlaneFunc: func(ctx context.Context, budgets []*models.Budget, names []string, updates []*models.Budget) error {
 //				panic("mock out the CreateManyForControlPlane method")
 //			},
 //			DeleteFunc: func(ctx context.Context, ouID string, name string) error {
@@ -58,7 +58,7 @@ type BudgetRepositoryMock struct {
 	CreateForControlPlaneFunc func(ctx context.Context, budget *models.Budget, name string) error
 
 	// CreateManyForControlPlaneFunc mocks the CreateManyForControlPlane method.
-	CreateManyForControlPlaneFunc func(ctx context.Context, budgets []*models.Budget, names []string) error
+	CreateManyForControlPlaneFunc func(ctx context.Context, budgets []*models.Budget, names []string, updates []*models.Budget) error
 
 	// DeleteFunc mocks the Delete method.
 	DeleteFunc func(ctx context.Context, ouID string, name string) error
@@ -103,6 +103,8 @@ type BudgetRepositoryMock struct {
 			Budgets []*models.Budget
 			// Names is the names argument value.
 			Names []string
+			// Updates is the updates argument value.
+			Updates []*models.Budget
 		}
 		// Delete holds details about calls to the Delete method.
 		Delete []struct {
@@ -230,7 +232,7 @@ func (mock *BudgetRepositoryMock) CreateForControlPlaneCalls() []struct {
 }
 
 // CreateManyForControlPlane calls CreateManyForControlPlaneFunc.
-func (mock *BudgetRepositoryMock) CreateManyForControlPlane(ctx context.Context, budgets []*models.Budget, names []string) error {
+func (mock *BudgetRepositoryMock) CreateManyForControlPlane(ctx context.Context, budgets []*models.Budget, names []string, updates []*models.Budget) error {
 	if mock.CreateManyForControlPlaneFunc == nil {
 		panic("BudgetRepositoryMock.CreateManyForControlPlaneFunc: method is nil but BudgetRepository.CreateManyForControlPlane was just called")
 	}
@@ -238,15 +240,17 @@ func (mock *BudgetRepositoryMock) CreateManyForControlPlane(ctx context.Context,
 		Ctx     context.Context
 		Budgets []*models.Budget
 		Names   []string
+		Updates []*models.Budget
 	}{
 		Ctx:     ctx,
 		Budgets: budgets,
 		Names:   names,
+		Updates: updates,
 	}
 	mock.lockCreateManyForControlPlane.Lock()
 	mock.calls.CreateManyForControlPlane = append(mock.calls.CreateManyForControlPlane, callInfo)
 	mock.lockCreateManyForControlPlane.Unlock()
-	return mock.CreateManyForControlPlaneFunc(ctx, budgets, names)
+	return mock.CreateManyForControlPlaneFunc(ctx, budgets, names, updates)
 }
 
 // CreateManyForControlPlaneCalls gets all the calls that were made to CreateManyForControlPlane.
@@ -257,11 +261,13 @@ func (mock *BudgetRepositoryMock) CreateManyForControlPlaneCalls() []struct {
 	Ctx     context.Context
 	Budgets []*models.Budget
 	Names   []string
+	Updates []*models.Budget
 } {
 	var calls []struct {
 		Ctx     context.Context
 		Budgets []*models.Budget
 		Names   []string
+		Updates []*models.Budget
 	}
 	mock.lockCreateManyForControlPlane.RLock()
 	calls = mock.calls.CreateManyForControlPlane

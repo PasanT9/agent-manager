@@ -20,8 +20,10 @@ var _ MappedNullable = &BudgetImportRowResult{}
 // BudgetImportRowResult struct for BudgetImportRowResult
 type BudgetImportRowResult struct {
 	// CSV row number; the header is row 1
-	Row    int32                  `json:"row"`
-	Name   *string                `json:"name,omitempty"`
+	Row  int32   `json:"row"`
+	Name *string `json:"name,omitempty"`
+	// What a valid row does, or did when applied
+	Action *string                `json:"action,omitempty"`
 	Errors []BudgetImportRowError `json:"errors,omitempty"`
 }
 
@@ -99,6 +101,38 @@ func (o *BudgetImportRowResult) SetName(v string) {
 	o.Name = &v
 }
 
+// GetAction returns the Action field value if set, zero value otherwise.
+func (o *BudgetImportRowResult) GetAction() string {
+	if o == nil || IsNil(o.Action) {
+		var ret string
+		return ret
+	}
+	return *o.Action
+}
+
+// GetActionOk returns a tuple with the Action field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *BudgetImportRowResult) GetActionOk() (*string, bool) {
+	if o == nil || IsNil(o.Action) {
+		return nil, false
+	}
+	return o.Action, true
+}
+
+// HasAction returns a boolean if a field has been set.
+func (o *BudgetImportRowResult) HasAction() bool {
+	if o != nil && !IsNil(o.Action) {
+		return true
+	}
+
+	return false
+}
+
+// SetAction gets a reference to the given string and assigns it to the Action field.
+func (o *BudgetImportRowResult) SetAction(v string) {
+	o.Action = &v
+}
+
 // GetErrors returns the Errors field value if set, zero value otherwise.
 func (o *BudgetImportRowResult) GetErrors() []BudgetImportRowError {
 	if o == nil || IsNil(o.Errors) {
@@ -144,6 +178,9 @@ func (o BudgetImportRowResult) ToMap() (map[string]interface{}, error) {
 	toSerialize["row"] = o.Row
 	if !IsNil(o.Name) {
 		toSerialize["name"] = o.Name
+	}
+	if !IsNil(o.Action) {
+		toSerialize["action"] = o.Action
 	}
 	if !IsNil(o.Errors) {
 		toSerialize["errors"] = o.Errors

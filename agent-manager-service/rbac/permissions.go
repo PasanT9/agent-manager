@@ -228,6 +228,11 @@ const (
 	BudgetDelete Permission = "budget:delete"
 )
 
+// AI cost permissions — what LLM traffic cost (AI cost stats).
+const (
+	AICostRead Permission = "ai-cost:read"
+)
+
 // Events permissions — event destinations, org subscriptions and the org's
 // delivery log, granted to Admin only. Project and agent subscriptions are
 // part of the project or agent and use their read and update permissions.

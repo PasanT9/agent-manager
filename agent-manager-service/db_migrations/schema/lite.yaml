@@ -423,6 +423,29 @@ tables:
       - {columns: [budget_id], references: budgets, ref_columns: [id], on_delete: cascade}
     indexes: [[org_id]]
 
+  # What LLM traffic cost per month and combination of project, agent, API key, user,
+  # provider and model, as gateways report it (AI cost stats, Interfaces 1.3). Values are
+  # the names gateways report; a row is kept 3 months. Cost is a decimal string in USD.
+  - name: cost_usage
+    columns:
+      - {name: org_id, type: id}
+      - {name: month, type: time}
+      - {name: cost_key, type: id}
+      - {name: project, type: text, size: 63, nullable: true}
+      - {name: agent, type: text, size: 63, nullable: true}
+      - {name: api_key, type: text, size: 255, nullable: true}
+      - {name: user_id, type: text, size: 255, nullable: true}
+      - {name: llm_provider, type: text, size: 255}
+      - {name: model, type: text, size: 255, nullable: true}
+      - {name: cost, type: text, size: 32}
+      - {name: missing_price_requests, type: bigint}
+      - {name: usage_unavailable_requests, type: bigint}
+      - {name: updated_at, type: time}
+    primary_key: [org_id, month, cost_key]
+    foreign_keys:
+      - {columns: [org_id], references: organizations, ref_columns: [id]}
+    indexes: [[month]]
+
   - name: llm_proxies
     columns:
       - {name: id, type: id}

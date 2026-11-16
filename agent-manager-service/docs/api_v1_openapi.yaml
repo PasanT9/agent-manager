@@ -6335,6 +6335,17 @@ paths:
           schema:
             type: boolean
             default: false
+        - name: onExisting
+          in: query
+          required: false
+          description: >-
+            What a row naming an existing budget does: fail (the row fails and nothing is
+            saved), skip (the budget is left as it is) or update (its editable fields are
+            replaced; fixed fields must match, and a gateway's budget cannot be updated).
+          schema:
+            type: string
+            enum: [fail, skip, update]
+            default: fail
       requestBody:
         required: true
         description: UTF-8 CSV with a header row; at most 500 rows and 1 MB.
@@ -6615,6 +6626,74 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: No such budget (BUDGET_NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /orgs/{orgName}/ai-costs:
+    get:
+      summary: AI costs
+      description: >-
+        What LLM traffic cost in the last 3 months, the current one so far, grouped by one
+        value (Interfaces 2.6). Counted by gateways with AI cost stats on, with or without
+        budgets. Every group, highest total first; no paging.
+      operationId: getAICosts
+      tags:
+        - AI Costs
+      parameters:
+        - name: orgName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Organization name
+        - name: groupBy
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [organization, project, agent, apiKey, user, llmProvider, model]
+            default: organization
+        - name: filter
+          in: query
+          required: false
+          description: >-
+            type:value with type project, agent (project/agent), apiKey, user, llmProvider or
+            model; a comma list matches any of the values; repeat for AND.
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 10
+            items:
+              type: string
+      responses:
+        "200":
+          description: The costs, grouped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CostReport"
+        "400":
+          description: Invalid groupBy or filter (VALIDATION_ERROR)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -17475,7 +17554,7 @@ components:
             $ref: "#/components/schemas/BudgetImportRowResult"
     BudgetImportSummary:
       type: object
-      required: [valid, error]
+      required: [valid, error, created, updated, skipped]
       properties:
         valid:
           type: integer
@@ -17483,6 +17562,15 @@ components:
         error:
           type: integer
           description: Rows with errors
+        created:
+          type: integer
+          description: Valid rows that create a budget
+        updated:
+          type: integer
+          description: Valid rows that update an existing budget (onExisting=update)
+        skipped:
+          type: integer
+          description: Valid rows naming an existing budget that is left as it is (onExisting=skip)
     BudgetImportRowResult:
       type: object
       required: [row]
@@ -17492,6 +17580,10 @@ components:
           description: CSV row number; the header is row 1
         name:
           type: string
+        action:
+          type: string
+          enum: [create, update, skip]
+          description: What a valid row does, or did when applied
         errors:
           type: array
           items:
@@ -17690,7 +17782,7 @@ components:
           description: "attribute only: CEL returning bool"
     BudgetWarnings:
       type: object
-      required: [thresholds, channelIds]
+      required: [thresholds, channels]
       properties:
         thresholds:
           type: array
@@ -17701,14 +17793,15 @@ components:
             type: integer
             minimum: 1
             maximum: 1000
-        channelIds:
+        channels:
           type: array
           minItems: 1
           maxItems: 20
-          description: Notification channel (event destination) IDs available to the budget
+          description: >-
+            Names of notification channels (event destinations, unique in the organization)
+            available to the budget
           items:
             type: string
-            format: uuid
     BudgetUsageListResponse:
       type: object
       description: A page of a budget's usage, one row per allowance, in the current period
@@ -17742,6 +17835,53 @@ components:
           description: USD
           example: "104.21"
         unpricedRequests:
+          type: integer
+          format: int64
+    CostReport:
+      type: object
+      description: Costs per month, grouped by one value
+      required: [groupBy, months, groups]
+      properties:
+        groupBy:
+          type: string
+        months:
+          type: array
+          description: The 3 kept months, oldest first, as YYYY-MM; the last is the current month
+          items:
+            type: string
+        groups:
+          type: array
+          items:
+            $ref: "#/components/schemas/CostGroup"
+    CostGroup:
+      type: object
+      description: >-
+        One group's cost per month (costs[i] belongs to months[i]). It names its value and, for
+        an agent, its project; a value no request carried is left out.
+      required: [costs, total, missingPriceRequests, usageUnavailableRequests]
+      properties:
+        project:
+          type: string
+        agent:
+          type: string
+        apiKey:
+          type: string
+        user:
+          type: string
+        llmProvider:
+          type: string
+        model:
+          type: string
+        costs:
+          type: array
+          items:
+            type: string
+        total:
+          type: string
+        missingPriceRequests:
+          type: integer
+          format: int64
+        usageUnavailableRequests:
           type: integer
           format: int64
     BudgetCurrentPeriod:

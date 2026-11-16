@@ -23,16 +23,25 @@ type BudgetImportSummary struct {
 	Valid int32 `json:"valid"`
 	// Rows with errors
 	Error int32 `json:"error"`
+	// Valid rows that create a budget
+	Created int32 `json:"created"`
+	// Valid rows that update an existing budget (onExisting=update)
+	Updated int32 `json:"updated"`
+	// Valid rows naming an existing budget that is left as it is (onExisting=skip)
+	Skipped int32 `json:"skipped"`
 }
 
 // NewBudgetImportSummary instantiates a new BudgetImportSummary object
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewBudgetImportSummary(valid int32, error_ int32) *BudgetImportSummary {
+func NewBudgetImportSummary(valid int32, error_ int32, created int32, updated int32, skipped int32) *BudgetImportSummary {
 	this := BudgetImportSummary{}
 	this.Valid = valid
 	this.Error = error_
+	this.Created = created
+	this.Updated = updated
+	this.Skipped = skipped
 	return &this
 }
 
@@ -92,6 +101,78 @@ func (o *BudgetImportSummary) SetError(v int32) {
 	o.Error = v
 }
 
+// GetCreated returns the Created field value
+func (o *BudgetImportSummary) GetCreated() int32 {
+	if o == nil {
+		var ret int32
+		return ret
+	}
+
+	return o.Created
+}
+
+// GetCreatedOk returns a tuple with the Created field value
+// and a boolean to check if the value has been set.
+func (o *BudgetImportSummary) GetCreatedOk() (*int32, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return &o.Created, true
+}
+
+// SetCreated sets field value
+func (o *BudgetImportSummary) SetCreated(v int32) {
+	o.Created = v
+}
+
+// GetUpdated returns the Updated field value
+func (o *BudgetImportSummary) GetUpdated() int32 {
+	if o == nil {
+		var ret int32
+		return ret
+	}
+
+	return o.Updated
+}
+
+// GetUpdatedOk returns a tuple with the Updated field value
+// and a boolean to check if the value has been set.
+func (o *BudgetImportSummary) GetUpdatedOk() (*int32, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return &o.Updated, true
+}
+
+// SetUpdated sets field value
+func (o *BudgetImportSummary) SetUpdated(v int32) {
+	o.Updated = v
+}
+
+// GetSkipped returns the Skipped field value
+func (o *BudgetImportSummary) GetSkipped() int32 {
+	if o == nil {
+		var ret int32
+		return ret
+	}
+
+	return o.Skipped
+}
+
+// GetSkippedOk returns a tuple with the Skipped field value
+// and a boolean to check if the value has been set.
+func (o *BudgetImportSummary) GetSkippedOk() (*int32, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return &o.Skipped, true
+}
+
+// SetSkipped sets field value
+func (o *BudgetImportSummary) SetSkipped(v int32) {
+	o.Skipped = v
+}
+
 func (o BudgetImportSummary) MarshalJSON() ([]byte, error) {
 	toSerialize, err := o.ToMap()
 	if err != nil {
@@ -104,6 +185,9 @@ func (o BudgetImportSummary) ToMap() (map[string]interface{}, error) {
 	toSerialize := map[string]interface{}{}
 	toSerialize["valid"] = o.Valid
 	toSerialize["error"] = o.Error
+	toSerialize["created"] = o.Created
+	toSerialize["updated"] = o.Updated
+	toSerialize["skipped"] = o.Skipped
 	return toSerialize, nil
 }
 

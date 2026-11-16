@@ -305,15 +305,25 @@ func TestBudgetRepository_CreateManyIsAllOrNothing(t *testing.T) {
 	newBudget := func(amount string) *models.Budget {
 		return &models.Budget{OrgID: ou, Origin: models.BudgetOriginControlPlane, Configuration: budgetConfig("x", amount)}
 	}
-	err = repo.CreateManyForControlPlane(ctx, []*models.Budget{newBudget("1"), newBudget("2")}, []string{"team-a", "openai"})
+	err = repo.CreateManyForControlPlane(ctx, []*models.Budget{newBudget("1"), newBudget("2")}, []string{"team-a", "openai"}, nil)
 	var nameTaken *BudgetNameTakenError
 	require.ErrorAs(t, err, &nameTaken)
 	assert.Equal(t, "openai", nameTaken.Name)
 	assert.ErrorIs(t, err, utils.ErrBudgetAlreadyExists)
 	assert.Empty(t, budgetsByName(t, repo, ou), "team-a was rolled back")
 
-	require.NoError(t, repo.CreateManyForControlPlane(ctx, []*models.Budget{newBudget("1"), newBudget("2")}, []string{"team-a", "team-b"}))
+	require.NoError(t, repo.CreateManyForControlPlane(ctx, []*models.Budget{newBudget("1"), newBudget("2")}, []string{"team-a", "team-b"}, nil))
 	assert.ElementsMatch(t, []string{"team-a", "team-b"}, keys(budgetsByName(t, repo, ou)))
+
+	// Updates go in the same transaction: a failed create leaves an update undone.
+	teamA := budgetsByName(t, repo, ou)["team-a"]
+	teamA.Configuration.Limit.Amount = "99"
+	err = repo.CreateManyForControlPlane(ctx, []*models.Budget{newBudget("3")}, []string{"openai"}, []*models.Budget{&teamA})
+	require.ErrorAs(t, err, &nameTaken)
+	assert.Equal(t, "1", budgetsByName(t, repo, ou)["team-a"].Configuration.Limit.Amount, "rolled back")
+	require.NoError(t, repo.CreateManyForControlPlane(ctx, []*models.Budget{newBudget("3")}, []string{"team-c"}, []*models.Budget{&teamA}))
+	assert.Equal(t, "99", budgetsByName(t, repo, ou)["team-a"].Configuration.Limit.Amount)
+	assert.Len(t, budgetsByName(t, repo, ou), 3)
 }
 
 // A provider or notification channel a budget uses cannot be deleted (Interfaces 1.1).

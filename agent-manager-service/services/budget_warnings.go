@@ -42,6 +42,8 @@ const BudgetWarningEvent = "budget.threshold_crossed"
 // (Interfaces 4.2): budget allowance totals.
 type GatewayUsageMessage struct {
 	Allowances []GatewayAllowanceUsage `json:"allowances"`
+	// Costs are the AI cost stats, from gateways with [ai_cost_stats] on (Interfaces 4.2).
+	Costs []GatewayCostUsage `json:"costs"`
 }
 
 // GatewayAllowanceUsage is one allowance's total in one period, across every gateway
@@ -70,6 +72,7 @@ type BudgetWarningService struct {
 	events   repositories.EventRepository
 	gateways repositories.GatewayRepository
 	bus      events.Bus
+	costs    CostRecorder
 }
 
 // NewBudgetWarningService creates a BudgetWarningService. bus is nil when events are off
@@ -81,8 +84,9 @@ func NewBudgetWarningService(
 	eventRepo repositories.EventRepository,
 	gateways repositories.GatewayRepository,
 	bus events.Bus,
+	costs CostRecorder,
 ) *BudgetWarningService {
-	return &BudgetWarningService{budgets: budgets, usage: usage, events: eventRepo, gateways: gateways, bus: bus}
+	return &BudgetWarningService{budgets: budgets, usage: usage, events: eventRepo, gateways: gateways, bus: bus, costs: costs}
 }
 
 // HandleUsage records a gateway's usage message. An allowance whose budget is unknown or
@@ -100,6 +104,9 @@ func (s *BudgetWarningService) HandleUsage(ctx context.Context, gatewayID string
 		return
 	}
 	ouID := gateway.OUID
+	if len(msg.Costs) > 0 && s.costs != nil {
+		s.costs.RecordCosts(ctx, ouID, msg.Costs)
+	}
 	budgets := map[string]*models.Budget{}
 	for _, a := range msg.Allowances {
 		b, ok := budgets[a.Budget]

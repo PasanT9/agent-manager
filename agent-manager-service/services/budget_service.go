@@ -30,7 +30,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 
 	"github.com/wso2/agent-manager/agent-manager-service/audit"
 	"github.com/wso2/agent-manager/agent-manager-service/models"
@@ -112,9 +111,11 @@ type BudgetService interface {
 	// Create stores a new, active budget for the organization. createdBy is the caller.
 	Create(ctx context.Context, ouID, createdBy string, req spec.BudgetRequest) (*spec.BudgetResponse, error)
 	// Import creates the budgets of a CSV file, one per row, all or none (Interfaces 2.5).
+	// onExisting says what a row naming an existing budget does: fail (default), skip or
+	// update.
 	// The result lists each row's errors; applied says whether they were saved. A file that
 	// cannot be read is a *BudgetError with code INVALID_CSV.
-	Import(ctx context.Context, ouID, createdBy string, file io.Reader, dryRun bool) (*spec.BudgetImportResult, error)
+	Import(ctx context.Context, ouID, createdBy string, file io.Reader, dryRun bool, onExisting string) (*spec.BudgetImportResult, error)
 	// Get returns the organization's budget named name.
 	Get(ctx context.Context, ouID, name string) (*spec.BudgetResponse, error)
 	// List returns a page of the organization's budgets matching every filter (type:id),
@@ -432,10 +433,21 @@ func (s *budgetService) response(ctx context.Context, ouID string, b *models.Bud
 // responses are budgets as the API returns them, each with its spend this period
 // (currentPeriod), read in one query.
 func (s *budgetService) responses(ctx context.Context, ouID string, budgets []*models.Budget) ([]spec.BudgetResponse, error) {
+	// Warning channels are stored by ID and returned by name.
+	channelNames := map[string]string{}
+	if s.eventRepo != nil {
+		destinations, err := s.eventRepo.ListDestinations(ctx, ouID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list notification channels: %w", err)
+		}
+		for _, d := range destinations {
+			channelNames[d.ID.String()] = d.Name
+		}
+	}
 	out := make([]spec.BudgetResponse, len(budgets))
 	ids := make([]uuid.UUID, len(budgets))
 	for i, b := range budgets {
-		out[i] = *BudgetResponse(b)
+		out[i] = *BudgetResponse(b, channelNames)
 		ids[i] = b.ID
 	}
 	var rows []models.BudgetUsage
@@ -918,19 +930,20 @@ func normalizeBudgetWarnings(in *spec.BudgetWarnings) (*models.BudgetWarnings, e
 		}
 		seenThreshold[t] = true
 	}
-	if len(in.ChannelIds) < 1 || len(in.ChannelIds) > maxBudgetChannels {
-		return nil, invalidBudget("warnings.channelIds", "warnings.channelIds takes 1-%d channels.", maxBudgetChannels)
+	if len(in.Channels) < 1 || len(in.Channels) > maxBudgetChannels {
+		return nil, invalidBudget("warnings.channels", "warnings.channels takes 1-%d channels.", maxBudgetChannels)
 	}
-	// Stored in canonical form, as monitor alerts store destination IDs.
-	channels := make([]string, 0, len(in.ChannelIds))
-	seenChannel := map[uuid.UUID]bool{}
-	for i, raw := range in.ChannelIds {
-		id, err := uuid.Parse(raw)
-		if err != nil || id == uuid.Nil || seenChannel[id] {
-			return nil, invalidBudget(fmt.Sprintf("warnings.channelIds[%d]", i), "Channel IDs must be valid and unique.")
+	// Channels are named here; checkChannels replaces each name with the channel's ID,
+	// which is what is stored, as monitor alerts store destination IDs.
+	channels := make([]string, 0, len(in.Channels))
+	seenChannel := map[string]bool{}
+	for i, raw := range in.Channels {
+		name := strings.TrimSpace(raw)
+		if name == "" || seenChannel[name] {
+			return nil, invalidBudget(fmt.Sprintf("warnings.channels[%d]", i), "Channel names must be non-empty and unique.")
 		}
-		seenChannel[id] = true
-		channels = append(channels, id.String())
+		seenChannel[name] = true
+		channels = append(channels, name)
 	}
 	return &models.BudgetWarnings{Thresholds: in.Thresholds, ChannelIDs: channels}, nil
 }
@@ -990,7 +1003,7 @@ func (s *budgetService) checkEditableReferences(ctx context.Context, ouID string
 		}
 	}
 	if b.Warnings != nil {
-		return s.checkChannels(ctx, ouID, budgetProject(b), b.Warnings.ChannelIDs)
+		return s.checkChannels(ctx, ouID, budgetProject(b), b.Warnings)
 	}
 	return nil
 }
@@ -1026,31 +1039,40 @@ func (s *budgetService) checkAgent(ctx context.Context, ouID, project, name, fie
 	return nil
 }
 
-// checkChannels checks each warning channel is available to the budget (Interfaces 2.4):
-// availability all or org, or projects when the budget's project consumer is one of them.
-func (s *budgetService) checkChannels(ctx context.Context, ouID, project string, ids []string) error {
-	for i, raw := range ids {
-		field := fmt.Sprintf("warnings.channelIds[%d]", i)
-		unavailable := &BudgetError{
-			Code: utils.ErrCodeChannelNotAvailable, Field: field,
-			Message: fmt.Sprintf("Notification channel %s is not available to this budget.", raw),
-		}
-		destination, err := s.eventRepo.GetDestination(ctx, ouID, uuid.MustParse(raw))
-		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return unavailable
+// checkChannels checks each warning channel, given by name, exists and is available to
+// the budget (Interfaces 2.4): availability all or org, or projects when the budget's
+// project consumer is one of them. It replaces each name with the channel's ID.
+func (s *budgetService) checkChannels(ctx context.Context, ouID, project string, warnings *models.BudgetWarnings) error {
+	destinations, err := s.eventRepo.ListDestinations(ctx, ouID)
+	if err != nil {
+		return fmt.Errorf("failed to list notification channels: %w", err)
+	}
+	byName := make(map[string]models.EventDestination, len(destinations))
+	for _, d := range destinations {
+		byName[d.Name] = d
+	}
+	for i, name := range warnings.ChannelIDs {
+		field := fmt.Sprintf("warnings.channels[%d]", i)
+		destination, ok := byName[name]
+		if !ok {
+			return &BudgetError{
+				Code: utils.ErrCodeChannelNotAvailable, Field: field,
+				Message: fmt.Sprintf("Notification channel %s does not exist.", name),
 			}
-			return fmt.Errorf("failed to get notification channel %s: %w", raw, err)
 		}
 		if destination.OUID != ouID || !destination.AvailableToBudget(project) {
-			return unavailable
+			return &BudgetError{
+				Code: utils.ErrCodeChannelNotAvailable, Field: field,
+				Message: fmt.Sprintf("Notification channel %s is not available to this budget.", name),
+			}
 		}
+		warnings.ChannelIDs[i] = destination.ID.String()
 	}
 	return nil
 }
 
 // BudgetResponse is a stored budget as the API returns it (Interfaces 2.3).
-func BudgetResponse(b *models.Budget) *spec.BudgetResponse {
+func BudgetResponse(b *models.Budget, channelNames map[string]string) *spec.BudgetResponse {
 	c := b.Configuration
 	consumers := make([]spec.BudgetConsumer, 0, len(c.Consumers))
 	for _, x := range c.Consumers {
@@ -1075,7 +1097,14 @@ func BudgetResponse(b *models.Budget) *spec.BudgetResponse {
 		resp.Resource = &spec.BudgetResource{Type: c.Resource.Type, Allocation: &allocation, Id: c.Resource.ID}
 	}
 	if c.Warnings != nil {
-		resp.Warnings = &spec.BudgetWarnings{Thresholds: c.Warnings.Thresholds, ChannelIds: c.Warnings.ChannelIDs}
+		names := make([]string, 0, len(c.Warnings.ChannelIDs))
+		for _, id := range c.Warnings.ChannelIDs {
+			if name, ok := channelNames[id]; ok {
+				id = name
+			}
+			names = append(names, id)
+		}
+		resp.Warnings = &spec.BudgetWarnings{Thresholds: c.Warnings.Thresholds, Channels: names}
 	}
 	if b.CreatedBy != "" {
 		resp.CreatedBy = &b.CreatedBy

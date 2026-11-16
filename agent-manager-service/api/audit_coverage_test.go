@@ -64,6 +64,7 @@ var controllerConstructors = []any{
 	controllers.NewAgentIdentityController,
 	controllers.NewEventsController,
 	controllers.NewBudgetController,
+	controllers.NewCostController,
 	controllers.NewMonitorAlertController,
 	// Registered on the internal server rather than by registerAPIRoutes, but
 	// still needed here: its routes go through a registrar too.
