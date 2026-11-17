@@ -61,7 +61,7 @@ func newWarningsEnv(t *testing.T) *warningsEnv {
 		names = append(names, c.Name)
 	}
 	env.budget = &models.Budget{
-		ID: uuid.MustParse("0193f1c2-0000-7000-8000-0000000000b1"), Name: "per-agent", OrgID: budgetTestOrg,
+		ID: uuid.MustParse("0193f1c2-0000-7000-8000-0000000000b1"), Name: "per-agent", OrgID: budgetTestOrg, OrgName: budgetTestOrgName,
 		Origin: models.BudgetOriginControlPlane,
 		Configuration: models.BudgetConfig{
 			DisplayName: "API Platform, per agent", Status: budgetStatusActive,
@@ -165,6 +165,7 @@ func TestBudgetWarnings_ACrossedThresholdWarnsEachAvailableChannelOnce(t *testin
 	}
 	require.NoError(t, json.Unmarshal(job.Event, &evt))
 	assert.Equal(t, "com.wso2.agentmanager.budget.threshold_crossed", evt.Type)
+	assert.Equal(t, budgetTestOrgName, evt.OrgHandle, "notifications name the organization by its handle")
 	assert.Equal(t, "/agent-manager/orgs/"+budgetTestOrg+"/projects/api-platform/agents/support-agent", evt.Source)
 	assert.Equal(t, "per-agent", evt.Data["budget"])
 	assert.Equal(t, "API Platform, per agent", evt.Data["displayName"])

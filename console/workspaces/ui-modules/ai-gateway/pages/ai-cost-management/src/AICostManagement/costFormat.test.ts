@@ -31,7 +31,10 @@ import {
 
 const MONTHS = ["2026-09", "2026-10", "2026-11"];
 
-const entry = (over: Partial<CostByGroup>, costs = ["0", "0", "0"]): CostByGroup => ({
+const entry = (
+  over: Partial<CostByGroup>,
+  costs = ["0", "0", "0"],
+): CostByGroup => ({
   id: null,
   cost: "0",
   unpricedRequests: { missingPrice: 0, usageUnavailable: 0 },
@@ -41,7 +44,13 @@ const entry = (over: Partial<CostByGroup>, costs = ["0", "0", "0"]): CostByGroup
 
 describe("costFormat", () => {
   it("offers only the dimensions below a project on a project's page", () => {
-    expect(dimensionsFor(true).map((d) => d.key)).toEqual(["agent", "apiKey", "user", "llmProvider", "model"]);
+    expect(dimensionsFor(true).map((d) => d.key)).toEqual([
+      "agent",
+      "apiKey",
+      "user",
+      "llmProvider",
+      "model",
+    ]);
     expect(dimensionsFor(false)[0].key).toBe("organization");
   });
 
@@ -56,9 +65,14 @@ describe("costFormat", () => {
   });
 
   it("keys an agent by its project, and names it with the project only on the org page", () => {
-    const key = groupKey(entry({ id: "hotel-booking", project: "api-platform" }), "agent");
+    const key = groupKey(
+      entry({ id: "hotel-booking", project: "api-platform" }),
+      "agent",
+    );
     expect(key).toBe("api-platform/hotel-booking");
-    expect(groupLabel(key, "agent", false)).toBe("hotel-booking (api-platform)");
+    expect(groupLabel(key, "agent", false)).toBe(
+      "hotel-booking (api-platform)",
+    );
     expect(groupLabel(key, "agent", true)).toBe("hotel-booking");
   });
 
@@ -68,34 +82,63 @@ describe("costFormat", () => {
       project: { "test-project": "Test Project" },
       agent: { "test-project/test": "Test" },
     };
-    expect(groupLabel("openai-provider", "llmProvider", false, names)).toBe("OpenAI Provider");
-    expect(groupLabel("anthropic", "llmProvider", false, names)).toBe("anthropic");
-    expect(groupLabel("test-project", "project", false, names)).toBe("Test Project");
-    expect(groupLabel("test-project/test", "agent", false, names)).toBe("Test (Test Project)");
+    expect(groupLabel("openai-provider", "llmProvider", false, names)).toBe(
+      "OpenAI Provider",
+    );
+    expect(groupLabel("anthropic", "llmProvider", false, names)).toBe(
+      "anthropic",
+    );
+    expect(groupLabel("test-project", "project", false, names)).toBe(
+      "Test Project",
+    );
+    expect(groupLabel("test-project/test", "agent", false, names)).toBe(
+      "Test (Test Project)",
+    );
     expect(groupLabel("test-project/test", "agent", true, names)).toBe("Test");
   });
 
   it("calls an entry without a value Unattributed", () => {
-    expect(groupLabel(groupKey(entry({ project: "research" }), "agent"), "agent", false)).toBe(
+    expect(
+      groupLabel(
+        groupKey(entry({ project: "research" }), "agent"),
+        "agent",
+        false,
+      ),
+    ).toBe("Unattributed");
+    expect(groupLabel(groupKey(entry({}), "user"), "user", false)).toBe(
       "Unattributed",
     );
-    expect(groupLabel(groupKey(entry({}), "user"), "user", false)).toBe("Unattributed");
     expect(groupLabel("gpt-4o", "model", false)).toBe("gpt-4o");
   });
 
   it("sums each month, the unpriced requests, and the change from the month before", () => {
     const entries = [
-      entry({ unpricedRequests: { missingPrice: 3, usageUnavailable: 0 } }, ["10", "20.5", "1"]),
-      entry({ unpricedRequests: { missingPrice: 1, usageUnavailable: 4 } }, ["5", "4.5", "bad"]),
+      entry({ unpricedRequests: { missingPrice: 3, usageUnavailable: 0 } }, [
+        "10",
+        "20.5",
+        "1",
+      ]),
+      entry({ unpricedRequests: { missingPrice: 1, usageUnavailable: 4 } }, [
+        "5",
+        "4.5",
+        "bad",
+      ]),
     ];
     expect(monthlyTotals(entries, MONTHS)).toEqual([15, 25, 1]);
-    expect(unpricedTotals(entries)).toEqual({ missingPrice: 4, usageUnavailable: 4 });
+    expect(unpricedTotals(entries)).toEqual({
+      missingPrice: 4,
+      usageUnavailable: 4,
+    });
     expect(changePercent(15, 25)).toBe(67);
     expect(changePercent(0, 25)).toBeUndefined();
   });
 
   it("takes the months from the report, else the 3 UTC months up to now", () => {
     expect(keptMonths([entry({})])).toEqual(MONTHS);
-    expect(keptMonths([], new Date(Date.UTC(2027, 0, 15)))).toEqual(["2026-11", "2026-12", "2027-01"]);
+    expect(keptMonths([], new Date(Date.UTC(2027, 0, 15)))).toEqual([
+      "2026-11",
+      "2026-12",
+      "2027-01",
+    ]);
   });
 });

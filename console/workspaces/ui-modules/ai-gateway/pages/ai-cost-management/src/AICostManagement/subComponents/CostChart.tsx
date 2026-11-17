@@ -91,7 +91,13 @@ interface SegmentProps {
  */
 function rankShape(rank: number, colorOfKey: (key: string) => string) {
   function Segment(props: unknown) {
-    const { x = 0, y = 0, width = 0, height = 0, payload } = props as SegmentProps;
+    const {
+      x = 0,
+      y = 0,
+      width = 0,
+      height = 0,
+      payload,
+    } = props as SegmentProps;
     const h = height - SEGMENT_GAP;
     if (!payload || h <= 0) return <g />;
     const top = y + SEGMENT_GAP;
@@ -169,10 +175,18 @@ function CostTooltip({
                 flexShrink: 0,
               }}
             />
-            <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }} noWrap>
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{ flex: 1 }}
+              noWrap
+            >
               {seriesByKey.get(e.key)?.name ?? e.key}
             </Typography>
-            <Typography variant="body2" sx={{ fontVariantNumeric: "tabular-nums" }}>
+            <Typography
+              variant="body2"
+              sx={{ fontVariantNumeric: "tabular-nums" }}
+            >
               {formatUsd(e.value)}
             </Typography>
           </Stack>
@@ -186,7 +200,11 @@ function CostTooltip({
         <Typography variant="body2" color="text.secondary">
           Total
         </Typography>
-        <Typography variant="body2" fontWeight={600} sx={{ fontVariantNumeric: "tabular-nums" }}>
+        <Typography
+          variant="body2"
+          fontWeight={600}
+          sx={{ fontVariantNumeric: "tabular-nums" }}
+        >
           {formatUsd(total)}
         </Typography>
       </Stack>
@@ -234,7 +252,13 @@ export function CostChart({ rows, series, height = 360 }: CostChartProps) {
         aria-label="Legend"
       >
         {series.map((s) => (
-          <Stack key={s.key} direction="row" alignItems="center" spacing={0.75} role="listitem">
+          <Stack
+            key={s.key}
+            direction="row"
+            alignItems="center"
+            spacing={0.75}
+            role="listitem"
+          >
             <Box
               sx={{
                 width: 10,
@@ -265,7 +289,13 @@ export function CostChart({ rows, series, height = 360 }: CostChartProps) {
         maxBarSize={220}
       >
         <CartesianGrid vertical={false} stroke={theme.palette.divider} />
-        <XAxis dataKey="month" axisLine={false} tickLine={false} tick={tick} tickMargin={10} />
+        <XAxis
+          dataKey="month"
+          axisLine={false}
+          tickLine={false}
+          tick={tick}
+          tickMargin={10}
+        />
         <YAxis
           axisLine={false}
           tickLine={false}
@@ -276,7 +306,9 @@ export function CostChart({ rows, series, height = 360 }: CostChartProps) {
         <ChartTooltip
           cursor={{ fill: theme.palette.action.hover }}
           isAnimationActive={false}
-          content={<CostTooltip seriesByKey={seriesByKey} colorOfKey={colorOfKey} />}
+          content={
+            <CostTooltip seriesByKey={seriesByKey} colorOfKey={colorOfKey} />
+          }
         />
         {series.map((_, rank) => (
           <Bar

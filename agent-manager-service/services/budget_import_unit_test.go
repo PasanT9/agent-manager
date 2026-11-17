@@ -314,3 +314,21 @@ func TestBudgetImport_RefusesAnUnknownOnExisting(t *testing.T) {
 	_, err := env.svc.Import(context.Background(), budgetTestOrg, "alice", strings.NewReader(existingCSV), true, "overwrite")
 	assert.Equal(t, utils.ErrCodeValidation, budgetErrorCode(t, err))
 }
+
+// A row lists every column that is wrong on its own, not only the first.
+func TestBudgetImport_ListsEveryBadColumnOfARow(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	file := "name,amount,period,action,currency,agentAllocation,blockAt,thresholds\n" +
+		"Bad Row,0100,decade,maybe,EUR,each,150,80;5000\n"
+	result, err := env.svc.Import(context.Background(), budgetTestOrg, "alice", strings.NewReader(file), true, "")
+	require.NoError(t, err)
+	require.Len(t, result.Results, 1)
+	columns := map[string]bool{}
+	for _, e := range result.Results[0].Errors {
+		columns[e.GetColumn()] = true
+	}
+	for _, c := range []string{"name", "amount", "period", "action", "currency", "agentAllocation", "blockAt", "thresholds"} {
+		assert.True(t, columns[c], "column %s is reported", c)
+	}
+	assert.Empty(t, env.created, "nothing is stored")
+}

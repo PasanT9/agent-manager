@@ -41,7 +41,9 @@ export const COST_DIMENSIONS: CostDimension[] = [
 /** The dimensions a page can group by: a project's page has only those below a project. */
 export function dimensionsFor(projectScoped: boolean): CostDimension[] {
   return projectScoped
-    ? COST_DIMENSIONS.filter((d) => d.key !== "organization" && d.key !== "project")
+    ? COST_DIMENSIONS.filter(
+        (d) => d.key !== "organization" && d.key !== "project",
+      )
     : COST_DIMENSIONS;
 }
 
@@ -123,13 +125,18 @@ export function groupLabel(
 export function keptMonths(entries: CostByGroup[], now = new Date()): string[] {
   if (entries[0]?.monthly.length) return entries[0].monthly.map((m) => m.month);
   return [2, 1, 0].map((back) => {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1));
+    const d = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1),
+    );
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
   });
 }
 
 /** Total cost of the entries in each of the given months. */
-export function monthlyTotals(entries: CostByGroup[], months: string[]): number[] {
+export function monthlyTotals(
+  entries: CostByGroup[],
+  months: string[],
+): number[] {
   return months.map((month) =>
     entries.reduce(
       (sum, e) => sum + amount(e.monthly.find((m) => m.month === month)?.cost),
@@ -148,14 +155,18 @@ export function unpricedTotals(entries: CostByGroup[]): UnpricedRequests {
   return entries.reduce(
     (sum, e) => ({
       missingPrice: sum.missingPrice + e.unpricedRequests.missingPrice,
-      usageUnavailable: sum.usageUnavailable + e.unpricedRequests.usageUnavailable,
+      usageUnavailable:
+        sum.usageUnavailable + e.unpricedRequests.usageUnavailable,
     }),
     { missingPrice: 0, usageUnavailable: 0 },
   );
 }
 
 /** Change from one month to the next, as a whole percentage; undefined without a base. */
-export function changePercent(previous: number, current: number): number | undefined {
+export function changePercent(
+  previous: number,
+  current: number,
+): number | undefined {
   if (previous <= 0) return undefined;
   return Math.round(((current - previous) / previous) * 100);
 }

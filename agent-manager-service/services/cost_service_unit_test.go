@@ -19,6 +19,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"math/big"
 	"testing"
 	"time"
 
@@ -99,8 +100,8 @@ func TestCostService_OrganizationTotalPerMonth(t *testing.T) {
 		months = append(months, m.Month)
 	}
 	assert.Equal(t, []string{"2026-09", "2026-10", "2026-11"}, months)
-	assert.Equal(t, []string{"0.00", "100.00", "105.15"}, costs(g), "May is older than the kept months")
-	assert.Equal(t, "205.15", g.Cost)
+	assert.Equal(t, []string{"0.00", "100.00", "105.146"}, costs(g), "May is older than the kept months")
+	assert.Equal(t, "205.146", g.Cost)
 	assert.Equal(t, int64(4), g.UnpricedRequests.MissingPrice)
 }
 
@@ -201,4 +202,24 @@ func TestCostService_DeletesMonthsOlderThanTheKeptOnes(t *testing.T) {
 	s.deleteOld(context.Background())
 	require.Len(t, repo.DeleteBeforeCalls(), 1)
 	assert.Equal(t, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), repo.DeleteBeforeCalls()[0].Before)
+}
+
+func TestUSDString_KeepsFractionsOfACent(t *testing.T) {
+	for in, want := range map[string]string{"0": "0.00", "1.5": "1.50", "0.0325": "0.0325", "1.045850": "1.04585", "2/3": "0.666667"} {
+		r, ok := new(big.Rat).SetString(in)
+		require.True(t, ok)
+		assert.Equal(t, want, usdString(r), in)
+	}
+}
+
+func TestParseCostFilters_AgentNeedsItsProject(t *testing.T) {
+	for _, bad := range []string{"agent:support-agent", "agent:/support-agent", "agent:api-platform/", "agent:api-platform/a,lonely"} {
+		_, err := parseCostFilters([]string{bad})
+		var be *BudgetError
+		require.ErrorAs(t, err, &be, bad)
+		assert.Equal(t, "filter", be.Field)
+	}
+	got, err := parseCostFilters([]string{"agent:api-platform/support-agent,api-platform/billing"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"api-platform/support-agent", "api-platform/billing"}, got[0].values)
 }

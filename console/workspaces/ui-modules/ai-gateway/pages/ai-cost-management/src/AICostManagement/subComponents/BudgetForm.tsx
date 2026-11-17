@@ -89,7 +89,7 @@ import {
   type ExemptionRow,
   type ScopeKind,
 } from "../budgetForm";
-import { PERIOD_LABELS } from "./budgetLabels";
+import { PERIOD_LABELS, inSentence } from "./budgetLabels";
 
 interface BudgetFormPageProps {
   orgName?: string;
@@ -989,7 +989,7 @@ export function BudgetFormPage({
   let conditionNo = 0;
   const conditions = form.consumers.flatMap((c, i) => {
     const boxes: ReactNode[] = [];
-    const kindLabel = KIND_LABEL[c.type].toLowerCase();
+    const kindLabel = inSentence(KIND_LABEL[c.type]);
     if (c.type === "agent" && c.project) {
       conditionNo += 1;
       boxes.push(
@@ -1402,9 +1402,7 @@ export function BudgetFormPage({
                         />
                       </Field>
                     ) : (
-                      <Field
-                        label={`Select ${KIND_LABEL[e.type].toLowerCase()}`}
-                      >
+                      <Field label={`Select ${inSentence(KIND_LABEL[e.type])}`}>
                         <ValuePicker
                           kind={e.type}
                           value={e.type === "agent" ? agentValue(e) : e.id}

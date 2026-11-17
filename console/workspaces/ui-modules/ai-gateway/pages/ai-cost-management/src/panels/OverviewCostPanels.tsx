@@ -37,8 +37,12 @@ import {
   type ProjectOverviewPanelProps,
 } from "@agent-management-platform/shared-component";
 import { formatUsd } from "../AICostManagement/costFormat";
+import { useEntityNames } from "../AICostManagement/useEntityNames";
 import { EntityCostTiles, useEntityCost } from "./EntityCostPanel";
-import { QuickBudgetDialog, type QuickBudgetDialogProps } from "./QuickBudgetDialog";
+import {
+  QuickBudgetDialog,
+  type QuickBudgetDialogProps,
+} from "./QuickBudgetDialog";
 
 const orgNav = absoluteRouteMap.children.org.children;
 
@@ -60,7 +64,9 @@ function AddBudget(props: AddBudgetProps): ReactNode {
       >
         Add budget
       </Button>
-      {open && <QuickBudgetDialog {...props} open onClose={() => setOpen(false)} />}
+      {open && (
+        <QuickBudgetDialog {...props} open onClose={() => setOpen(false)} />
+      )}
     </>
   );
 }
@@ -68,8 +74,17 @@ function AddBudget(props: AddBudgetProps): ReactNode {
 /** Shared section header for the agent and LLM provider cost summaries. */
 function CostSectionHeader({ add }: { add: ReactNode }) {
   return (
-    <Box display="flex" justifyContent="space-between" alignItems="center" mb={1.5}>
-      <Typography variant="subtitle2" color="text.secondary" sx={{ fontWeight: 600 }}>
+    <Box
+      display="flex"
+      justifyContent="space-between"
+      alignItems="center"
+      mb={1.5}
+    >
+      <Typography
+        variant="subtitle2"
+        color="text.secondary"
+        sx={{ fontWeight: 600 }}
+      >
         Cost
       </Typography>
       {add}
@@ -102,12 +117,17 @@ function budgetRoutes(orgId: string, projectId?: string) {
     : orgNav.aiCostManagement;
   const params = { orgId, projectId };
   return {
-    createHref: generatePath(page.children.budgets.children.create.path, params),
+    createHref: generatePath(
+      page.children.budgets.children.create.path,
+      params,
+    ),
     viewHref: (budgetName: string) =>
-      generatePath(page.children.budgets.children.view.path, { ...params, budgetName }),
+      generatePath(page.children.budgets.children.view.path, {
+        ...params,
+        budgetName,
+      }),
   };
 }
-
 
 /** The Dashboard, grouped by `groupBy` and picked to `pick`. */
 function dashboardHref(base: string, groupBy?: string, pick?: string): string {
@@ -130,7 +150,12 @@ function CostLine({
   loading?: boolean;
 }) {
   return (
-    <Box display="flex" justifyContent="space-between" alignItems="flex-start" gap={2}>
+    <Box
+      display="flex"
+      justifyContent="space-between"
+      alignItems="flex-start"
+      gap={2}
+    >
       <Box>
         <Typography variant="body2">{label}</Typography>
         {caption && (
@@ -158,8 +183,12 @@ function CostLine({
 }
 
 /** A project's cost, in its overview's side column. */
-export const ProjectCostCard: React.FC<ProjectOverviewPanelProps> = ({ orgId, projectId }) => {
+export const ProjectCostCard: React.FC<ProjectOverviewPanelProps> = ({
+  orgId,
+  projectId,
+}) => {
   const c = useEntityCost(orgId, `project:${projectId}`);
+  const projectName = useEntityNames(orgId).project?.[projectId] ?? projectId;
   const href = generatePath(orgNav.projects.children.aiCostManagement.path, {
     orgId,
     projectId,
@@ -168,13 +197,17 @@ export const ProjectCostCard: React.FC<ProjectOverviewPanelProps> = ({ orgId, pr
     <Card variant="outlined" sx={{ minWidth: 300, flexGrow: 1 }}>
       <CardContent>
         <Box display="flex" flexDirection="column" gap={1.5}>
-          <Box display="flex" justifyContent="space-between" alignItems="center">
+          <Box
+            display="flex"
+            justifyContent="space-between"
+            alignItems="center"
+          >
             <Typography variant="h6">Cost</Typography>
             <AddBudget
               orgName={orgId}
               start={{ project: projectId }}
               kind="Project"
-              label={projectId}
+              label={projectName}
               projectOwner={projectId}
               {...budgetRoutes(orgId, projectId)}
             />
@@ -225,6 +258,8 @@ export const AgentCostSection: React.FC<AgentOverviewPanelProps> = ({
     orgId,
     projectId,
   });
+  const agentName =
+    useEntityNames(orgId).agent?.[`${projectId}/${agentId}`] ?? agentId;
   return (
     <Box sx={{ width: "100%" }}>
       <CostSectionHeader
@@ -233,14 +268,20 @@ export const AgentCostSection: React.FC<AgentOverviewPanelProps> = ({
             orgName={orgId}
             start={{ agent: `${projectId}/${agentId}` }}
             kind="Agent"
-            label={agentId}
+            label={agentName}
             projectOwner={projectId}
             {...budgetRoutes(orgId, projectId)}
           />
         }
       />
-      <EntityCostTiles orgName={orgId} filter={`agent:${projectId}/${agentId}`} fill />
-      <ViewCostDetails href={dashboardHref(base, "agent", `${projectId}/${agentId}`)} />
+      <EntityCostTiles
+        orgName={orgId}
+        filter={`agent:${projectId}/${agentId}`}
+        fill
+      />
+      <ViewCostDetails
+        href={dashboardHref(base, "agent", `${projectId}/${agentId}`)}
+      />
     </Box>
   );
 };
@@ -270,9 +311,12 @@ export const LLMProviderCostSection: React.FC<{
           />
         }
       />
-      <EntityCostTiles orgName={orgId} filter={`llmProvider:${providerId}`} fill />
+      <EntityCostTiles
+        orgName={orgId}
+        filter={`llmProvider:${providerId}`}
+        fill
+      />
       <ViewCostDetails href={dashboardHref(base, "llmProvider", providerId)} />
     </Box>
   );
 };
-

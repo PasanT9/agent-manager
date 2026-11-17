@@ -25,8 +25,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -162,6 +164,7 @@ func (s *budgetService) Import(ctx context.Context, ouID, createdBy string, file
 		row := &importRow{row: int32(i + 2), name: cells[csvName]}
 		rows = append(rows, row)
 		row.req = budgetRequestFromCSV(cells, orgName, row)
+		checkCSVColumns(cells, row)
 		if row.name != "" {
 			if first, seen := firstRow[row.name]; seen {
 				row.fail(csvName, utils.ErrCodeBudgetAlreadyExists, fmt.Sprintf("Row %d already uses the name %s.", first, row.name))
@@ -550,4 +553,61 @@ func importResult(rows []*importRow, dryRun bool) *spec.BudgetImportResult {
 		result.Results = append(result.Results, r)
 	}
 	return result
+}
+
+// checkCSVColumns checks each column that can be judged on its own, and fails every one
+// that is wrong, so a row lists all of its bad cells at once. Checks across columns and
+// against existing projects, agents, providers and channels run afterwards, when every
+// column is readable (prepareBudget), and report one problem at a time.
+func checkCSVColumns(cells map[string]string, row *importRow) {
+	oneOf := func(column, value string, allowed ...string) {
+		if value != "" && !slices.Contains(allowed, value) {
+			row.fail(column, utils.ErrCodeValidation, fmt.Sprintf("%s must be %s; got %q.", column, orList(allowed), value))
+		}
+	}
+	required := func(column string) bool {
+		if cells[column] == "" {
+			row.fail(column, utils.ErrCodeValidation, column+" is required.")
+			return false
+		}
+		return true
+	}
+	if required(csvName) && !budgetNamePattern.MatchString(cells[csvName]) {
+		row.fail(csvName, utils.ErrCodeValidation, "name must be 1-63 lowercase letters, digits or '-', starting and ending with a letter or digit.")
+	}
+	if required(csvAmount) {
+		amount, ok := new(big.Rat).SetString(cells[csvAmount])
+		if !budgetAmountPattern.MatchString(cells[csvAmount]) || !ok || amount.Sign() <= 0 {
+			row.fail(csvAmount, utils.ErrCodeValidation, "amount must be a decimal above zero, with at most 12 whole digits, 2 decimals and no leading zeros, e.g. 100.00.")
+		}
+	}
+	if required(csvPeriod) {
+		oneOf(csvPeriod, cells[csvPeriod], "day", "week", "month")
+	}
+	if required(csvAction) {
+		oneOf(csvAction, cells[csvAction], "block", "allow")
+	}
+	oneOf(csvCurrency, cells[csvCurrency], budgetCurrencyUSD)
+	for _, column := range []string{csvProviderAllocation, csvProjectAllocation, csvAgentAllocation, csvAPIKeyAllocation} {
+		oneOf(column, cells[column], budgetAllocationShared, budgetAllocationSeparate)
+	}
+	if v := cells[csvBlockAt]; v != "" {
+		if n, err := strconv.Atoi(v); err == nil && (n < 1 || n > 100) {
+			row.fail(csvBlockAt, utils.ErrCodeValidation, "blockAt must be a whole percentage, 1-100.")
+		}
+	}
+	for _, v := range csvList(cells[csvThresholds]) {
+		if n, err := strconv.Atoi(v); err == nil && (n < 1 || n > maxBudgetThreshold) {
+			row.fail(csvThresholds, utils.ErrCodeValidation, fmt.Sprintf("thresholds must be whole percentages from 1 to %d; got %d.", maxBudgetThreshold, n))
+			break
+		}
+	}
+}
+
+// orList is "a, b or c".
+func orList(values []string) string {
+	if len(values) < 2 {
+		return strings.Join(values, "")
+	}
+	return strings.Join(values[:len(values)-1], ", ") + " or " + values[len(values)-1]
 }

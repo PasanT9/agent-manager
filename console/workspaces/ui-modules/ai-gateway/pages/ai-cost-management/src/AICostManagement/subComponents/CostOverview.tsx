@@ -32,19 +32,20 @@ import {
   Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
-import { ChartColumnStacked, ExternalLink, ServerCrash } from "@wso2/oxygen-ui-icons-react";
-import { useSearchParams } from "react-router-dom";
 import {
-  useCosts,
-  useListLLMProviders,
-  useListOrgAgents,
-  useListProjects,
-} from "@agent-management-platform/api-client";
+  ChartColumnStacked,
+  ExternalLink,
+  ServerCrash,
+} from "@wso2/oxygen-ui-icons-react";
+import { useSearchParams } from "react-router-dom";
+import { useCosts } from "@agent-management-platform/api-client";
 import { StateNotice, TextInput } from "@agent-management-platform/views";
-import { globalConfig, type CostGroupBy } from "@agent-management-platform/types";
+import {
+  globalConfig,
+  type CostGroupBy,
+} from "@agent-management-platform/types";
 import {
   amount,
-  type CostNames,
   changePercent,
   dimensionsFor,
   entryMonthly,
@@ -57,6 +58,8 @@ import {
   unpricedTotals,
 } from "../costFormat";
 import { CostChart, type CostChartRow, type CostSeries } from "./CostChart";
+import { inSentence } from "./budgetLabels";
+import { useEntityNames } from "../useEntityNames";
 
 /** Groups shown on their own in the chart; the rest are summed as "Other". */
 const TOP_GROUPS = 5;
@@ -81,13 +84,19 @@ function Tile({
   return (
     <Card
       variant="outlined"
-      sx={{ height: "100%", borderColor: highlight ? "primary.main" : "divider" }}
+      sx={{
+        height: "100%",
+        borderColor: highlight ? "primary.main" : "divider",
+      }}
     >
       <CardContent>
         <Typography variant="body2" color="text.secondary">
           {label}
         </Typography>
-        <Typography variant="h5" sx={{ mt: 0.5, color: highlight ? "primary.main" : "text.primary" }}>
+        <Typography
+          variant="h5"
+          sx={{ mt: 0.5, color: highlight ? "primary.main" : "text.primary" }}
+        >
           {value}
         </Typography>
         {caption && (
@@ -125,7 +134,12 @@ function AnalyticsLink() {
     <Tooltip title="No analytics integration is configured for this deployment.">
       <Typography variant="body2" color="text.secondary">
         {docs ? (
-          <Link href={docs} target="_blank" rel="noopener noreferrer" color="inherit">
+          <Link
+            href={docs}
+            target="_blank"
+            rel="noopener noreferrer"
+            color="inherit"
+          >
             Detailed analytics unavailable
           </Link>
         ) : (
@@ -152,26 +166,7 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
   const dimension = dimensions.find((d) => d.key === groupBy) ?? dimensions[0];
 
   // Display names for what cost data names by handle (UX: the names used elsewhere).
-  const providers = useListLLMProviders({ orgName });
-  const projects = useListProjects({ orgName }, { limit: 100 });
-  const orgAgents = useListOrgAgents({ orgName });
-  const names = useMemo<CostNames>(
-    () => ({
-      llmProvider: Object.fromEntries(
-        (providers.data?.providers ?? []).map((p) => [p.id, p.name || p.id]),
-      ),
-      project: Object.fromEntries(
-        (projects.data?.projects ?? []).map((p) => [p.name, p.displayName || p.name]),
-      ),
-      agent: Object.fromEntries(
-        (orgAgents.data?.agents ?? []).map((a) => [
-          `${a.projectName}/${a.name}`,
-          a.displayName || a.name,
-        ]),
-      ),
-    }),
-    [providers.data, projects.data, orgAgents.data],
-  );
+  const names = useEntityNames(orgName ?? "");
   const { data, isLoading, error } = useCosts(
     { orgName },
     { groupBy, filter: projectName ? [`project:${projectName}`] : undefined },
@@ -212,7 +207,8 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
   const beforeLast = totals[months.length - 3] ?? 0;
   const threeMonths = totals.reduce((a, b) => a + b, 0);
   const change = changePercent(beforeLast, last);
-  const { missingPrice: missing, usageUnavailable: unavailable } = unpricedTotals(groups);
+  const { missingPrice: missing, usageUnavailable: unavailable } =
+    unpricedTotals(groups);
 
   // The top groups by total, then everything else as one "Other" series.
   const ranked = [...groups].sort((a, b) => amount(b.cost) - amount(a.cost));
@@ -233,7 +229,8 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
   }
   const chartRows: CostChartRow[] = months.map((m, i) => {
     const row: CostChartRow = {
-      month: i === months.length - 1 ? `${monthLabel(m)} (so far)` : monthLabel(m),
+      month:
+        i === months.length - 1 ? `${monthLabel(m)} (so far)` : monthLabel(m),
     };
     series.forEach((s) => {
       row[s.key] = Math.round(s.costs[i] * 100) / 100;
@@ -242,13 +239,14 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
   });
 
   const thisMonth = months.length ? monthLabel(months[months.length - 1]) : "";
-  const lastMonth = months.length > 1 ? monthLabel(months[months.length - 2]) : "";
+  const lastMonth =
+    months.length > 1 ? monthLabel(months[months.length - 2]) : "";
   const firstMonth = months.length ? monthLabel(months[0]) : "";
   const scope = picked.length
     ? picked.map((p) => groupLabel(p, groupBy, projectScoped, names)).join(", ")
     : groupBy === "organization"
       ? "The organization"
-      : `All ${dimension.plural.toLowerCase()}`;
+      : `All ${inSentence(dimension.plural)}`;
 
   if (error) {
     return (
@@ -264,7 +262,11 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
 
   return (
     <Stack spacing={2.5}>
-      <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ md: "center" }}>
+      <Stack
+        direction={{ xs: "column", md: "row" }}
+        spacing={1.5}
+        alignItems={{ md: "center" }}
+      >
         <Box sx={{ minWidth: 220 }}>
           <TextInput
             select
@@ -297,8 +299,17 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
             renderInput={(params) => (
               <TextField
                 {...params}
-                placeholder={picked.length ? `Add ${dimension.label.toLowerCase()}` : `All ${dimension.plural.toLowerCase()}`}
-                slotProps={{ htmlInput: { ...params.inputProps, "aria-label": `${dimension.plural} to show` } }}
+                placeholder={
+                  picked.length
+                    ? `Add ${inSentence(dimension.label)}`
+                    : `All ${inSentence(dimension.plural)}`
+                }
+                slotProps={{
+                  htmlInput: {
+                    ...params.inputProps,
+                    "aria-label": `${dimension.plural} to show`,
+                  },
+                }}
               />
             )}
           />
@@ -320,7 +331,12 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
         ) : (
           <>
             <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
-              <Tile label={`This month (${thisMonth})`} value={formatUsd(current)} caption={`So far in ${thisMonth}`} highlight />
+              <Tile
+                label={`This month (${thisMonth})`}
+                value={formatUsd(current)}
+                caption={`So far in ${thisMonth}`}
+                highlight
+              />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
               <Tile
@@ -353,7 +369,12 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
 
       <Card variant="outlined">
         <CardContent>
-          <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+          <Stack
+            direction="row"
+            justifyContent="space-between"
+            alignItems="center"
+            sx={{ mb: 1 }}
+          >
             <Typography variant="subtitle1">Monthly cost (USD)</Typography>
             <AnalyticsLink />
           </Stack>
@@ -369,7 +390,11 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
           ) : (
             <CostChart rows={chartRows} series={series} />
           )}
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ display: "block", mt: 1 }}
+          >
             UTC calendar months · Kept for 3 months, including the current one
           </Typography>
         </CardContent>

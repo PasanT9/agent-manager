@@ -17,15 +17,27 @@
  */
 
 import { useMemo, useState } from "react";
-import { Button, Chip, ListingTable, SearchBar, Stack, Typography } from "@wso2/oxygen-ui";
+import {
+  Button,
+  Chip,
+  ListingTable,
+  SearchBar,
+  Stack,
+  Typography,
+} from "@wso2/oxygen-ui";
 import { Plus, Wallet } from "@wso2/oxygen-ui-icons-react";
 import { useFeatureManagement } from "@agent-management-platform/feature-management";
 import { useListBudgets } from "@agent-management-platform/api-client";
-import { isListEmpty, ResourceListShell } from "@agent-management-platform/shared-component";
-import { BUDGET_PROJECT_ANNOTATION, type Budget } from "@agent-management-platform/types";
+import {
+  isListEmpty,
+  ResourceListShell,
+} from "@agent-management-platform/shared-component";
+import {
+  BUDGET_PROJECT_ANNOTATION,
+  type Budget,
+} from "@agent-management-platform/types";
 import { amount, formatUsd } from "../costFormat";
 import { PERIOD_LABELS } from "./budgetLabels";
-
 
 interface BudgetsTabProps {
   orgName?: string;
@@ -45,7 +57,11 @@ function ownerOf(b: Budget): string {
 function Usage({ budget }: { budget: Budget }) {
   const period = budget.status?.currentPeriod;
   if (!period) {
-    return <Typography variant="body2" color="text.secondary">No spend yet</Typography>;
+    return (
+      <Typography variant="body2" color="text.secondary">
+        No spend yet
+      </Typography>
+    );
   }
   const spent = amount(period.spent);
   const limit = amount(budget.spec.limit.amount);
@@ -53,16 +69,28 @@ function Usage({ budget }: { budget: Budget }) {
   return (
     <Stack spacing={0}>
       <Typography variant="body2">{formatUsd(spent)}</Typography>
-      <Typography variant="caption" color={share !== undefined && share >= 100 ? "error.main" : "text.secondary"}>
+      <Typography
+        variant="caption"
+        color={
+          share !== undefined && share >= 100 ? "error.main" : "text.secondary"
+        }
+      >
         {share !== undefined ? `${share}% of the limit` : ""}
-        {period.unpricedRequests > 0 ? ` · ${period.unpricedRequests} unpriced` : ""}
+        {period.unpricedRequests > 0
+          ? ` · ${period.unpricedRequests} unpriced`
+          : ""}
       </Typography>
     </Stack>
   );
 }
 
 /** Every budget of the organization, or of one project, with its spend this period. */
-export function BudgetsTab({ orgName, projectName, onOpen, onCreate }: BudgetsTabProps) {
+export function BudgetsTab({
+  orgName,
+  projectName,
+  onOpen,
+  onCreate,
+}: BudgetsTabProps) {
   const canWrite = useFeatureManagement().hasAccess("budget_create");
   const { data, isLoading, error } = useListBudgets(
     { orgName },
@@ -100,7 +128,9 @@ export function BudgetsTab({ orgName, projectName, onOpen, onCreate }: BudgetsTa
               size="small"
               fullWidth
               value={search}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setSearch(e.target.value)
+              }
             />
             <Button
               variant="contained"
@@ -113,7 +143,11 @@ export function BudgetsTab({ orgName, projectName, onOpen, onCreate }: BudgetsTa
           </Stack>
         ) : undefined
       }
-      error={error ? new Error("Couldn't load budgets. Reload the page to try again.") : undefined}
+      error={
+        error
+          ? new Error("Couldn't load budgets. Reload the page to try again.")
+          : undefined
+      }
       isLoading={isLoading}
       isEmpty={isListEmpty({ isLoading, count: budgets.length, isFiltered })}
       isSearchEmpty={!isLoading && budgets.length > 0 && filtered.length === 0}
@@ -123,6 +157,16 @@ export function BudgetsTab({ orgName, projectName, onOpen, onCreate }: BudgetsTa
         description: projectName
           ? "Budgets this project owns appear here, with what they spent this period."
           : "Budgets cap what LLM traffic may spend per day, week or month, and warn before they run out.",
+        // The toolbar, with its Create button, is not shown while the list is empty.
+        action: canWrite ? (
+          <Button
+            variant="contained"
+            startIcon={<Plus size={16} />}
+            onClick={onCreate}
+          >
+            Create budget
+          </Button>
+        ) : undefined,
       }}
       searchEmptyState={{
         illustration: <Wallet size={64} />,
@@ -166,9 +210,15 @@ export function BudgetsTab({ orgName, projectName, onOpen, onCreate }: BudgetsTa
                     )}
                   </Stack>
                 </ListingTable.Cell>
-                {!projectName && <ListingTable.Cell>{ownerOf(b)}</ListingTable.Cell>}
-                <ListingTable.Cell>{formatUsd(amount(limit.amount))}</ListingTable.Cell>
-                <ListingTable.Cell>{PERIOD_LABELS[limit.period]}</ListingTable.Cell>
+                {!projectName && (
+                  <ListingTable.Cell>{ownerOf(b)}</ListingTable.Cell>
+                )}
+                <ListingTable.Cell>
+                  {formatUsd(amount(limit.amount))}
+                </ListingTable.Cell>
+                <ListingTable.Cell>
+                  {PERIOD_LABELS[limit.period]}
+                </ListingTable.Cell>
                 <ListingTable.Cell>
                   <Chip
                     size="small"

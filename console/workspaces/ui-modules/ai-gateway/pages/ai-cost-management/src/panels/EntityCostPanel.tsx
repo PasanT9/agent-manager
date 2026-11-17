@@ -17,7 +17,16 @@
  */
 
 import type { ReactNode } from "react";
-import { Box, Card, CardContent, Chip, Grid, Skeleton, Typography, useTheme } from "@wso2/oxygen-ui";
+import {
+  Box,
+  Card,
+  CardContent,
+  Chip,
+  Grid,
+  Skeleton,
+  Typography,
+  useTheme,
+} from "@wso2/oxygen-ui";
 import { Bar, BarChart, Cell } from "@wso2/oxygen-ui-charts-react";
 import { useCosts } from "@agent-management-platform/api-client";
 import { NESTED_CARD_SX } from "@agent-management-platform/shared-component";
@@ -51,7 +60,10 @@ function MetricTile({
   loading?: boolean;
 }) {
   return (
-    <Card variant="outlined" sx={{ ...NESTED_CARD_SX, width: "100%", height: "100%" }}>
+    <Card
+      variant="outlined"
+      sx={{ ...NESTED_CARD_SX, width: "100%", height: "100%" }}
+    >
       <CardContent
         sx={{
           py: 1,
@@ -68,11 +80,20 @@ function MetricTile({
           {loading ? (
             <Skeleton variant="text" width={64} height={28} />
           ) : (
-            <Typography variant="h6" lineHeight={1.2} sx={{ fontVariantNumeric: "tabular-nums" }}>
+            <Typography
+              variant="h6"
+              lineHeight={1.2}
+              sx={{ fontVariantNumeric: "tabular-nums" }}
+            >
               {value}
             </Typography>
           )}
-          <Typography variant="caption" color="text.secondary" noWrap component="div">
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            noWrap
+            component="div"
+          >
             {label}
           </Typography>
         </Box>
@@ -122,7 +143,9 @@ function MonthsSparkline({ totals }: { totals: number[] }) {
             <Cell
               key={d.i}
               fill={
-                d.i === data.length - 1 ? theme.palette.primary.main : theme.palette.text.secondary
+                d.i === data.length - 1
+                  ? theme.palette.primary.main
+                  : theme.palette.text.secondary
               }
               fillOpacity={d.i === data.length - 1 ? 1 : 0.4}
             />
@@ -160,7 +183,9 @@ export function useEntityCost(orgName: string, filter: string) {
     totals,
     /** e.g. "+13% vs Sep"; undefined when the month before had no cost. */
     changeText:
-      change === undefined ? undefined : `${change >= 0 ? "+" : ""}${change}% vs ${label(n - 3)}`,
+      change === undefined
+        ? undefined
+        : `${change >= 0 ? "+" : ""}${change}% vs ${label(n - 3)}`,
   };
 }
 
@@ -197,7 +222,9 @@ export function EntityCostTiles({
           value={formatUsd(c.last)}
           label={`Last month (${c.lastMonth})`}
           adornment={
-            c.change !== undefined && <ChangeChip change={c.change} against={c.beforeLast} />
+            c.change !== undefined && (
+              <ChangeChip change={c.change} against={c.beforeLast} />
+            )
           }
           loading={c.isLoading}
         />

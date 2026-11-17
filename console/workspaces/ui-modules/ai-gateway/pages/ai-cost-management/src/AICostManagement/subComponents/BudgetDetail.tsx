@@ -71,8 +71,9 @@ import {
   type BudgetConsumer,
   type BudgetPeriod,
 } from "@agent-management-platform/types";
-import { amount, formatUsd } from "../costFormat";
-import { PERIOD_LABELS } from "./budgetLabels";
+import { amount, formatUsd, type CostNames } from "../costFormat";
+import { PERIOD_LABELS, inSentence } from "./budgetLabels";
+import { useEntityNames } from "../useEntityNames";
 
 interface BudgetDetailProps {
   orgName?: string;
@@ -353,8 +354,7 @@ function ThisPeriod({ budget }: { budget: Budget }) {
           <Box sx={{ flex: 1 }}>
             <Figure
               icon={<Coins size={28} />}
-              label="Remaining"
-              value={usd(Math.max(limit - spent, 0))}
+              {...remainingFigure(limit, spent, blockAt)}
             />
           </Box>
           <Box sx={{ flex: 1 }}>
@@ -369,6 +369,31 @@ function ThisPeriod({ budget }: { budget: Budget }) {
       </CardContent>
     </Card>
   );
+}
+
+/**
+ * What is left this period: up to the block point for a Block budget (requests stop
+ * there, not at the amount), up to the amount for an Allow budget, which can go over.
+ */
+function remainingFigure(limit: number, spent: number, blockAt?: number) {
+  if (blockAt !== undefined) {
+    const point = (limit * blockAt) / 100;
+    return {
+      label: "Remaining",
+      value: usd(Math.max(point - spent, 0)),
+      hint:
+        spent >= point
+          ? "Requests are blocked"
+          : `Until blocking at ${usd(point)}`,
+    };
+  }
+  return spent > limit
+    ? {
+        label: "Over the limit",
+        value: usd(spent - limit),
+        hint: "Allowed; warnings only",
+      }
+    : { label: "Remaining", value: usd(limit - spent) };
 }
 
 /** A small card: an icon tile, a title and its content. */
@@ -454,13 +479,29 @@ function ScopeRow({
 const allocationText = (a?: string) =>
   a === "separate" ? "Separate allowance each" : "Shared allowance";
 
-function consumerText(c: BudgetConsumer): string {
-  if (c.type === "attribute") return c.expression ?? "";
-  return c.id ?? `Every ${KIND_LABEL[c.type].toLowerCase()}`;
+/** A consumer or exemption as the page names it: display names where known. */
+function entityText(
+  e: { type: string; id?: string; project?: string; expression?: string },
+  names: CostNames,
+): string {
+  if (e.type === "attribute") return e.expression ?? "";
+  if (!e.id)
+    return `Every ${inSentence(KIND_LABEL[e.type as BudgetConsumer["type"]])}`;
+  if (e.type === "project") return names.project?.[e.id] ?? e.id;
+  if (e.type === "agent") {
+    const agent = e.project
+      ? (names.agent?.[`${e.project}/${e.id}`] ?? e.id)
+      : e.id;
+    return e.project
+      ? `${agent} (${names.project?.[e.project] ?? e.project})`
+      : agent;
+  }
+  return e.id;
 }
 
-function Scope({ budget }: { budget: Budget }) {
+function Scope({ budget, orgName }: { budget: Budget; orgName: string }) {
   const { spec, metadata } = budget;
+  const names = useEntityNames(orgName);
   const owner = metadata.annotations?.[BUDGET_PROJECT_ANNOTATION];
   const consumers = spec.consumers ?? [];
   const exemptions = spec.exemptions ?? [];
@@ -476,7 +517,11 @@ function Scope({ budget }: { budget: Budget }) {
           <ScopeRow
             icon={<BrainCircuit size={20} />}
             label="Resource"
-            value={spec.resource?.id ?? "LLM provider"}
+            value={
+              spec.resource?.id
+                ? (names.llmProvider?.[spec.resource.id] ?? spec.resource.id)
+                : "LLM provider"
+            }
             note={spec.resource?.id ? "LLM provider" : "Any LLM provider"}
             badge={
               spec.resource?.id
@@ -489,7 +534,19 @@ function Scope({ budget }: { budget: Budget }) {
             label="Consumers"
             value={
               consumers.length
-                ? consumers.map((c) => consumerText(c)).join(", ")
+                ? consumers
+                    // A named agent's project is shown with the agent.
+                    .filter(
+                      (c) =>
+                        !(
+                          c.type === "project" &&
+                          consumers.some(
+                            (a) => a.type === "agent" && a.project === c.id,
+                          )
+                        ),
+                    )
+                    .map((c) => entityText(c, names))
+                    .join(", ")
                 : "Everyone"
             }
             note={
@@ -497,11 +554,11 @@ function Scope({ budget }: { budget: Budget }) {
                 ? consumers
                     .map(
                       (c) =>
-                        `${KIND_LABEL[c.type]} · ${allocationText(c.allocation).toLowerCase()}`,
+                        `${KIND_LABEL[c.type]} · ${inSentence(allocationText(c.allocation))}`,
                     )
                     .join(" — ")
                 : owner
-                  ? `All traffic in project ${owner}`
+                  ? `All traffic in project ${names.project?.[owner] ?? owner}`
                   : "All traffic in the organization"
             }
           />
@@ -510,15 +567,7 @@ function Scope({ budget }: { budget: Budget }) {
             label="Exemptions"
             value={
               exemptions.length
-                ? exemptions
-                    .map((e) =>
-                      e.type === "attribute"
-                        ? e.expression
-                        : e.type === "agent"
-                          ? `${e.id} (${e.project})`
-                          : e.id,
-                    )
-                    .join(", ")
+                ? exemptions.map((e) => entityText(e, names)).join(", ")
                 : "None"
             }
             note={
@@ -708,6 +757,7 @@ export function BudgetDetail({
   const name =
     budget?.spec.displayName ?? budget?.metadata.name ?? budgetName ?? "";
   const owner = budget?.metadata.annotations?.[BUDGET_PROJECT_ANNOTATION];
+  const ownerName = useEntityNames(orgName ?? "").project?.[owner ?? ""];
   const updatedAt = budget?.status?.updatedAt ?? budget?.status?.createdAt;
 
   const toggle = () => {
@@ -806,7 +856,7 @@ export function BudgetDetail({
             />
             <Chip
               size="small"
-              label={owner ? `Project ${owner}` : "Organization"}
+              label={owner ? `Project ${ownerName ?? owner}` : "Organization"}
             />
             {fromGateway && (
               <Chip size="small" variant="outlined" label="From a gateway" />
@@ -893,7 +943,7 @@ export function BudgetDetail({
               gap: 2.5,
             }}
           >
-            <Scope budget={budget} />
+            <Scope budget={budget} orgName={orgName ?? ""} />
             <Alerts budget={budget} />
           </Box>
           <Allowances budget={budget} orgName={orgName} />

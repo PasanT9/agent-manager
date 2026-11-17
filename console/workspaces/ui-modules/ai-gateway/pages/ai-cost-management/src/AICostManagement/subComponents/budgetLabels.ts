@@ -23,3 +23,11 @@ export const PERIOD_LABELS: Record<BudgetPeriod, string> = {
   week: "Weekly",
   month: "Monthly",
 };
+
+/** A label as it reads mid-sentence: lowercase, except acronyms ("API key", "LLM providers"). */
+export function inSentence(label: string): string {
+  return label
+    .split(" ")
+    .map((w) => (/^[A-Z]{2,}s?$/.test(w) ? w : w.toLowerCase()))
+    .join(" ");
+}

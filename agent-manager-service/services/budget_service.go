@@ -560,7 +560,7 @@ func (s *budgetService) responses(ctx context.Context, ouID string, budgets []*m
 			spent.Add(spent, rowSpent)
 			unpriced += rowUnpriced
 		}
-		current := spec.NewBudgetCurrentPeriod(start.Format(time.DateOnly), spent.FloatString(2), int32(min(unpriced, math.MaxInt32)))
+		current := spec.NewBudgetCurrentPeriod(start.Format(time.DateOnly), usdString(spent), int32(min(unpriced, math.MaxInt32)))
 		out[i].Status.CurrentPeriod = current
 	}
 	return out, nil
@@ -639,7 +639,7 @@ func (s *budgetService) Usage(ctx context.Context, ouID, name string, limit, off
 		if allowance == nil {
 			allowance = map[string]string{}
 		}
-		page = append(page, *spec.NewBudgetAllowanceUsage(allowance, u.spent.FloatString(2), u.row.UnpricedRequests))
+		page = append(page, *spec.NewBudgetAllowanceUsage(allowance, usdString(u.spent), u.row.UnpricedRequests))
 	}
 	return spec.NewBudgetUsageListResponse(start.Format(time.DateOnly), page, total, limit, offset), nil
 }

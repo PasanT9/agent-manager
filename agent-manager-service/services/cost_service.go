@@ -185,6 +185,12 @@ func parseCostFilters(filters []string) ([]costFilter, error) {
 		var vs []string
 		for _, v := range strings.Split(values, ",") {
 			if v = strings.TrimSpace(v); v != "" {
+				// An agent name is unique only within its project, so it is always project/agent.
+				if typ == costByAgent {
+					if project, agent, ok := strings.Cut(v, "/"); !ok || project == "" || agent == "" {
+						return nil, invalidBudget("filter", "An agent filter value must be project/agent, e.g. agent:api-platform/support-agent; got %q.", v)
+					}
+				}
 				vs = append(vs, v)
 			}
 		}
@@ -302,11 +308,11 @@ func (s *costService) Costs(ctx context.Context, ouID, orgName, groupBy string, 
 	for _, g := range ordered {
 		monthly := make([]spec.MonthlyCost, costMonths)
 		for m, c := range g.byMonth {
-			monthly[m] = *spec.NewMonthlyCost(months[m], c.FloatString(2))
+			monthly[m] = *spec.NewMonthlyCost(months[m], usdString(c))
 		}
 		entry := spec.NewCostByGroup(
 			*spec.NewNullableString(g.id),
-			g.total.FloatString(2),
+			usdString(g.total),
 			*spec.NewUnpricedRequests(g.missing, g.unavailable),
 			monthly,
 		)
@@ -404,4 +410,16 @@ func (s *costService) Stop() error {
 		s.done.Wait()
 	})
 	return nil
+}
+
+// usdString is an amount of USD as the API returns it: exact to six decimals (a request
+// often costs a fraction of a cent), at least two, so totals added up by a client match
+// the server's however the amounts are grouped. Clients round only for display.
+func usdString(r *big.Rat) string {
+	s := strings.TrimRight(r.FloatString(6), "0")
+	whole, frac, _ := strings.Cut(s, ".")
+	for len(frac) < 2 {
+		frac += "0"
+	}
+	return whole + "." + frac
 }

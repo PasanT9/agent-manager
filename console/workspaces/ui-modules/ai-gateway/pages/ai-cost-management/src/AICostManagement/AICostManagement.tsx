@@ -38,7 +38,10 @@ type View = "overview" | "budgets";
 
 /** The organization's Cost Management, or a project's when the URL has one. */
 function useScope() {
-  const { orgId, projectId } = useParams<{ orgId: string; projectId?: string }>();
+  const { orgId, projectId } = useParams<{
+    orgId: string;
+    projectId?: string;
+  }>();
   const route = projectId
     ? absoluteRouteMap.children.org.children.projects.children.aiCostManagement
     : absoluteRouteMap.children.org.children.aiCostManagement;
@@ -53,11 +56,17 @@ function useScope() {
     budgetView: (budgetName: string) =>
       generatePath(budgets.children.view.path, { ...params, budgetName }),
     budgetEdit: (budgetName: string) =>
-      generatePath(budgets.children.view.children.edit.path, { ...params, budgetName }),
+      generatePath(budgets.children.view.children.edit.path, {
+        ...params,
+        budgetName,
+      }),
   };
 }
 
-const TITLES: Record<View, string> = { overview: "Dashboard", budgets: "Budgets" };
+const TITLES: Record<View, string> = {
+  overview: "Dashboard",
+  budgets: "Budgets",
+};
 
 function describe(view: View, projectId?: string): React.ReactNode {
   if (view === "overview") {
@@ -71,7 +80,8 @@ function describe(view: View, projectId?: string): React.ReactNode {
   }
   return projectId ? (
     <span>
-      Budgets project <strong>{projectId}</strong> owns, with what they spent this period.
+      Budgets project <strong>{projectId}</strong> owns, with what they spent
+      this period.
     </span>
   ) : (
     "Budgets that cap what LLM traffic may spend, with what they spent this period."
@@ -82,7 +92,11 @@ function CostManagementPage({ view }: { view: View }) {
   const navigate = useNavigate();
   const { orgId, projectId, budgetView, budgetCreate } = useScope();
   return (
-    <PageLayout title={TITLES[view]} description={describe(view, projectId)} disableIcon>
+    <PageLayout
+      title={TITLES[view]}
+      description={describe(view, projectId)}
+      disableIcon
+    >
       <ListingTable.Container>
         {view === "overview" ? (
           <CostOverview orgName={orgId} projectName={projectId} />
@@ -184,7 +198,10 @@ export const AICostManagement: React.FC = () => {
           </Guard>
         }
       />
-      <Route path="budgets/view/:budgetName/edit" element={<BudgetEditRoute />} />
+      <Route
+        path="budgets/view/:budgetName/edit"
+        element={<BudgetEditRoute />}
+      />
       <Route path="*" element={<Navigate to={home} replace />} />
     </Routes>
   );

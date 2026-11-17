@@ -421,6 +421,9 @@ func warningEvent(b *models.Budget, row models.BudgetUsage, threshold int, at, s
 		displayName = b.Name
 	}
 	e := events.New(id, BudgetWarningEvent, scope, b.OrgID, project, agent, time.Now())
+	// Notifications name the organization by its handle, not its ID; a warning is not
+	// raised in a request, so nothing else sets it.
+	e.OrgHandle = b.OrgName
 	e.Data = map[string]any{
 		"budget":      b.Name,
 		"displayName": displayName,

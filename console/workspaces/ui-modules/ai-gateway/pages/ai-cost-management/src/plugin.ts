@@ -92,7 +92,9 @@ export const aiCostManagementPlugin: PluginManifest = {
     },
     ...(["org", "project"] as const).flatMap((level) => {
       const page =
-        level === "org" ? orgNav.aiCostManagement : orgNav.projects.children.aiCostManagement;
+        level === "org"
+          ? orgNav.aiCostManagement
+          : orgNav.projects.children.aiCostManagement;
       return [
         {
           type: "nav-item" as const,
