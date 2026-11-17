@@ -225,6 +225,17 @@ func (b *gatewayBudgetSyncer) Save(ctx context.Context, gateway *models.Gateway,
 	if err != nil {
 		return "", GatewayResourceErrInvalid, nil //nolint:nilerr // a bad document fails the item, not the push
 	}
+	// The org-id annotation, when sent, must name the gateway's own organization; left
+	// out, the budget is the gateway's organization's.
+	if org := gatewayBudgetOrg(item.Configuration); org != "" {
+		owner, err := b.platform.GetOrganization(ctx, gateway.OUID)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to get organization: %w", err)
+		}
+		if org != owner.Name {
+			return "", GatewayResourceErrInvalid, nil
+		}
+	}
 	// The project-id annotation makes it a project budget, as the artifact import reads it
 	// for project-scoped kinds (Interfaces 4.3).
 	var projectID *uuid.UUID
@@ -262,6 +273,20 @@ func (b *gatewayBudgetSyncer) Delete(ctx context.Context, gateway *models.Gatewa
 
 func (b *gatewayBudgetSyncer) Keep(ctx context.Context, gateway *models.Gateway, names []string) error {
 	return b.repo.DeleteForGatewayExcept(ctx, gateway.OUID, gateway.UUID, names)
+}
+
+// gatewayBudgetOrg is the organization a pushed Budget kind's org-id annotation names,
+// or empty when it has none.
+func gatewayBudgetOrg(raw json.RawMessage) string {
+	var doc struct {
+		Metadata struct {
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal(raw, &doc) != nil {
+		return ""
+	}
+	return strings.TrimSpace(doc.Metadata.Annotations[AnnotationOrgID])
 }
 
 // gatewayBudgetConfig maps a pushed Budget kind onto the stored model: its spec, with the

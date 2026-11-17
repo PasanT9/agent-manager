@@ -528,6 +528,10 @@ const (
 	AnnotationAgentID   = "gateway.api-platform.wso2.com/agent-id"
 )
 
+// AnnotationOrgID names the organization that owns a budget, by handle. Every budget
+// carries it; one sent without it gets the organization in the path.
+const AnnotationOrgID = "gateway.api-platform.wso2.com/org-id"
+
 // renderLLMProxy renders an LLM proxy's deployment; annotations, when given, are set on
 // its metadata.
 func renderLLMProxy(proxy *models.LLMProxy, provider *models.LLMProvider, annotations map[string]string) (string, error) {

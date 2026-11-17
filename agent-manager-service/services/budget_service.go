@@ -169,14 +169,16 @@ type BudgetKind struct {
 	Spec       models.BudgetConfig `json:"spec" yaml:"spec"`
 }
 
-// BudgetKindMetadata names the budget.
+// BudgetKindMetadata names the budget and, by annotation, its organization.
 type BudgetKindMetadata struct {
-	Name string `json:"name" yaml:"name"`
+	Name        string            `json:"name" yaml:"name"`
+	Annotations map[string]string `json:"annotations,omitempty" yaml:"annotations,omitempty"`
 }
 
-// BuildBudgetKind wraps a stored budget in the Budget kind. For a gateway it leaves out
-// what gateways never get: displayName, description and warnings (Interfaces 3).
-func BuildBudgetKind(name string, cfg models.BudgetConfig, forGateway bool) BudgetKind {
+// BuildBudgetKind wraps a stored budget in the Budget kind, with the org-id annotation
+// naming its organization (orgName, its handle). For a gateway it leaves out what gateways
+// never get: displayName, description and warnings (Interfaces 3).
+func BuildBudgetKind(name, orgName string, cfg models.BudgetConfig, forGateway bool) BudgetKind {
 	if forGateway {
 		// A gateway names an agent with its project (agent names are unique per project);
 		// the budget's project consumer is the project of a named agent.
@@ -201,13 +203,19 @@ func BuildBudgetKind(name string, cfg models.BudgetConfig, forGateway bool) Budg
 			cfg.Resource = &models.BudgetResource{Type: budgetTypeLLMProvider, Allocation: budgetAllocationShared}
 		}
 	}
-	return BudgetKind{APIVersion: budgetAPIVersion, Kind: models.KindBudget, Metadata: BudgetKindMetadata{Name: name}, Spec: cfg}
+	metadata := BudgetKindMetadata{Name: name}
+	if orgName != "" {
+		metadata.Annotations = map[string]string{AnnotationOrgID: orgName}
+	}
+	return BudgetKind{APIVersion: budgetAPIVersion, Kind: models.KindBudget, Metadata: metadata, Spec: cfg}
 }
 
 // budgetRequest is a new budget's fields: from a Budget kind (Create, Update) or a CSV
 // row (Import).
 type budgetRequest struct {
-	Name        string
+	Name string
+	// OrgId is the org-id annotation: nil when left out, filled in with the path's.
+	OrgId       *string
 	ProjectId   *string
 	DisplayName *string
 	Description *string
@@ -236,8 +244,9 @@ type budgetUpdateLimit struct {
 	BlockAt *int32
 }
 
-// budgetFromKind reads a Budget kind sent to the API (Interfaces 3): the project-id
-// annotation names the owning project; the organization is the one in the path.
+// budgetFromKind reads a Budget kind sent to the API (Interfaces 3): the org-id annotation
+// names the organization, which must be the one in the path (left out, it is that one); the
+// project-id annotation names the owning project.
 func budgetFromKind(kind spec.Budget) (budgetRequest, error) {
 	if kind.ApiVersion != budgetAPIVersion {
 		return budgetRequest{}, invalidBudget("apiVersion", "apiVersion must be %s.", budgetAPIVersion)
@@ -251,6 +260,14 @@ func budgetFromKind(kind spec.Budget) (budgetRequest, error) {
 		Consumers: kind.Spec.Consumers, Exemptions: kind.Spec.Exemptions, Warnings: kind.Spec.Warnings,
 	}
 	if kind.Metadata.Annotations != nil {
+		if org, ok := (*kind.Metadata.Annotations)[AnnotationOrgID]; ok {
+			org = strings.TrimSpace(org)
+			if org == "" {
+				return budgetRequest{}, invalidBudget("metadata.annotations",
+					"%s must name the organization; leave it out for the organization in the path.", AnnotationOrgID)
+			}
+			req.OrgId = &org
+		}
 		if project, ok := (*kind.Metadata.Annotations)[AnnotationProjectID]; ok {
 			project = strings.TrimSpace(project)
 			if project == "" {
@@ -301,6 +318,9 @@ func (s *budgetService) prepareBudget(ctx context.Context, ouID, createdBy strin
 	if err != nil {
 		return nil, err
 	}
+	if err := sameOrg(req.OrgId, orgName); err != nil {
+		return nil, err
+	}
 	var projectID *uuid.UUID
 	projectName := ""
 	if req.ProjectId != nil {
@@ -326,6 +346,15 @@ func budgetNameTaken(name string) error {
 		Code: utils.ErrCodeBudgetAlreadyExists, Field: "name",
 		Message: fmt.Sprintf("A budget or other resource named %s already exists.", name),
 	}
+}
+
+// sameOrg checks a budget's org-id annotation, when sent, names the organization it is
+// created or updated in. A budget belongs to one organization; left out, it is that one.
+func sameOrg(sent *string, orgName string) error {
+	if sent == nil || *sent == orgName {
+		return nil
+	}
+	return invalidBudget("metadata.annotations", "%s must be %s, the organization in the path.", AnnotationOrgID, orgName)
 }
 
 // orgHandle returns the organization's handle: the token's, or the stored one.
@@ -505,7 +534,17 @@ func (s *budgetService) response(ctx context.Context, ouID string, b *models.Bud
 func (s *budgetService) responses(ctx context.Context, ouID string, budgets []*models.Budget) ([]spec.Budget, error) {
 	out := make([]spec.Budget, len(budgets))
 	ids := make([]uuid.UUID, len(budgets))
+	orgName := ""
 	for i, b := range budgets {
+		if b.OrgName == "" {
+			if orgName == "" {
+				var err error
+				if orgName, err = s.orgHandle(ctx, ouID); err != nil {
+					return nil, err
+				}
+			}
+			b.OrgName = orgName
+		}
 		out[i] = *BudgetAsKind(b)
 		ids[i] = b.ID
 	}
@@ -623,6 +662,15 @@ func (s *budgetService) Update(ctx context.Context, ouID, name string, kind spec
 	}
 	b, err := s.getBudget(ctx, ouID, name)
 	if err != nil {
+		return nil, err
+	}
+	orgName := b.OrgName
+	if orgName == "" {
+		if orgName, err = s.orgHandle(ctx, ouID); err != nil {
+			return nil, err
+		}
+	}
+	if err := sameOrg(req.OrgId, orgName); err != nil {
 		return nil, err
 	}
 	if err := fixedFieldsUnchanged(b, req); err != nil {
@@ -1194,8 +1242,9 @@ func (s *budgetService) checkChannels(ctx context.Context, ouID, project string,
 }
 
 // BudgetResponse is a stored budget as the API returns it (Interfaces 2.3).
-// BudgetAsKind is a stored budget as the API returns it: the Budget kind, with the
-// project-id annotation for a project budget and the server's fields in status.
+// BudgetAsKind is a stored budget as the API returns it: the Budget kind, with the org-id
+// annotation, the project-id annotation for a project budget and the server's fields in
+// status.
 func BudgetAsKind(b *models.Budget) *spec.Budget {
 	c := b.Configuration
 	consumers := make([]spec.BudgetConsumer, 0, len(c.Consumers))
@@ -1222,8 +1271,15 @@ func BudgetAsKind(b *models.Budget) *spec.Budget {
 		budgetSpec.Warnings = &spec.BudgetWarnings{Thresholds: c.Warnings.Thresholds, Channels: c.Warnings.Channels}
 	}
 	metadata := spec.BudgetMetadata{Name: b.Name}
+	annotations := map[string]string{}
+	if b.OrgName != "" {
+		annotations[AnnotationOrgID] = b.OrgName
+	}
 	if b.ProjectName != "" {
-		metadata.Annotations = &map[string]string{AnnotationProjectID: b.ProjectName}
+		annotations[AnnotationProjectID] = b.ProjectName
+	}
+	if len(annotations) > 0 {
+		metadata.Annotations = &annotations
 	}
 	serverStatus := spec.NewBudgetServerStatus(string(b.Origin), b.CreatedAt, b.UpdatedAt)
 	if b.CreatedBy != "" {

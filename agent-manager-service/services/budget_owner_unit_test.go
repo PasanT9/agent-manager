@@ -66,7 +66,7 @@ func TestBudgetService_AProjectBudgetCountsOnlyItsProject(t *testing.T) {
 	require.NotNil(t, kindProject(resp))
 	assert.Equal(t, "api-platform", *kindProject(resp))
 
-	kind := BuildBudgetKind(b.Name, b.Configuration, true)
+	kind := BuildBudgetKind(b.Name, budgetTestOrgName, b.Configuration, true)
 	out, err := json.Marshal(kind)
 	require.NoError(t, err)
 	assert.Contains(t, string(out), `{"type":"project","allocation":"shared","id":"api-platform"}`,
@@ -364,4 +364,114 @@ func TestBudgetService_ABudgetCanBeCreatedInactive(t *testing.T) {
 	resp, err := env.create(context.Background(), budgetTestOrg, "alice", req)
 	require.NoError(t, err)
 	assert.Equal(t, "inactive", *resp.Spec.Status)
+}
+
+// Every budget names its organization by the org-id annotation, so a budget means the same
+// once there are several organizations: one sent without it gets the organization in the
+// path, and the response, the stored budget and the gateways' copy carry it.
+func TestBudgetService_EveryBudgetNamesItsOrganization(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	ctx := context.Background()
+
+	resp, err := env.create(ctx, budgetTestOrg, "alice", projectBudgetRequest("no-org"))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Metadata.Annotations)
+	assert.Equal(t, budgetTestOrgName, (*resp.Metadata.Annotations)[AnnotationOrgID], "added when left out")
+	assert.Equal(t, "api-platform", (*resp.Metadata.Annotations)[AnnotationProjectID])
+	gw := BuildBudgetKind(env.created[0].Name, env.created[0].OrgName, env.created[0].Configuration, true)
+	assert.Equal(t, budgetTestOrgName, gw.Metadata.Annotations[AnnotationOrgID], "gateways get it too")
+
+	got, err := env.svc.Get(ctx, budgetTestOrg, "no-org")
+	require.NoError(t, err)
+	assert.Equal(t, budgetTestOrgName, (*got.Metadata.Annotations)[AnnotationOrgID])
+
+	same := projectBudgetRequest("same-org")
+	same.OrgId = strPtr(budgetTestOrgName)
+	_, err = env.create(ctx, budgetTestOrg, "alice", same)
+	require.NoError(t, err, "naming the organization in the path is accepted")
+
+	org := budgetRequest{Name: "org-wide", Limit: spec.BudgetLimit{Amount: "500", Period: "month", Action: "block"}}
+	resp, err = env.create(ctx, budgetTestOrg, "alice", org)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{AnnotationOrgID: budgetTestOrgName}, *resp.Metadata.Annotations,
+		"an organization budget names only its organization")
+}
+
+// A budget naming another organization, or none, is refused, on create and on update.
+func TestBudgetService_RefusesAnotherOrganization(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	ctx := context.Background()
+	var refused *BudgetError
+
+	other := projectBudgetRequest("acme-agents")
+	other.OrgId = strPtr("acme")
+	_, err := env.create(ctx, budgetTestOrg, "alice", other)
+	require.ErrorAs(t, err, &refused)
+	assert.Equal(t, "metadata.annotations", refused.Field)
+	assert.Contains(t, refused.Message, AnnotationOrgID)
+	assert.Empty(t, env.created)
+
+	empty := projectBudgetRequest("blank-org")
+	empty.OrgId = strPtr("  ")
+	_, err = env.create(ctx, budgetTestOrg, "alice", empty)
+	require.ErrorAs(t, err, &refused)
+	assert.Equal(t, "metadata.annotations", refused.Field)
+
+	_, err = env.create(ctx, budgetTestOrg, "alice", projectBudgetRequest("api-platform-agents"))
+	require.NoError(t, err)
+	current, err := env.svc.Get(ctx, budgetTestOrg, "api-platform-agents")
+	require.NoError(t, err)
+	kind := *current
+	kind.Status = nil
+	(*kind.Metadata.Annotations)[AnnotationOrgID] = "acme"
+	_, err = env.svc.Update(ctx, budgetTestOrg, "api-platform-agents", kind)
+	require.ErrorAs(t, err, &refused)
+	assert.Equal(t, "metadata.annotations", refused.Field)
+
+	delete(*kind.Metadata.Annotations, AnnotationOrgID)
+	_, err = env.svc.Update(ctx, budgetTestOrg, "api-platform-agents", kind)
+	require.NoError(t, err, "left out on update, it is the organization in the path")
+}
+
+// A gateway's pushed budget may name its own organization, or none; naming another fails
+// the item.
+func TestGatewayResourceSync_ABudgetNamingAnotherOrganizationFails(t *testing.T) {
+	gw := &models.Gateway{UUID: resourceSyncGateway, OUID: resourceSyncOrg}
+	var saved []string
+	repo := &repomocks.BudgetRepositoryMock{
+		SaveForGatewayFunc: func(_ context.Context, b *models.Budget, name string) (bool, error) {
+			b.ID, b.Name = uuid.New(), name
+			saved = append(saved, name)
+			return true, nil
+		},
+	}
+	platform := &repomocks.PlatformRepositoryMock{
+		GetOrganizationFunc: func(_ context.Context, ouID string) (*models.OrganizationResponse, error) {
+			assert.Equal(t, resourceSyncOrg, ouID)
+			return &models.OrganizationResponse{Name: "wso2", Handle: "wso2"}, nil
+		},
+	}
+	withOrg := func(id, name, org string) models.GatewayResourceItem {
+		doc, _ := json.Marshal(map[string]any{
+			"apiVersion": "gateway.api-platform.wso2.com/v1", "kind": "Budget",
+			"metadata": map[string]any{"name": name, "annotations": map[string]string{AnnotationOrgID: org}},
+			"spec":     map[string]any{},
+		})
+		now := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+		return models.GatewayResourceItem{DPID: id, Configuration: doc, CreatedAt: now, UpdatedAt: now}
+	}
+	svc := NewGatewayResourceSyncService(gatewayRepoFor(gw, nil), repo, platform)
+
+	resp, err := svc.Sync(context.Background(), resourceSyncGateway.String(), resourceSyncOrg, models.GatewayResourcesRequest{
+		Resources: []models.GatewayResourceItem{
+			withOrg("dp-own", "own-daily", "wso2"),
+			withOrg("dp-other", "other-daily", "acme"),
+			budgetItem("dp-none", "Budget", "none-daily"),
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, models.GatewayResourceStatusSynced, resp.Resources["dp-own"].Status)
+	assert.Equal(t, GatewayResourceErrInvalid, resp.Resources["dp-other"].Error)
+	assert.Equal(t, models.GatewayResourceStatusSynced, resp.Resources["dp-none"].Status, "left out: the gateway's organization")
+	assert.ElementsMatch(t, []string{"own-daily", "none-daily"}, saved)
 }

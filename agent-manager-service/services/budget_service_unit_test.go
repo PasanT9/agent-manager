@@ -112,8 +112,15 @@ func asKind(req budgetRequest) spec.Budget {
 			Resource: req.Resource, Consumers: req.Consumers, Exemptions: req.Exemptions, Warnings: req.Warnings,
 		},
 	}
+	annotations := map[string]string{}
+	if req.OrgId != nil {
+		annotations[AnnotationOrgID] = *req.OrgId
+	}
 	if req.ProjectId != nil {
-		kind.Metadata.Annotations = &map[string]string{AnnotationProjectID: *req.ProjectId}
+		annotations[AnnotationProjectID] = *req.ProjectId
+	}
+	if len(annotations) > 0 {
+		kind.Metadata.Annotations = &annotations
 	}
 	return kind
 }
@@ -446,14 +453,15 @@ func TestBuildBudgetKind(t *testing.T) {
 	require.NoError(t, err)
 	cfg := env.created[0].Configuration
 
-	full, err := json.Marshal(BuildBudgetKind("api-platform-per-agent-openai", cfg, false))
+	full, err := json.Marshal(BuildBudgetKind("api-platform-per-agent-openai", budgetTestOrgName, cfg, false))
 	require.NoError(t, err)
-	assert.Contains(t, string(full), `"apiVersion":"gateway.api-platform.wso2.com/v1","kind":"Budget","metadata":{"name":"api-platform-per-agent-openai"}`)
+	assert.Contains(t, string(full), `"apiVersion":"gateway.api-platform.wso2.com/v1","kind":"Budget","metadata":{"name":"api-platform-per-agent-openai","annotations":{"gateway.api-platform.wso2.com/org-id":"wso2"}}`)
 	assert.Contains(t, string(full), `"displayName":"API Platform, per agent on OpenAI"`)
 	assert.Contains(t, string(full), `"warnings"`)
 
-	gw, err := json.Marshal(BuildBudgetKind("api-platform-per-agent-openai", cfg, true))
+	gw, err := json.Marshal(BuildBudgetKind("api-platform-per-agent-openai", budgetTestOrgName, cfg, true))
 	require.NoError(t, err)
+	assert.Contains(t, string(gw), `"annotations":{"gateway.api-platform.wso2.com/org-id":"wso2"}`, "gateways get the organization too")
 	for _, absent := range []string{"displayName", "description", "warnings"} {
 		assert.NotContains(t, string(gw), `"`+absent+`"`, "gateways never get %s", absent)
 	}
@@ -683,7 +691,7 @@ func TestBuildBudgetKind_ForGatewayNamesAResource(t *testing.T) {
 		Limit:     models.BudgetLimit{Amount: "10", Currency: "USD", Period: "day", Action: "allow"},
 		Consumers: []models.BudgetConsumer{}, Exemptions: []models.BudgetExemption{},
 	}
-	gw, err := json.Marshal(BuildBudgetKind("org", cfg, true))
+	gw, err := json.Marshal(BuildBudgetKind("org", budgetTestOrgName, cfg, true))
 	require.NoError(t, err)
 	assert.Contains(t, string(gw), `"resource":{"type":"llmProvider","allocation":"shared"}`, "every provider, shared")
 	assert.Nil(t, cfg.Resource, "the stored budget is not changed")
@@ -755,7 +763,7 @@ func TestBudgetService_ProjectAgentAndAPIKeyBudgets(t *testing.T) {
 	require.Len(t, resp.Spec.Consumers, 3)
 	assert.Nil(t, env.created[0].Configuration.Consumers[1].Project, "the stored agent names no project: the project consumer does")
 
-	kind := BuildBudgetKind(resp.Metadata.Name, env.created[0].Configuration, true)
+	kind := BuildBudgetKind(resp.Metadata.Name, budgetTestOrgName, env.created[0].Configuration, true)
 	agent := kind.Spec.Consumers[1]
 	require.NotNil(t, agent.Project, "gateways get the agent with its project")
 	assert.Equal(t, "api-platform", *agent.Project)

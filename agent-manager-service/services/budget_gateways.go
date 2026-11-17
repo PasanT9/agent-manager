@@ -77,7 +77,7 @@ func NewBudgetGateways(
 // gatewayPayload is the budget as gateways get it.
 func gatewayPayload(b *models.Budget) BudgetGatewayPayload {
 	return BudgetGatewayPayload{
-		BudgetID: b.ID.String(), UpdatedAt: b.UpdatedAt.UTC(), Budget: BuildBudgetKind(b.Name, b.Configuration, true),
+		BudgetID: b.ID.String(), UpdatedAt: b.UpdatedAt.UTC(), Budget: BuildBudgetKind(b.Name, b.OrgName, b.Configuration, true),
 	}
 }
 
