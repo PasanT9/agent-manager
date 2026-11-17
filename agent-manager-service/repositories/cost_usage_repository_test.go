@@ -49,11 +49,11 @@ func TestCostUsageRepository_RecordSinceAndDeleteBefore(t *testing.T) {
 		}
 	}
 
-	require.NoError(t, repo.Record(ctx, row(ou, november, "80.14", 3)))
-	require.NoError(t, repo.Record(ctx, row(ou, november, "75", 4)), "a lagging gateway's lower cost")
-	require.NoError(t, repo.Record(ctx, row(ou, november.AddDate(0, -1, 0), "10", 0)))
-	require.NoError(t, repo.Record(ctx, row(ou, november.AddDate(0, -4, 0), "999", 0)))
-	require.NoError(t, repo.Record(ctx, row(other, november, "1", 0)))
+	require.NoError(t, repo.Record(ctx, []models.CostUsage{row(ou, november, "80.14", 3)}))
+	require.NoError(t, repo.Record(ctx, []models.CostUsage{row(ou, november, "75", 4)}), "a lagging gateway's lower cost")
+	require.NoError(t, repo.Record(ctx, []models.CostUsage{row(ou, november.AddDate(0, -1, 0), "10", 0)}))
+	require.NoError(t, repo.Record(ctx, []models.CostUsage{row(ou, november.AddDate(0, -4, 0), "999", 0)}))
+	require.NoError(t, repo.Record(ctx, []models.CostUsage{row(other, november, "1", 0)}))
 
 	rows, err := repo.Since(ctx, ou, november.AddDate(0, -2, 0))
 	require.NoError(t, err)

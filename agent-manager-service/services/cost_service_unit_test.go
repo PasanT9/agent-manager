@@ -18,6 +18,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 
 	"github.com/wso2/agent-manager/agent-manager-service/models"
 	"github.com/wso2/agent-manager/agent-manager-service/repositories/repomocks"
+	"github.com/wso2/agent-manager/agent-manager-service/spec"
 	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
 
@@ -58,7 +60,7 @@ func newCostTestService(rows []models.CostUsage) (*costService, *repomocks.CostU
 			}
 			return out, nil
 		},
-		RecordFunc:       func(context.Context, models.CostUsage) error { return nil },
+		RecordFunc:       func(context.Context, []models.CostUsage) error { return nil },
 		DeleteBeforeFunc: func(context.Context, time.Time) (int64, error) { return 0, nil },
 	}
 	s := NewCostService(repo).(*costService)
@@ -74,46 +76,79 @@ var costTestRows = []models.CostUsage{
 	costRowFor(time.May, "api-platform", "support-agent", "", "", "openai", "gpt-4o", "999", 0),
 }
 
-func TestCostService_OrganizationTotalPerMonth(t *testing.T) {
-	s, _ := newCostTestService(costTestRows)
-	report, err := s.Costs(context.Background(), budgetTestOrg, "", nil)
-	require.NoError(t, err)
-	assert.Equal(t, "organization", report.GroupBy)
-	assert.Equal(t, []string{"2026-09", "2026-10", "2026-11"}, report.Months)
-	require.Len(t, report.Groups, 1)
-	g := report.Groups[0]
-	assert.Equal(t, []string{"0.00", "100.00", "105.15"}, g.Costs, "May is older than the kept months")
-	assert.Equal(t, "205.15", g.Total)
-	assert.Equal(t, int64(4), g.MissingPriceRequests)
+// costs returns an entry's monthly costs, oldest first.
+func costs(e spec.CostByGroup) []string {
+	out := make([]string, len(e.Monthly))
+	for i, m := range e.Monthly {
+		out[i] = m.Cost
+	}
+	return out
 }
 
-func TestCostService_GroupsHighestTotalFirst(t *testing.T) {
+func TestCostService_OrganizationTotalPerMonth(t *testing.T) {
 	s, _ := newCostTestService(costTestRows)
-	report, err := s.Costs(context.Background(), budgetTestOrg, "agent", nil)
+	report, err := s.Costs(context.Background(), budgetTestOrg, "acme", "", nil)
 	require.NoError(t, err)
-	require.Len(t, report.Groups, 3)
-	first := report.Groups[0]
+	assert.Equal(t, "USD", report.Currency)
+	require.Len(t, report.CostByGroup, 1)
+	g := report.CostByGroup[0]
+	assert.Equal(t, "acme", *g.Id.Get(), "grouped by organization, the id is its handle")
+	assert.Nil(t, g.Project)
+	months := []string{}
+	for _, m := range g.Monthly {
+		months = append(months, m.Month)
+	}
+	assert.Equal(t, []string{"2026-09", "2026-10", "2026-11"}, months)
+	assert.Equal(t, []string{"0.00", "100.00", "105.15"}, costs(g), "May is older than the kept months")
+	assert.Equal(t, "205.15", g.Cost)
+	assert.Equal(t, int64(4), g.UnpricedRequests.MissingPrice)
+}
+
+func TestCostService_HighestCostFirst(t *testing.T) {
+	s, _ := newCostTestService(costTestRows)
+	report, err := s.Costs(context.Background(), budgetTestOrg, "acme", "agent", nil)
+	require.NoError(t, err)
+	require.Len(t, report.CostByGroup, 3)
+	first := report.CostByGroup[0]
 	assert.Equal(t, "api-platform", *first.Project, "an agent names its project")
-	assert.Equal(t, "support-agent", *first.Agent)
-	assert.Equal(t, "180.14", first.Total)
-	assert.Equal(t, "hotel-booking", *report.Groups[1].Agent)
-	assert.Nil(t, report.Groups[2].Agent, "requests with no agent are a group of their own")
-	assert.Equal(t, "5.00", report.Groups[2].Total)
+	assert.Equal(t, "support-agent", *first.Id.Get())
+	assert.Equal(t, "180.14", first.Cost)
+	assert.Equal(t, "hotel-booking", *report.CostByGroup[1].Id.Get())
+	last := report.CostByGroup[2]
+	assert.Nil(t, last.Id.Get(), "requests with no agent are an entry of their own")
+	assert.True(t, last.Id.IsSet())
+	assert.Equal(t, "5.00", last.Cost)
+
+	body, err := json.Marshal(last)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"id":null`)
+}
+
+func TestCostService_ProjectOnlyForAgents(t *testing.T) {
+	s, _ := newCostTestService(costTestRows)
+	report, err := s.Costs(context.Background(), budgetTestOrg, "acme", "model", nil)
+	require.NoError(t, err)
+	for _, e := range report.CostByGroup {
+		assert.Nil(t, e.Project, "only agent entries name a project")
+		body, err := json.Marshal(e)
+		require.NoError(t, err)
+		assert.NotContains(t, string(body), `"project"`)
+	}
 }
 
 func TestCostService_Filters(t *testing.T) {
 	s, _ := newCostTestService(costTestRows)
-	report, err := s.Costs(context.Background(), budgetTestOrg, "model",
+	report, err := s.Costs(context.Background(), budgetTestOrg, "acme", "model",
 		[]string{"agent:api-platform/support-agent,api-platform/hotel-booking", "llmProvider:openai"})
 	require.NoError(t, err)
-	require.Len(t, report.Groups, 1, "a comma list is any of them; a repeated filter is AND")
-	assert.Equal(t, "gpt-4o", *report.Groups[0].Model)
-	assert.Equal(t, "180.14", report.Groups[0].Total)
+	require.Len(t, report.CostByGroup, 1, "a comma list is any of them; a repeated filter is AND")
+	assert.Equal(t, "gpt-4o", *report.CostByGroup[0].Id.Get())
+	assert.Equal(t, "180.14", report.CostByGroup[0].Cost)
 
-	report, err = s.Costs(context.Background(), budgetTestOrg, "user", []string{"user:alice@wso2.com"})
+	report, err = s.Costs(context.Background(), budgetTestOrg, "acme", "user", []string{"user:alice@wso2.com"})
 	require.NoError(t, err)
-	require.Len(t, report.Groups, 1)
-	assert.Equal(t, "alice@wso2.com", *report.Groups[0].User)
+	require.Len(t, report.CostByGroup, 1)
+	assert.Equal(t, "alice@wso2.com", *report.CostByGroup[0].Id.Get())
 }
 
 func TestCostService_RefusesBadQueries(t *testing.T) {
@@ -128,17 +163,16 @@ func TestCostService_RefusesBadQueries(t *testing.T) {
 		{"", []string{"project"}, "filter"},
 		{"", []string{"project:"}, "filter"},
 	} {
-		_, err := s.Costs(context.Background(), budgetTestOrg, tc.groupBy, tc.filters)
+		_, err := s.Costs(context.Background(), budgetTestOrg, "acme", tc.groupBy, tc.filters)
 		var be *BudgetError
 		require.ErrorAs(t, err, &be, "%v", tc)
 		assert.Equal(t, utils.ErrCodeValidation, be.Code)
 		assert.Equal(t, tc.field, be.Field)
 	}
-	report, err := s.Costs(context.Background(), budgetTestOrg, "project", nil)
+	report, err := s.Costs(context.Background(), budgetTestOrg, "acme", "project", nil)
 	require.NoError(t, err)
-	assert.Empty(t, report.Groups, "no costs yet")
-	assert.NotNil(t, report.Groups)
-	assert.Len(t, report.Months, 3)
+	assert.Empty(t, report.CostByGroup, "no costs yet")
+	assert.NotNil(t, report.CostByGroup)
 }
 
 func TestCostService_RecordsReportsAndSkipsBadOrOldOnes(t *testing.T) {
@@ -153,8 +187,9 @@ func TestCostService_RecordsReportsAndSkipsBadOrOldOnes(t *testing.T) {
 		{Month: "2026-11-01", CostKey: uuid.New().String(), LLMProvider: "openai", Cost: "ten"},
 	})
 	calls := repo.RecordCalls()
-	require.Len(t, calls, 1, "older than the kept months, or unreadable: skipped")
-	row := calls[0].U
+	require.Len(t, calls, 1, "one write per message")
+	require.Len(t, calls[0].Rows, 1, "older than the kept months, or unreadable: skipped")
+	row := calls[0].Rows[0]
 	assert.Equal(t, key, row.CostKey.String())
 	assert.Equal(t, "api-platform", *row.Project)
 	assert.Nil(t, row.APIKey, "empty values are stored as none")

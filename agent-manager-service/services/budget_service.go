@@ -75,8 +75,10 @@ const (
 var gatewayConsumerTypes = []string{budgetTypeAttribute, budgetTypeProject, budgetTypeAgent, budgetTypeAPIKey}
 
 var (
-	budgetNamePattern   = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-	budgetAmountPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]{1,2})?$`)
+	budgetNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	// The gateway's own rule (its management API), so every budget saved here is one a
+	// gateway accepts: above zero, at most 12 whole digits and 2 decimals, no leading zeros.
+	budgetAmountPattern = regexp.MustCompile(`^([1-9][0-9]{0,11}(\.[0-9]{1,2})?|0\.([1-9][0-9]?|0[1-9]))$`)
 	budgetPeriods       = []string{"day", "week", "month"}
 	budgetConsumerTypes = []string{budgetTypeProject, budgetTypeAgent, budgetTypeAPIKey, budgetTypeAttribute}
 )
@@ -180,23 +182,8 @@ type BudgetKindMetadata struct {
 // never get: displayName, description and warnings (Interfaces 3).
 func BuildBudgetKind(name, orgName string, cfg models.BudgetConfig, forGateway bool) BudgetKind {
 	if forGateway {
-		// A gateway names an agent with its project (agent names are unique per project);
-		// the budget's project consumer is the project of a named agent.
-		project := ""
-		for _, c := range cfg.Consumers {
-			if c.Type == budgetTypeProject && c.ID != nil {
-				project = *c.ID
-			}
-		}
-		consumers := make([]models.BudgetConsumer, len(cfg.Consumers))
-		for i, c := range cfg.Consumers {
-			if c.Type == budgetTypeAgent && c.ID != nil && project != "" {
-				p := project
-				c.Project = &p
-			}
-			consumers[i] = c
-		}
-		cfg.Consumers = consumers
+		// A gateway names an agent with its project (agent names are unique per project).
+		cfg.Consumers = withAgentProjects(cfg.Consumers)
 		cfg.DisplayName, cfg.Description, cfg.Warnings = "", nil, nil
 		if cfg.Resource == nil {
 			// No resource covers every provider, shared; the gateway kind names it.
@@ -423,6 +410,11 @@ func ownByProject(cfg *models.BudgetConfig, project string) error {
 				"A budget of project %s counts only that project: its only project consumer is that project, shared.", project)
 		}
 		listed = true
+	}
+	for i, c := range cfg.Consumers {
+		if c.Type == budgetTypeAgent && c.Project != nil && *c.Project != project {
+			return invalidBudget(fmt.Sprintf("consumers[%d].project", i), "A budget of project %s can count only its agents.", project)
+		}
 	}
 	for i, e := range cfg.Exemptions {
 		field := fmt.Sprintf("exemptions[%d]", i)
@@ -699,26 +691,40 @@ func fixedFieldsUnchanged(b *models.Budget, req budgetRequest) error {
 	}
 	stored := b.Configuration
 	if req.Limit.Currency != nil && *req.Limit.Currency != stored.Limit.Currency {
-		return fixed("spec.limit.currency", "currency")
+		return fixed("spec.limit.currency", "Currency")
 	}
 	if req.Limit.Period != stored.Limit.Period {
-		return fixed("spec.limit.period", "period")
+		return fixed("spec.limit.period", "Period")
 	}
 	resource, err := normalizeBudgetResource(req.Resource)
 	if err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(resource, stored.Resource) {
-		return fixed("spec.resource", "resource")
+	if !budgetResourcesEqual(resource, stored.Resource) {
+		return fixed("spec.resource", "Resource")
 	}
 	consumers, err := normalizeBudgetConsumers(withProjectConsumer(req.Consumers, req.ProjectId))
 	if err != nil {
 		return err
 	}
-	if len(consumers) != len(stored.Consumers) || (len(stored.Consumers) > 0 && !reflect.DeepEqual(consumers, stored.Consumers)) {
-		return fixed("spec.consumers", "consumers")
+	if storedConsumers := withAgentProjects(stored.Consumers); len(consumers) != len(storedConsumers) ||
+		(len(storedConsumers) > 0 && !reflect.DeepEqual(consumers, storedConsumers)) {
+		return fixed("spec.consumers", "Consumers")
 	}
 	return nil
+}
+
+// budgetResourcesEqual treats the two supported representations of the default resource
+// identically: omitted and an explicit all-providers/shared object. This keeps a full PUT
+// from failing merely because a client canonicalizes the same resource differently.
+func budgetResourcesEqual(a, b *models.BudgetResource) bool {
+	canonical := func(r *models.BudgetResource) models.BudgetResource {
+		if r == nil {
+			return models.BudgetResource{Type: budgetTypeLLMProvider, Allocation: budgetAllocationShared}
+		}
+		return *r
+	}
+	return reflect.DeepEqual(canonical(a), canonical(b))
 }
 
 // update changes a budget's editable fields; Update and Import share it.
@@ -865,8 +871,8 @@ func budgetNames(c *models.BudgetConfig, f budgetFilter) bool {
 	if f.typ == budgetTypeLLMProvider {
 		return c.Resource != nil && is(c.Resource.ID)
 	}
-	for _, x := range c.Consumers {
-		if x.Type == f.typ && is(x.ID) {
+	for _, x := range withAgentProjects(c.Consumers) {
+		if (x.Type == f.typ && is(x.ID)) || (f.typ == budgetTypeProject && is(x.Project)) {
 			return true
 		}
 	}
@@ -942,7 +948,7 @@ func normalizeBudgetLimit(in spec.BudgetLimit) (models.BudgetLimit, error) {
 	out := models.BudgetLimit{Amount: in.Amount, Currency: budgetCurrencyUSD, Period: in.Period, Action: in.Action}
 	amount, ok := new(big.Rat).SetString(in.Amount)
 	if !budgetAmountPattern.MatchString(in.Amount) || !ok || amount.Sign() <= 0 {
-		return out, invalidBudget("limit.amount", "limit.amount must be a decimal above zero with at most 2 decimals, e.g. \"100.00\".")
+		return out, invalidBudget("limit.amount", "limit.amount must be a decimal above zero, with at most 12 whole digits, 2 decimals and no leading zeros, e.g. \"100.00\".")
 	}
 	if in.Currency != nil && *in.Currency != budgetCurrencyUSD {
 		return out, invalidBudget("limit.currency", "limit.currency must be USD.")
@@ -1003,7 +1009,6 @@ func normalizeBudgetConsumers(in []spec.BudgetConsumer) ([]models.BudgetConsumer
 	}
 	out := make([]models.BudgetConsumer, 0, len(in))
 	seen := map[string]bool{}
-	hasNamedProject := false
 	for i, c := range in {
 		field := fmt.Sprintf("consumers[%d]", i)
 		if !containsString(budgetConsumerTypes, c.Type) {
@@ -1040,16 +1045,16 @@ func normalizeBudgetConsumers(in []spec.BudgetConsumer) ([]models.BudgetConsumer
 				return nil, invalidBudget(field+".id", "A separate %s consumer takes no id.", c.Type)
 			}
 		}
-		if c.Type == budgetTypeProject && c.Id != nil {
-			hasNamedProject = true
+		// A named agent also names its project, as an agent exemption does: agent names are
+		// unique only per project.
+		named := c.Type == budgetTypeAgent && allocation == budgetAllocationShared
+		if named && (c.Project == nil || strings.TrimSpace(*c.Project) == "") {
+			return nil, invalidBudget(field+".project", "A shared agent consumer needs its project.")
 		}
-		out = append(out, models.BudgetConsumer{Type: c.Type, Allocation: allocation, ID: c.Id, Expression: c.Expression})
-	}
-	for i, c := range out {
-		// An agent name is unique only within its project.
-		if c.Type == budgetTypeAgent && c.ID != nil && !hasNamedProject {
-			return nil, invalidBudget(fmt.Sprintf("consumers[%d].id", i), "A named agent needs the shared project consumer of its project.")
+		if !named && c.Project != nil {
+			return nil, invalidBudget(field+".project", "Only a shared agent consumer takes a project.")
 		}
+		out = append(out, models.BudgetConsumer{Type: c.Type, Allocation: allocation, ID: c.Id, Project: c.Project, Expression: c.Expression})
 	}
 	return out, nil
 }
@@ -1138,13 +1143,38 @@ func (s *budgetService) checkReferences(ctx context.Context, ouID string, b *mod
 		case budgetTypeProject:
 			err = s.checkProject(ctx, ouID, *c.ID, field)
 		case budgetTypeAgent:
-			err = s.checkAgent(ctx, ouID, project, *c.ID, field)
+			agentProject := project
+			if c.Project != nil {
+				agentProject = *c.Project
+			}
+			err = s.checkAgent(ctx, ouID, agentProject, *c.ID, field)
 		}
 		if err != nil {
 			return err
 		}
 	}
 	return s.checkEditableReferences(ctx, ouID, b)
+}
+
+// withAgentProjects returns the consumers with each named agent's project set. Budgets
+// stored before consumers took a project name the agent's project as their project
+// consumer, so that fills it in.
+func withAgentProjects(in []models.BudgetConsumer) []models.BudgetConsumer {
+	project := ""
+	for _, c := range in {
+		if c.Type == budgetTypeProject && c.ID != nil {
+			project = *c.ID
+		}
+	}
+	out := make([]models.BudgetConsumer, len(in))
+	for i, c := range in {
+		if c.Type == budgetTypeAgent && c.ID != nil && c.Project == nil && project != "" {
+			p := project
+			c.Project = &p
+		}
+		out[i] = c
+	}
+	return out
 }
 
 // budgetProject is the project a budget's shared project consumer names, if any.
@@ -1248,9 +1278,11 @@ func (s *budgetService) checkChannels(ctx context.Context, ouID, project string,
 func BudgetAsKind(b *models.Budget) *spec.Budget {
 	c := b.Configuration
 	consumers := make([]spec.BudgetConsumer, 0, len(c.Consumers))
-	for _, x := range c.Consumers {
+	for _, x := range withAgentProjects(c.Consumers) {
 		allocation := x.Allocation
-		consumers = append(consumers, spec.BudgetConsumer{Type: x.Type, Allocation: &allocation, Id: x.ID, Expression: x.Expression})
+		consumers = append(consumers, spec.BudgetConsumer{
+			Type: x.Type, Allocation: &allocation, Id: x.ID, Project: x.Project, Expression: x.Expression,
+		})
 	}
 	exemptions := make([]spec.BudgetExemption, 0, len(c.Exemptions))
 	for _, x := range c.Exemptions {

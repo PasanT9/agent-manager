@@ -387,6 +387,7 @@ CREATE TABLE budgets (
     configuration TEXT NOT NULL,
     created_by TEXT,
     CONSTRAINT pk_budgets PRIMARY KEY (id),
+    CONSTRAINT uq_budgets_org_id_id UNIQUE (org_id, id),
     CONSTRAINT fk_budgets_org_id_id FOREIGN KEY (org_id, id) REFERENCES artifacts (org_id, id) ON DELETE CASCADE,
     CONSTRAINT fk_budgets_org_id_gateway_id FOREIGN KEY (org_id, gateway_id) REFERENCES gateways (org_id, id),
     CONSTRAINT fk_budgets_org_id_project_id FOREIGN KEY (org_id, project_id) REFERENCES projects (org_id, id),
@@ -406,11 +407,11 @@ CREATE TABLE budget_usage (
     spent TEXT NOT NULL,
     unpriced_requests INTEGER NOT NULL,
     updated_at TIMESTAMP NOT NULL,
-    CONSTRAINT pk_budget_usage PRIMARY KEY (budget_id, allowance_id),
-    CONSTRAINT fk_budget_usage_budget_id FOREIGN KEY (budget_id) REFERENCES budgets (id) ON DELETE CASCADE,
+    CONSTRAINT pk_budget_usage PRIMARY KEY (budget_id, allowance_id, period_start),
+    CONSTRAINT fk_budget_usage_org_id_budget_id FOREIGN KEY (org_id, budget_id) REFERENCES budgets (org_id, id) ON DELETE CASCADE,
     CONSTRAINT ck_budget_usage_1 CHECK (json_valid(allowance))
 );
-CREATE INDEX idx_budget_usage_org_id ON budget_usage (org_id);
+CREATE INDEX idx_budget_usage_org_id_budget_id_period_start ON budget_usage (org_id, budget_id, period_start);
 
 CREATE TABLE cost_usage (
     org_id TEXT NOT NULL,

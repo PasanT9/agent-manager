@@ -220,6 +220,34 @@ export const rootRouteMap: AppRoute = {
                     index: true,
                     children: {},
                 },
+                aiCostManagement: {
+                    path: 'cost-management',
+                    index: true,
+                    children: {
+                        budgets: {
+                            path: 'budgets',
+                            index: true,
+                            children: {
+                                create: {
+                                    path: 'create',
+                                    index: true,
+                                    children: {},
+                                },
+                                view: {
+                                    path: 'view/:budgetName',
+                                    index: true,
+                                    children: {
+                                        edit: {
+                                            path: 'edit',
+                                            index: true,
+                                            children: {},
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
                 deploymentPipelines: {
                     path: 'deployment-pipelines',
                     index: true,
@@ -282,6 +310,34 @@ export const rootRouteMap: AppRoute = {
                             path: 'events',
                             index: true,
                             children: {},
+                        },
+                        aiCostManagement: {
+                            path: 'cost-management',
+                            index: true,
+                            children: {
+                                budgets: {
+                                    path: 'budgets',
+                                    index: true,
+                                    children: {
+                                        create: {
+                                            path: 'create',
+                                            index: true,
+                                            children: {},
+                                        },
+                                        view: {
+                                            path: 'view/:budgetName',
+                                            index: true,
+                                            children: {
+                                                edit: {
+                                                    path: 'edit',
+                                                    index: true,
+                                                    children: {},
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                            },
                         },
                         agentListing: {
                             path: 'agents',

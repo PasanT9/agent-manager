@@ -35,13 +35,16 @@ import (
 	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
 
-// AI cost stats (Interfaces 1.3, 2.6): gateways with [ai_cost_stats] on count what every
+// AI cost stats (Interfaces 1.3, 2.6): gateways with [ai_cost_management.tracking] on count what every
 // LLM request cost and report it in their usage messages (4.2); the totals are kept per
 // month and combination of project, agent, API key, user, LLM provider and model, for 3
 // months.
 
 // costMonths is how many months are kept and shown; the current one counts as one.
 const costMonths = 3
+
+// costCurrency is the currency of every cost; prices are in USD.
+const costCurrency = "USD"
 
 // costRetentionInterval is how often months older than costMonths are deleted.
 const costRetentionInterval = 24 * time.Hour
@@ -83,9 +86,10 @@ type CostRecorder interface {
 // CostService keeps and reports AI cost stats.
 type CostService interface {
 	CostRecorder
-	// Costs returns the organization's costs over the kept months, grouped by groupBy and
-	// limited by every filter (type:value[,value...]).
-	Costs(ctx context.Context, ouID, groupBy string, filters []string) (*spec.CostReport, error)
+	// Costs returns the organization's costs over the kept months, one entry per value of
+	// groupBy, limited by every filter (type:value[,value...]). orgName is the organization's
+	// handle, the id of its one entry when grouped by organization.
+	Costs(ctx context.Context, ouID, orgName, groupBy string, filters []string) (*spec.CostReport, error)
 	// Start deletes months older than the kept ones once a day until Stop.
 	Start(ctx context.Context) error
 	Stop() error
@@ -105,18 +109,22 @@ func NewCostService(repo repositories.CostUsageRepository) CostService {
 }
 
 func (s *costService) RecordCosts(ctx context.Context, ouID string, costs []GatewayCostUsage) {
+	rows := make([]models.CostUsage, 0, len(costs))
+	first := costFirstMonth(s.now())
 	for _, c := range costs {
 		row, err := costRow(ouID, c)
 		if err != nil {
 			slog.Warn("Ignoring an unreadable cost report", "costKey", c.CostKey, "error", err)
 			continue
 		}
-		if row.Month.Before(costFirstMonth(s.now())) {
+		if row.Month.Before(first) {
 			continue // older than the kept months
 		}
-		if err := s.repo.Record(ctx, row); err != nil {
-			slog.Error("Failed to record cost usage", "costKey", c.CostKey, "error", err)
-		}
+		rows = append(rows, row)
+	}
+	// One transaction per message; a failure is healed by the gateway's next resend.
+	if err := s.repo.Record(ctx, rows); err != nil {
+		slog.Error("Failed to record cost usage", "rows", len(rows), "error", err)
 	}
 }
 
@@ -217,14 +225,15 @@ func costValue(r models.CostUsage, typ string) string {
 }
 
 type costTotals struct {
-	group       spec.CostGroup
+	// id is the groupBy value (nil when requests carried none); project is an agent's.
+	id, project *string
 	byMonth     []*big.Rat
 	total       *big.Rat
 	missing     int64
 	unavailable int64
 }
 
-func (s *costService) Costs(ctx context.Context, ouID, groupBy string, filters []string) (*spec.CostReport, error) {
+func (s *costService) Costs(ctx context.Context, ouID, orgName, groupBy string, filters []string) (*spec.CostReport, error) {
 	if ouID == "" {
 		return nil, utils.ErrOrganizationNotFound
 	}
@@ -262,7 +271,8 @@ func (s *costService) Costs(ctx context.Context, ouID, groupBy string, filters [
 		}
 		g := groups[key]
 		if g == nil {
-			g = &costTotals{group: costGroupOf(r, groupBy), byMonth: make([]*big.Rat, costMonths), total: new(big.Rat)}
+			id, project := costGroupOf(r, groupBy, orgName)
+			g = &costTotals{id: id, project: project, byMonth: make([]*big.Rat, costMonths), total: new(big.Rat)}
 			for m := range g.byMonth {
 				g.byMonth[m] = new(big.Rat)
 			}
@@ -286,19 +296,24 @@ func (s *costService) Costs(ctx context.Context, ouID, groupBy string, filters [
 		if c := ordered[i].total.Cmp(ordered[j].total); c != 0 {
 			return c > 0
 		}
-		return costGroupName(ordered[i].group) < costGroupName(ordered[j].group)
+		return costGroupName(ordered[i]) < costGroupName(ordered[j])
 	})
-	out := make([]spec.CostGroup, 0, len(ordered))
+	out := make([]spec.CostByGroup, 0, len(ordered))
 	for _, g := range ordered {
-		group := g.group
-		group.Costs = make([]string, costMonths)
+		monthly := make([]spec.MonthlyCost, costMonths)
 		for m, c := range g.byMonth {
-			group.Costs[m] = c.FloatString(2)
+			monthly[m] = *spec.NewMonthlyCost(months[m], c.FloatString(2))
 		}
-		group.Total, group.MissingPriceRequests, group.UsageUnavailableRequests = g.total.FloatString(2), g.missing, g.unavailable
-		out = append(out, group)
+		entry := spec.NewCostByGroup(
+			*spec.NewNullableString(g.id),
+			g.total.FloatString(2),
+			*spec.NewUnpricedRequests(g.missing, g.unavailable),
+			monthly,
+		)
+		entry.Project = g.project
+		out = append(out, *entry)
 	}
-	return spec.NewCostReport(groupBy, months, out), nil
+	return spec.NewCostReport(costCurrency, out), nil
 }
 
 // costMatches reports whether a row passes every filter.
@@ -311,37 +326,39 @@ func costMatches(r models.CostUsage, filters []costFilter) bool {
 	return true
 }
 
-// costGroupOf names a group by its value: an agent also by its project.
-func costGroupOf(r models.CostUsage, groupBy string) spec.CostGroup {
-	var g spec.CostGroup
-	set := func(dst **string, v *string) {
-		if v != nil {
-			value := *v
-			*dst = &value
+// costGroupOf returns a row's groupBy value (nil when the request carried none) and, for an
+// agent, its project; grouped by organization, the value is the organization's handle.
+func costGroupOf(r models.CostUsage, groupBy, orgName string) (id, project *string) {
+	copyOf := func(v *string) *string {
+		if v == nil {
+			return nil
 		}
+		value := *v
+		return &value
 	}
 	switch groupBy {
+	case costByOrganization:
+		return &orgName, nil
 	case costByProject:
-		set(&g.Project, r.Project)
+		return copyOf(r.Project), nil
 	case costByAgent:
-		set(&g.Project, r.Project)
-		set(&g.Agent, r.Agent)
+		return copyOf(r.Agent), copyOf(r.Project)
 	case costByAPIKey:
-		set(&g.ApiKey, r.APIKey)
+		return copyOf(r.APIKey), nil
 	case costByUser:
-		set(&g.User, r.UserID)
+		return copyOf(r.UserID), nil
 	case costByLLMProvider:
-		provider := r.LLMProvider
-		g.LlmProvider = &provider
+		return copyOf(&r.LLMProvider), nil
 	case costByModel:
-		set(&g.Model, r.Model)
+		return copyOf(r.Model), nil
 	}
-	return g
+	return nil, nil
 }
 
-func costGroupName(g spec.CostGroup) string {
+// costGroupName orders equal costs by project then value, so the order is stable.
+func costGroupName(g *costTotals) string {
 	parts := []string{}
-	for _, p := range []*string{g.Project, g.Agent, g.ApiKey, g.User, g.LlmProvider, g.Model} {
+	for _, p := range []*string{g.project, g.id} {
 		if p != nil {
 			parts = append(parts, *p)
 		}

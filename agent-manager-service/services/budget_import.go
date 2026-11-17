@@ -59,8 +59,8 @@ const (
 	csvPeriod             = "period"
 	csvAction             = "action"
 	csvBlockAt            = "blockAt"
-	csvProvider           = "provider"
-	csvProviderAllocation = "providerAllocation"
+	csvProvider           = "llmProvider"
+	csvProviderAllocation = "llmProviderAllocation"
 	csvProject            = "project"
 	csvProjectAllocation  = "projectAllocation"
 	csvAgent              = "agent"
@@ -314,7 +314,15 @@ func budgetRequestFromCSV(cells map[string]string, orgName string, row *importRo
 	req.Consumers = []spec.BudgetConsumer{}
 	for _, c := range budgetConsumerColumns {
 		if cells[c.value] != "" || cells[c.allocation] != "" {
-			req.Consumers = append(req.Consumers, spec.BudgetConsumer{Type: c.typ, Id: optional(c.value), Allocation: optional(c.allocation)})
+			consumer := spec.BudgetConsumer{Type: c.typ, Id: optional(c.value), Allocation: optional(c.allocation)}
+			if c.typ == budgetTypeAgent && consumer.Id != nil {
+				// A named agent's project: the project column, else the owning project.
+				consumer.Project = optional(csvProject)
+				if consumer.Project == nil {
+					consumer.Project = optional(csvProjectID)
+				}
+			}
+			req.Consumers = append(req.Consumers, consumer)
 		}
 	}
 	if v := cells[csvAttributes]; v != "" {

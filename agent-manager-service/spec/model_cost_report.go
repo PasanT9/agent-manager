@@ -17,23 +17,22 @@ import (
 // checks if the CostReport type satisfies the MappedNullable interface at compile time
 var _ MappedNullable = &CostReport{}
 
-// CostReport Costs per month, grouped by one value
+// CostReport Costs per month for each value of the requested groupBy
 type CostReport struct {
-	GroupBy string `json:"groupBy"`
-	// The 3 kept months, oldest first, as YYYY-MM; the last is the current month
-	Months []string    `json:"months"`
-	Groups []CostGroup `json:"groups"`
+	// Currency of every amount
+	Currency string `json:"currency"`
+	// One entry per value of groupBy, highest cost first
+	CostByGroup []CostByGroup `json:"costByGroup"`
 }
 
 // NewCostReport instantiates a new CostReport object
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewCostReport(groupBy string, months []string, groups []CostGroup) *CostReport {
+func NewCostReport(currency string, costByGroup []CostByGroup) *CostReport {
 	this := CostReport{}
-	this.GroupBy = groupBy
-	this.Months = months
-	this.Groups = groups
+	this.Currency = currency
+	this.CostByGroup = costByGroup
 	return &this
 }
 
@@ -45,76 +44,52 @@ func NewCostReportWithDefaults() *CostReport {
 	return &this
 }
 
-// GetGroupBy returns the GroupBy field value
-func (o *CostReport) GetGroupBy() string {
+// GetCurrency returns the Currency field value
+func (o *CostReport) GetCurrency() string {
 	if o == nil {
 		var ret string
 		return ret
 	}
 
-	return o.GroupBy
+	return o.Currency
 }
 
-// GetGroupByOk returns a tuple with the GroupBy field value
+// GetCurrencyOk returns a tuple with the Currency field value
 // and a boolean to check if the value has been set.
-func (o *CostReport) GetGroupByOk() (*string, bool) {
+func (o *CostReport) GetCurrencyOk() (*string, bool) {
 	if o == nil {
 		return nil, false
 	}
-	return &o.GroupBy, true
+	return &o.Currency, true
 }
 
-// SetGroupBy sets field value
-func (o *CostReport) SetGroupBy(v string) {
-	o.GroupBy = v
+// SetCurrency sets field value
+func (o *CostReport) SetCurrency(v string) {
+	o.Currency = v
 }
 
-// GetMonths returns the Months field value
-func (o *CostReport) GetMonths() []string {
+// GetCostByGroup returns the CostByGroup field value
+func (o *CostReport) GetCostByGroup() []CostByGroup {
 	if o == nil {
-		var ret []string
+		var ret []CostByGroup
 		return ret
 	}
 
-	return o.Months
+	return o.CostByGroup
 }
 
-// GetMonthsOk returns a tuple with the Months field value
+// GetCostByGroupOk returns a tuple with the CostByGroup field value
 // and a boolean to check if the value has been set.
-func (o *CostReport) GetMonthsOk() ([]string, bool) {
+func (o *CostReport) GetCostByGroupOk() ([]CostByGroup, bool) {
 	if o == nil {
 		return nil, false
 	}
-	return o.Months, true
+	return o.CostByGroup, true
 }
 
-// SetMonths sets field value
-func (o *CostReport) SetMonths(v []string) {
-	o.Months = v
-}
-
-// GetGroups returns the Groups field value
-func (o *CostReport) GetGroups() []CostGroup {
-	if o == nil {
-		var ret []CostGroup
-		return ret
-	}
-
-	return o.Groups
-}
-
-// GetGroupsOk returns a tuple with the Groups field value
-// and a boolean to check if the value has been set.
-func (o *CostReport) GetGroupsOk() ([]CostGroup, bool) {
-	if o == nil {
-		return nil, false
-	}
-	return o.Groups, true
-}
-
-// SetGroups sets field value
-func (o *CostReport) SetGroups(v []CostGroup) {
-	o.Groups = v
+// SetCostByGroup sets field value
+func (o *CostReport) SetCostByGroup(v []CostByGroup) {
+	o.CostByGroup = v
 }
 
 func (o CostReport) MarshalJSON() ([]byte, error) {
@@ -127,9 +102,8 @@ func (o CostReport) MarshalJSON() ([]byte, error) {
 
 func (o CostReport) ToMap() (map[string]interface{}, error) {
 	toSerialize := map[string]interface{}{}
-	toSerialize["groupBy"] = o.GroupBy
-	toSerialize["months"] = o.Months
-	toSerialize["groups"] = o.Groups
+	toSerialize["currency"] = o.Currency
+	toSerialize["costByGroup"] = o.CostByGroup
 	return toSerialize, nil
 }
 

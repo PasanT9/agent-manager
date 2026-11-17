@@ -23,6 +23,8 @@ type BudgetConsumer struct {
 	Allocation *string `json:"allocation,omitempty"`
 	// Handle, or API key name; required when shared, except for attribute
 	Id *string `json:"id,omitempty"`
+	// The agent's project; required for a shared agent (agent names are unique only per project)
+	Project *string `json:"project,omitempty"`
 	// attribute only: CEL, bool when shared, string or list(string) when separate
 	Expression *string `json:"expression,omitempty"`
 }
@@ -137,6 +139,38 @@ func (o *BudgetConsumer) SetId(v string) {
 	o.Id = &v
 }
 
+// GetProject returns the Project field value if set, zero value otherwise.
+func (o *BudgetConsumer) GetProject() string {
+	if o == nil || IsNil(o.Project) {
+		var ret string
+		return ret
+	}
+	return *o.Project
+}
+
+// GetProjectOk returns a tuple with the Project field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *BudgetConsumer) GetProjectOk() (*string, bool) {
+	if o == nil || IsNil(o.Project) {
+		return nil, false
+	}
+	return o.Project, true
+}
+
+// HasProject returns a boolean if a field has been set.
+func (o *BudgetConsumer) HasProject() bool {
+	if o != nil && !IsNil(o.Project) {
+		return true
+	}
+
+	return false
+}
+
+// SetProject gets a reference to the given string and assigns it to the Project field.
+func (o *BudgetConsumer) SetProject(v string) {
+	o.Project = &v
+}
+
 // GetExpression returns the Expression field value if set, zero value otherwise.
 func (o *BudgetConsumer) GetExpression() string {
 	if o == nil || IsNil(o.Expression) {
@@ -185,6 +219,9 @@ func (o BudgetConsumer) ToMap() (map[string]interface{}, error) {
 	}
 	if !IsNil(o.Id) {
 		toSerialize["id"] = o.Id
+	}
+	if !IsNil(o.Project) {
+		toSerialize["project"] = o.Project
 	}
 	if !IsNil(o.Expression) {
 		toSerialize["expression"] = o.Expression

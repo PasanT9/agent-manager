@@ -221,6 +221,11 @@ func (b *gatewayBudgetSyncer) Kind() string { return models.GatewayResourceKindB
 func (b *gatewayBudgetSyncer) Save(ctx context.Context, gateway *models.Gateway, name string,
 	item models.GatewayResourceItem,
 ) (string, string, error) {
+	// Same names as budgets created here (at most 63 characters; lowercase letters, digits
+	// and hyphens), so every budget can be opened, edited and imported by name here.
+	if !budgetNamePattern.MatchString(name) {
+		return "", GatewayResourceErrInvalid, nil
+	}
 	cfg, project, err := gatewayBudgetConfig(name, item.Configuration)
 	if err != nil {
 		return "", GatewayResourceErrInvalid, nil //nolint:nilerr // a bad document fails the item, not the push

@@ -41,6 +41,7 @@ const llmProxy = resource('llm-proxy');
 const mcpServer = resource('mcp-server');
 const evaluator = resource('evaluator');
 const monitor = resource('monitor');
+const budget = resource('budget');
 const members = ['amp:org:invite-member', 'amp:org:remove-member'];
 const roleScopes = ['amp:role:read', ...crud('role')];
 const groupScopes = ['amp:group:read', ...crud('group')];
@@ -80,6 +81,11 @@ export const SCOPE_RULES: Record<keyof FeatureAccessConfig, ScopeRule> = {
   monitor_read: monitor.read,
   monitor_write: monitor.write,
   monitor_execute: { anyOf: ['amp:monitor:execute'] },
+  budget_read: budget.read,
+  budget_create: { anyOf: ['amp:budget:create'] },
+  budget_update: { anyOf: ['amp:budget:update'] },
+  budget_delete: { anyOf: ['amp:budget:delete'] },
+  ai_cost_read: { anyOf: ['amp:cost:read'] },
   // The Users page has no read scope of its own; either member scope opens it.
   member_read: { anyOf: members },
   member_invite: { anyOf: ['amp:org:invite-member'] },

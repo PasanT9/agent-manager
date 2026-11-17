@@ -62,7 +62,7 @@ func (h *DeploymentAckHandler) HandleMessage(gatewayID string, data []byte) bool
 	case "deployment.ack":
 		h.handleDeploymentAck(gatewayID, msg.Payload)
 		return true
-	case "usage":
+	case GatewayMessageBudgetUsage:
 		if h.usage == nil {
 			return false
 		}

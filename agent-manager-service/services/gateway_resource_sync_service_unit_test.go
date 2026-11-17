@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,14 +96,17 @@ func TestGatewayResourceSync_SavesDeletesAndReportsEachOne(t *testing.T) {
 			budgetItem("dp-dup", "Budget", "team-a"),
 			budgetItem("dp-kind", "RestApi", "team-x"),
 			budgetItem("dp-noname", "Budget", " "),
+			// Valid on a gateway, not as a control-plane budget name.
+			budgetItem("dp-dotted", "Budget", "team.a"),
+			budgetItem("dp-long", "Budget", strings.Repeat("a", 64)),
 			{DPID: "dp-bad", Configuration: json.RawMessage(`not json`)},
 		},
 		Deleted: []models.GatewayResourceItem{budgetItem("dp-gone", "Budget", "team-old")},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, 7, resp.Total)
+	assert.Equal(t, 9, resp.Total)
 	assert.Equal(t, 2, resp.Success)
-	assert.Equal(t, 5, resp.Failed)
+	assert.Equal(t, 7, resp.Failed)
 	assert.Equal(t, models.GatewayResourceResult{ID: cpID.String(), Status: models.GatewayResourceStatusSynced}, resp.Resources["dp-a"])
 	assert.Equal(t, models.GatewayResourceStatusSynced, resp.Resources["dp-gone"].Status)
 	assert.Equal(t, BudgetErrAlreadyExists, resp.Resources["dp-clash"].Error)
@@ -110,6 +114,8 @@ func TestGatewayResourceSync_SavesDeletesAndReportsEachOne(t *testing.T) {
 	assert.Equal(t, GatewayResourceErrUnsupported, resp.Resources["dp-kind"].Error)
 	assert.Equal(t, GatewayResourceErrInvalid, resp.Resources["dp-noname"].Error)
 	assert.Equal(t, GatewayResourceErrInvalid, resp.Resources["dp-bad"].Error)
+	assert.Equal(t, GatewayResourceErrInvalid, resp.Resources["dp-dotted"].Error)
+	assert.Equal(t, GatewayResourceErrInvalid, resp.Resources["dp-long"].Error)
 	assert.Equal(t, []string{"team-old"}, deleted)
 	assert.Empty(t, repo.DeleteForGatewayExceptCalls(), "only a complete push removes unlisted budgets")
 

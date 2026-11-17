@@ -289,6 +289,13 @@ func Run(secretProvider secretmanagersvc.Provider, opts Options) {
 		os.Exit(1)
 	}
 
+	// Records the usage gateways report, off their connections.
+	budgetUsageCtx, budgetUsageCancel := context.WithCancel(backgroundCtx)
+	if err := dependencies.BudgetWarnings.Start(budgetUsageCtx); err != nil {
+		slog.Error("failed to start budget usage recording", "error", err)
+		os.Exit(1)
+	}
+
 	reconcileWorkerCtx, reconcileWorkerCancel := context.WithCancel(backgroundCtx)
 	if err := dependencies.ReconcileWorker.Start(reconcileWorkerCtx); err != nil {
 		slog.Error("failed to start reconcile worker", "error", err)
@@ -370,6 +377,11 @@ func Run(secretProvider secretmanagersvc.Provider, opts Options) {
 		costRetentionCancel()
 		if err := dependencies.CostService.Stop(); err != nil {
 			slog.Error("error stopping cost usage retention", "error", err)
+		}
+
+		budgetUsageCancel()
+		if err := dependencies.BudgetWarnings.Stop(); err != nil {
+			slog.Error("error stopping budget usage recording", "error", err)
 		}
 
 		reconcileWorkerCancel()

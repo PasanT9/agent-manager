@@ -201,6 +201,34 @@ export const generatedRouteMap =  {
           "wildPath": "/org/:orgId/events/*",
           "children": {}
         },
+        "aiCostManagement": {
+          "path": "/org/:orgId/cost-management",
+          "wildPath": "/org/:orgId/cost-management/*",
+          "children": {
+            "budgets": {
+              "path": "/org/:orgId/cost-management/budgets",
+              "wildPath": "/org/:orgId/cost-management/budgets/*",
+              "children": {
+                "create": {
+                  "path": "/org/:orgId/cost-management/budgets/create",
+                  "wildPath": "/org/:orgId/cost-management/budgets/create/*",
+                  "children": {}
+                },
+                "view": {
+                  "path": "/org/:orgId/cost-management/budgets/view/:budgetName",
+                  "wildPath": "/org/:orgId/cost-management/budgets/view/:budgetName/*",
+                  "children": {
+                    "edit": {
+                      "path": "/org/:orgId/cost-management/budgets/view/:budgetName/edit",
+                      "wildPath": "/org/:orgId/cost-management/budgets/view/:budgetName/edit/*",
+                      "children": {}
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
         "deploymentPipelines": {
           "path": "/org/:orgId/deployment-pipelines",
           "wildPath": "/org/:orgId/deployment-pipelines/*",
@@ -263,6 +291,34 @@ export const generatedRouteMap =  {
               "path": "/org/:orgId/project/:projectId/events",
               "wildPath": "/org/:orgId/project/:projectId/events/*",
               "children": {}
+            },
+            "aiCostManagement": {
+              "path": "/org/:orgId/project/:projectId/cost-management",
+              "wildPath": "/org/:orgId/project/:projectId/cost-management/*",
+              "children": {
+                "budgets": {
+                  "path": "/org/:orgId/project/:projectId/cost-management/budgets",
+                  "wildPath": "/org/:orgId/project/:projectId/cost-management/budgets/*",
+                  "children": {
+                    "create": {
+                      "path": "/org/:orgId/project/:projectId/cost-management/budgets/create",
+                      "wildPath": "/org/:orgId/project/:projectId/cost-management/budgets/create/*",
+                      "children": {}
+                    },
+                    "view": {
+                      "path": "/org/:orgId/project/:projectId/cost-management/budgets/view/:budgetName",
+                      "wildPath": "/org/:orgId/project/:projectId/cost-management/budgets/view/:budgetName/*",
+                      "children": {
+                        "edit": {
+                          "path": "/org/:orgId/project/:projectId/cost-management/budgets/view/:budgetName/edit",
+                          "wildPath": "/org/:orgId/project/:projectId/cost-management/budgets/view/:budgetName/edit/*",
+                          "children": {}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
             },
             "agentListing": {
               "path": "/org/:orgId/project/:projectId/agents",

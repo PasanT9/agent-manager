@@ -23,5 +23,5 @@ import (
 )
 
 func registerCostRoutes(rr *middleware.RouteRegistrar, controller controllers.CostController) {
-	rr.HandleFuncWithValidationAndAuthz(route("GET", "/orgs/{orgName}/ai-costs"), rbac.AICostRead, controller.GetCosts)
+	rr.HandleFuncWithValidationAndAuthz(route("GET", "/orgs/{orgName}/costs"), rbac.CostRead, controller.GetCosts)
 }

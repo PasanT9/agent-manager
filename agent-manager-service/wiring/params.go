@@ -81,6 +81,7 @@ type AppParams struct {
 	BudgetController                 controllers.BudgetController
 	CostController                   controllers.CostController
 	CostService                      services.CostService
+	BudgetWarnings                   *services.BudgetWarningService
 	MonitorAlertController           controllers.MonitorAlertController
 	MonitorScheduler                 services.MonitorSchedulerService
 	AgentThunderReconciler           services.AgentThunderReconcilerService

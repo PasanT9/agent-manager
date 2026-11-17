@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"sort"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -33,12 +34,12 @@ import (
 //
 //go:generate moq -rm -fmt goimports -skip-ensure -pkg repomocks -out repomocks/budget_usage_repository_mock.go . BudgetUsageRepository:BudgetUsageRepositoryMock
 type BudgetUsageRepository interface {
-	// Record merges a gateway's report into the allowance's row, in one transaction: a
-	// later period replaces it, the same period keeps the higher totals (each gateway
-	// reports the shared total; one may lag), an earlier period is ignored. warn gets
-	// the stored row and returns the warning deliveries it calls for; Record queues them
-	// in the same transaction and returns those not queued before.
-	Record(ctx context.Context, u models.BudgetUsage,
+	// Record merges a gateway's reports into their allowances' rows, all in one
+	// transaction: each period has its own row, and the same period keeps the higher
+	// totals (each gateway reports the shared total; one may lag). warn gets each row that
+	// changed and returns the warning deliveries it calls for; Record queues them in the
+	// same transaction and returns those not queued before.
+	Record(ctx context.Context, rows []models.BudgetUsage,
 		warn func(stored models.BudgetUsage) []models.EventDelivery) ([]models.EventDelivery, error)
 	// ForBudget returns the budget's allowances.
 	ForBudget(ctx context.Context, budgetID uuid.UUID) ([]models.BudgetUsage, error)
@@ -57,59 +58,95 @@ func NewBudgetUsageRepository(db *gorm.DB) BudgetUsageRepository {
 	return &budgetUsageRepository{db: db}
 }
 
-func (r *budgetUsageRepository) Record(ctx context.Context, u models.BudgetUsage,
+func (r *budgetUsageRepository) Record(ctx context.Context, rows []models.BudgetUsage,
 	warn func(stored models.BudgetUsage) []models.EventDelivery,
 ) ([]models.EventDelivery, error) {
-	u.PeriodStart = u.PeriodStart.UTC()
-	u.UpdatedAt = dbx.Now()
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	now := dbx.Now()
+	batch := make([]models.BudgetUsage, len(rows))
+	for i, u := range rows {
+		u.PeriodStart = u.PeriodStart.UTC()
+		u.UpdatedAt = now
+		batch[i] = u
+	}
+	// Rows are locked in key order, so two batches never wait on each other's rows.
+	sort.Slice(batch, func(i, j int) bool {
+		a, b := batch[i], batch[j]
+		if a.BudgetID != b.BudgetID {
+			return a.BudgetID.String() < b.BudgetID.String()
+		}
+		if a.AllowanceID != b.AllowanceID {
+			return a.AllowanceID.String() < b.AllowanceID.String()
+		}
+		return a.PeriodStart.Before(b.PeriodStart)
+	})
 	var queued []models.EventDelivery
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		const where = "budget_id = ? AND allowance_id = ?"
-		locked, err := dbx.LockRows(tx, "budget_usage", "spent", where, u.BudgetID, u.AllowanceID)
-		if err != nil {
-			return err
-		}
-		stored := u
-		if locked == 0 {
-			inserted, err := dbx.InsertIfAbsent(tx, &stored)
+		for _, u := range batch {
+			stored, changed, err := mergeUsageRow(tx, u)
 			if err != nil {
 				return err
 			}
-			if !inserted {
-				// Another report inserted it first: merge under its lock.
-				if err := dbx.LockRow(tx, "budget_usage", "spent", where, u.BudgetID, u.AllowanceID); err != nil {
-					return err
-				}
-				locked = 1
+			if !changed || warn == nil {
+				continue
 			}
-		}
-		if locked > 0 {
-			var current models.BudgetUsage
-			if err := tx.Where(where, u.BudgetID, u.AllowanceID).Take(&current).Error; err != nil {
+			more, err := queueDeliveries(tx, warn(stored))
+			if err != nil {
 				return err
 			}
-			merged, changed := mergeUsage(current, u)
-			if !changed {
-				return nil
-			}
-			if err := tx.Model(&models.BudgetUsage{}).Where(where, u.BudgetID, u.AllowanceID).Updates(map[string]any{
-				"allowance":         dbx.JSON(merged.Allowance),
-				"period_start":      merged.PeriodStart,
-				"spent":             merged.Spent,
-				"unpriced_requests": merged.UnpricedRequests,
-				"updated_at":        merged.UpdatedAt,
-			}).Error; err != nil {
-				return err
-			}
-			stored = merged
+			queued = append(queued, more...)
 		}
-		if warn == nil {
-			return nil
-		}
-		queued, err = queueDeliveries(tx, warn(stored))
-		return err
+		return nil
 	})
-	return queued, err
+	if err != nil {
+		return nil, err
+	}
+	return queued, nil
+}
+
+// mergeUsageRow merges one report into its period's row under the row's lock, and
+// returns the stored row and whether it changed.
+func mergeUsageRow(tx *gorm.DB, u models.BudgetUsage) (models.BudgetUsage, bool, error) {
+	// A report updates only its own period's row; earlier periods are kept.
+	const where = "budget_id = ? AND allowance_id = ? AND period_start = ?"
+	args := []any{u.BudgetID, u.AllowanceID, u.PeriodStart}
+	locked, err := dbx.LockRows(tx, "budget_usage", "spent", where, args...)
+	if err != nil {
+		return u, false, err
+	}
+	if locked == 0 {
+		stored := u
+		inserted, err := dbx.InsertIfAbsent(tx, &stored)
+		if err != nil {
+			return u, false, err
+		}
+		if inserted {
+			return stored, true, nil
+		}
+		// Another report inserted it first: merge under its lock.
+		if err := dbx.LockRow(tx, "budget_usage", "spent", where, args...); err != nil {
+			return u, false, err
+		}
+	}
+	var current models.BudgetUsage
+	if err := tx.Where(where, args...).Take(&current).Error; err != nil {
+		return u, false, err
+	}
+	merged, changed := mergeUsage(current, u)
+	if !changed {
+		return current, false, nil
+	}
+	if err := tx.Model(&models.BudgetUsage{}).Where(where, args...).Updates(map[string]any{
+		"allowance":         dbx.JSON(merged.Allowance),
+		"spent":             merged.Spent,
+		"unpriced_requests": merged.UnpricedRequests,
+		"updated_at":        merged.UpdatedAt,
+	}).Error; err != nil {
+		return u, false, err
+	}
+	return merged, true, nil
 }
 
 // mergeUsage merges a report into the stored row and reports whether anything changed.
@@ -149,10 +186,30 @@ func greater(a, b string) bool {
 	return x.Cmp(y) > 0
 }
 
+// ForBudget returns each of a budget's allowances in its latest period.
 func (r *budgetUsageRepository) ForBudget(ctx context.Context, budgetID uuid.UUID) ([]models.BudgetUsage, error) {
 	var rows []models.BudgetUsage
 	err := r.db.WithContext(ctx).Where("budget_id = ?", budgetID).Order("allowance_id").Find(&rows).Error
-	return rows, err
+	return latestPeriods(rows), err
+}
+
+// latestPeriods keeps each allowance's latest period, in the order the rows came.
+func latestPeriods(rows []models.BudgetUsage) []models.BudgetUsage {
+	type key struct{ budget, allowance uuid.UUID }
+	latest := map[key]int{}
+	out := make([]models.BudgetUsage, 0, len(rows))
+	for _, row := range rows {
+		k := key{row.BudgetID, row.AllowanceID}
+		if i, seen := latest[k]; seen {
+			if row.PeriodStart.After(out[i].PeriodStart) {
+				out[i] = row
+			}
+			continue
+		}
+		latest[k] = len(out)
+		out = append(out, row)
+	}
+	return out
 }
 
 func (r *budgetUsageRepository) ForBudgets(ctx context.Context, ouID string, budgetIDs []uuid.UUID) ([]models.BudgetUsage, error) {
@@ -164,7 +221,7 @@ func (r *budgetUsageRepository) ForBudgets(ctx context.Context, ouID string, bud
 		}
 		rows = append(rows, page...)
 	}
-	return rows, nil
+	return latestPeriods(rows), nil
 }
 
 func (r *budgetUsageRepository) QueueWarnings(ctx context.Context, deliveries []models.EventDelivery) ([]models.EventDelivery, error) {

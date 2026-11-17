@@ -32,7 +32,7 @@ import (
 )
 
 // importCSV is the design's example (Interfaces 2.5), in the test environment's names.
-const importCSV = `name,projectId,displayName,amount,period,action,blockAt,provider,providerAllocation,project,agentAllocation,apiKey,attributes,exemptions,thresholds,channels
+const importCSV = `name,projectId,displayName,amount,period,action,blockAt,llmProvider,llmProviderAllocation,project,agentAllocation,apiKey,attributes,exemptions,thresholds,channels
 wso2-monthly,,WSO2 monthly ceiling,10000,month,block,99,,,,,,,"[{""type"": ""project"", ""id"": ""api-platform""}]",50;80;100,finance-email
 api-platform-agents,api-platform,"API Platform, per agent",100,month,block,,openai,,api-platform,separate,,,"[{""type"": ""agent"", ""project"": ""api-platform"", ""id"": ""hotel-booking""}]",80;100,platform-slack
 api-platform-cap,,API Platform cap,500,month,block,,,separate,api-platform,,,,,80,finance-email

@@ -225,10 +225,10 @@ resources:
       - { name: Read, handle: read, description: "View budgets" }
       - { name: Update, handle: update, description: "Update, disable and enable a budget" }
       - { name: Delete, handle: delete, description: "Delete a budget" }
-  - name: AI Cost
-    handle: ai-cost
+  - name: Cost
+    handle: cost
     parent: amp
-    description: What LLM traffic cost (AI cost stats)
+    description: What LLM traffic cost (Cost Management)
     actions:
       - { name: Read, handle: read, description: "View costs by project, agent, API key, user, provider and model" }
   - name: Events

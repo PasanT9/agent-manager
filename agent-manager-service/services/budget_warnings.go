@@ -26,6 +26,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,11 +41,15 @@ import (
 // BudgetWarningEvent is the warning's event type (Interfaces 6).
 const BudgetWarningEvent = "budget.threshold_crossed"
 
+// GatewayMessageBudgetUsage is the type of a gateway's usage message (Interfaces 4.2),
+// dotted like deployment.ack.
+const GatewayMessageBudgetUsage = "budget.usage"
+
 // GatewayUsageMessage is the usage message a gateway sends on its connection
 // (Interfaces 4.2): budget allowance totals.
 type GatewayUsageMessage struct {
 	Allowances []GatewayAllowanceUsage `json:"allowances"`
-	// Costs are the AI cost stats, from gateways with [ai_cost_stats] on (Interfaces 4.2).
+	// Costs are the AI cost stats, from gateways with [ai_cost_management.tracking] on (Interfaces 4.2).
 	Costs []GatewayCostUsage `json:"costs"`
 }
 
@@ -74,7 +80,26 @@ type BudgetWarningService struct {
 	gateways repositories.GatewayRepository
 	bus      events.Bus
 	costs    CostRecorder
+
+	// Usage messages wait here for the worker Start runs, so a gateway's connection never
+	// waits on the database. Before Start (tests), HandleUsage records inline.
+	queue    chan usageMessage
+	started  atomic.Bool
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	done     sync.WaitGroup
 }
+
+// usageMessage is one gateway's usage message, waiting to be recorded.
+type usageMessage struct {
+	gatewayID string
+	payload   json.RawMessage
+}
+
+// usageQueueSize is how many usage messages may wait. Gateways send about one a second
+// each and resend every total of the last 10 minutes every minute, so one dropped when
+// the queue is full is recorded with the next resend.
+const usageQueueSize = 256
 
 // NewBudgetWarningService creates a BudgetWarningService. bus is nil when events are off
 // (EVENTS_MODE): spend is still recorded, and no warning is queued, since nothing could
@@ -87,12 +112,59 @@ func NewBudgetWarningService(
 	bus events.Bus,
 	costs CostRecorder,
 ) *BudgetWarningService {
-	return &BudgetWarningService{budgets: budgets, usage: usage, events: eventRepo, gateways: gateways, bus: bus, costs: costs}
+	return &BudgetWarningService{
+		budgets: budgets, usage: usage, events: eventRepo, gateways: gateways, bus: bus, costs: costs,
+		queue: make(chan usageMessage, usageQueueSize), stopCh: make(chan struct{}),
+	}
 }
 
-// HandleUsage records a gateway's usage message. An allowance whose budget is unknown or
-// whose fields are invalid is skipped and logged; the gateway sends totals again.
+// Start records queued usage messages, one at a time, until Stop.
+func (s *BudgetWarningService) Start(ctx context.Context) error {
+	s.started.Store(true)
+	s.done.Add(1)
+	go func() {
+		defer s.done.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.stopCh:
+				return
+			case m := <-s.queue:
+				s.RecordUsage(ctx, m.gatewayID, m.payload)
+			}
+		}
+	}()
+	return nil
+}
+
+// Stop stops the worker; usage messages still queued are dropped, and gateways resend them.
+func (s *BudgetWarningService) Stop() error {
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+		s.done.Wait()
+	})
+	return nil
+}
+
+// HandleUsage takes a gateway's usage message from its connection: queued for the worker
+// once started, recorded inline before that.
 func (s *BudgetWarningService) HandleUsage(ctx context.Context, gatewayID string, payload json.RawMessage) {
+	if !s.started.Load() {
+		s.RecordUsage(ctx, gatewayID, payload)
+		return
+	}
+	select {
+	case s.queue <- usageMessage{gatewayID: gatewayID, payload: payload}:
+	default:
+		slog.Warn("Budget usage queue is full; the gateway's next resend records it", "gatewayID", gatewayID)
+	}
+}
+
+// RecordUsage records a gateway's usage message: its costs in one transaction and its
+// allowances in another. An allowance whose budget is unknown or whose fields are invalid
+// is skipped and logged; the gateway sends totals again.
+func (s *BudgetWarningService) RecordUsage(ctx context.Context, gatewayID string, payload json.RawMessage) {
 	log := slog.With("gatewayID", gatewayID)
 	var msg GatewayUsageMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
@@ -109,6 +181,8 @@ func (s *BudgetWarningService) HandleUsage(ctx context.Context, gatewayID string
 		s.costs.RecordCosts(ctx, ouID, msg.Costs)
 	}
 	budgets := map[string]*models.Budget{}
+	byID := map[uuid.UUID]*models.Budget{}
+	rows := make([]models.BudgetUsage, 0, len(msg.Allowances))
 	for _, a := range msg.Allowances {
 		b, ok := budgets[a.Budget]
 		if !ok {
@@ -120,6 +194,9 @@ func (s *BudgetWarningService) HandleUsage(ctx context.Context, gatewayID string
 				return
 			}
 			budgets[a.Budget] = b
+			if b != nil {
+				byID[b.ID] = b
+			}
 		}
 		if b == nil {
 			log.Debug("Usage for an unknown budget ignored", "budget", a.Budget)
@@ -130,8 +207,9 @@ func (s *BudgetWarningService) HandleUsage(ctx context.Context, gatewayID string
 			log.Warn("Invalid budget usage ignored", "budget", a.Budget, "error", err)
 			continue
 		}
-		s.record(ctx, b, usage, log)
+		rows = append(rows, usage)
 	}
+	s.record(ctx, byID, rows, log)
 }
 
 // usageRow validates one reported allowance.
@@ -171,23 +249,38 @@ func allowanceValues(labels map[string]string) map[string]string {
 	return out
 }
 
-// record stores one allowance's total and queues the warnings it crosses.
-func (s *BudgetWarningService) record(ctx context.Context, b *models.Budget, usage models.BudgetUsage, log *slog.Logger) {
-	channels, err := s.channels(ctx, b)
-	if err != nil {
-		log.Error("Failed to load a budget's notification channels", "budget", b.Name, "error", err)
+// record stores the allowances' totals in one transaction and queues the warnings they
+// cross. Each budget's notification channels are loaded once.
+func (s *BudgetWarningService) record(ctx context.Context, budgets map[uuid.UUID]*models.Budget,
+	rows []models.BudgetUsage, log *slog.Logger,
+) {
+	if len(rows) == 0 {
 		return
 	}
 	payloads := map[string][]byte{}
 	var warn func(models.BudgetUsage) []models.EventDelivery
 	if s.bus != nil {
+		channels := make(map[uuid.UUID][]models.EventDestination, len(budgets))
+		for id, b := range budgets {
+			found, err := s.channels(ctx, b)
+			if err != nil {
+				// Spend is still recorded; the warning is sent when the next total arrives.
+				log.Error("Failed to load a budget's notification channels", "budget", b.Name, "error", err)
+				continue
+			}
+			channels[id] = found
+		}
 		warn = func(stored models.BudgetUsage) []models.EventDelivery {
-			return warningDeliveries(b, stored, channels, payloads)
+			b := budgets[stored.BudgetID]
+			if b == nil {
+				return nil
+			}
+			return warningDeliveries(b, stored, channels[stored.BudgetID], payloads)
 		}
 	}
-	queued, err := s.usage.Record(ctx, usage, warn)
+	queued, err := s.usage.Record(ctx, rows, warn)
 	if err != nil {
-		log.Error("Failed to record budget usage", "budget", b.Name, "error", err)
+		log.Error("Failed to record budget usage", "allowances", len(rows), "error", err)
 		return
 	}
 	s.enqueue(ctx, queued, payloads, log)

@@ -24,7 +24,7 @@ import (
 	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
 
-// CostController serves the AI costs API (/orgs/{orgName}/ai-costs).
+// CostController serves the costs API (/orgs/{orgName}/costs).
 type CostController interface {
 	GetCosts(w http.ResponseWriter, r *http.Request)
 }
@@ -38,10 +38,11 @@ func NewCostController(costs services.CostService) CostController {
 	return &costController{costs: costs}
 }
 
-// GetCosts handles GET /orgs/{orgName}/ai-costs: the kept months' costs, grouped.
+// GetCosts handles GET /orgs/{orgName}/costs: the kept months' cost per groupBy value.
 func (c *costController) GetCosts(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	resp, err := c.costs.Costs(r.Context(), middleware.OUIDFromRequest(r), query.Get("groupBy"), query["filter"])
+	resp, err := c.costs.Costs(r.Context(), middleware.OUIDFromRequest(r), middleware.OrgHandleFromRequest(r),
+		query.Get("groupBy"), query["filter"])
 	if err != nil {
 		writeBudgetError(w, r, err, "Failed to read costs")
 		return

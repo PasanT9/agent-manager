@@ -144,6 +144,12 @@ export interface AppConfig {
   fileMountMaxFileBytes?: string | number;
   /** URL for the product documentation. Shown as a "Docs" link in the footer. */
   docsUrl?: string;
+  /**
+   * The organization's Moesif dashboard, opened by "Open in Moesif" on the Cost
+   * Management dashboard. Unset (no analytics integration), the dashboard shows
+   * "Detailed analytics unavailable" with a link to the documentation instead.
+   */
+  moesifDashboardUrl?: string;
   /** URLs rendered in the footer. */
   footerLinks?: {
     privacyPolicyUrl?: string;

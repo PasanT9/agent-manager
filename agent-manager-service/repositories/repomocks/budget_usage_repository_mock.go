@@ -26,7 +26,7 @@ import (
 //			QueueWarningsFunc: func(ctx context.Context, deliveries []models.EventDelivery) ([]models.EventDelivery, error) {
 //				panic("mock out the QueueWarnings method")
 //			},
-//			RecordFunc: func(ctx context.Context, u models.BudgetUsage, warn func(stored models.BudgetUsage) []models.EventDelivery) ([]models.EventDelivery, error) {
+//			RecordFunc: func(ctx context.Context, rows []models.BudgetUsage, warn func(stored models.BudgetUsage) []models.EventDelivery) ([]models.EventDelivery, error) {
 //				panic("mock out the Record method")
 //			},
 //		}
@@ -46,7 +46,7 @@ type BudgetUsageRepositoryMock struct {
 	QueueWarningsFunc func(ctx context.Context, deliveries []models.EventDelivery) ([]models.EventDelivery, error)
 
 	// RecordFunc mocks the Record method.
-	RecordFunc func(ctx context.Context, u models.BudgetUsage, warn func(stored models.BudgetUsage) []models.EventDelivery) ([]models.EventDelivery, error)
+	RecordFunc func(ctx context.Context, rows []models.BudgetUsage, warn func(stored models.BudgetUsage) []models.EventDelivery) ([]models.EventDelivery, error)
 
 	// calls tracks calls to the methods.
 	calls struct {
@@ -77,8 +77,8 @@ type BudgetUsageRepositoryMock struct {
 		Record []struct {
 			// Ctx is the ctx argument value.
 			Ctx context.Context
-			// U is the u argument value.
-			U models.BudgetUsage
+			// Rows is the rows argument value.
+			Rows []models.BudgetUsage
 			// Warn is the warn argument value.
 			Warn func(stored models.BudgetUsage) []models.EventDelivery
 		}
@@ -202,23 +202,23 @@ func (mock *BudgetUsageRepositoryMock) QueueWarningsCalls() []struct {
 }
 
 // Record calls RecordFunc.
-func (mock *BudgetUsageRepositoryMock) Record(ctx context.Context, u models.BudgetUsage, warn func(stored models.BudgetUsage) []models.EventDelivery) ([]models.EventDelivery, error) {
+func (mock *BudgetUsageRepositoryMock) Record(ctx context.Context, rows []models.BudgetUsage, warn func(stored models.BudgetUsage) []models.EventDelivery) ([]models.EventDelivery, error) {
 	if mock.RecordFunc == nil {
 		panic("BudgetUsageRepositoryMock.RecordFunc: method is nil but BudgetUsageRepository.Record was just called")
 	}
 	callInfo := struct {
 		Ctx  context.Context
-		U    models.BudgetUsage
+		Rows []models.BudgetUsage
 		Warn func(stored models.BudgetUsage) []models.EventDelivery
 	}{
 		Ctx:  ctx,
-		U:    u,
+		Rows: rows,
 		Warn: warn,
 	}
 	mock.lockRecord.Lock()
 	mock.calls.Record = append(mock.calls.Record, callInfo)
 	mock.lockRecord.Unlock()
-	return mock.RecordFunc(ctx, u, warn)
+	return mock.RecordFunc(ctx, rows, warn)
 }
 
 // RecordCalls gets all the calls that were made to Record.
@@ -227,12 +227,12 @@ func (mock *BudgetUsageRepositoryMock) Record(ctx context.Context, u models.Budg
 //	len(mockedBudgetUsageRepository.RecordCalls())
 func (mock *BudgetUsageRepositoryMock) RecordCalls() []struct {
 	Ctx  context.Context
-	U    models.BudgetUsage
+	Rows []models.BudgetUsage
 	Warn func(stored models.BudgetUsage) []models.EventDelivery
 } {
 	var calls []struct {
 		Ctx  context.Context
-		U    models.BudgetUsage
+		Rows []models.BudgetUsage
 		Warn func(stored models.BudgetUsage) []models.EventDelivery
 	}
 	mock.lockRecord.RLock()

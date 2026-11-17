@@ -228,9 +228,9 @@ const (
 	BudgetDelete Permission = "budget:delete"
 )
 
-// AI cost permissions — what LLM traffic cost (AI cost stats).
+// Cost permissions — what LLM traffic cost (Cost Management).
 const (
-	AICostRead Permission = "ai-cost:read"
+	CostRead Permission = "cost:read"
 )
 
 // Events permissions — event destinations, org subscriptions and the org's

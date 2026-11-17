@@ -43,6 +43,8 @@ type warningsEnv struct {
 	rows     map[uuid.UUID]models.BudgetUsage
 	queued   []models.EventDelivery
 	bus      *queueBus
+	usage    *repomocks.BudgetUsageRepositoryMock
+	events   *repomocks.EventRepositoryMock
 }
 
 func newWarningsEnv(t *testing.T) *warningsEnv {
@@ -80,12 +82,14 @@ func newWarningsEnv(t *testing.T) *warningsEnv {
 		},
 	}
 	usage := &repomocks.BudgetUsageRepositoryMock{
-		RecordFunc: func(_ context.Context, u models.BudgetUsage, warn func(models.BudgetUsage) []models.EventDelivery) ([]models.EventDelivery, error) {
-			env.rows[u.AllowanceID] = u
-			if warn == nil {
-				return nil, nil
+		RecordFunc: func(_ context.Context, rows []models.BudgetUsage, warn func(models.BudgetUsage) []models.EventDelivery) ([]models.EventDelivery, error) {
+			var deliveries []models.EventDelivery
+			for _, u := range rows {
+				env.rows[u.AllowanceID] = u
+				if warn != nil {
+					deliveries = append(deliveries, warn(u)...)
+				}
 			}
-			deliveries := warn(u)
 			env.queued = append(env.queued, deliveries...)
 			return deliveries, nil
 		},
@@ -112,6 +116,7 @@ func newWarningsEnv(t *testing.T) *warningsEnv {
 	gateways := &repomocks.GatewayRepositoryMock{
 		GetByUUIDFunc: func(string) (*models.Gateway, error) { return &models.Gateway{OUID: budgetTestOrg}, nil },
 	}
+	env.usage, env.events = usage, eventRepo
 	env.svc = NewBudgetWarningService(budgets, usage, eventRepo, gateways, env.bus, nil)
 	return env
 }
@@ -244,10 +249,10 @@ func (u *usageRecorder) HandleUsage(_ context.Context, gatewayID string, payload
 func TestGatewayMessages_UsageGoesToTheWarningService(t *testing.T) {
 	usage := &usageRecorder{}
 	h := NewDeploymentAckHandler(nil, nil, usage)
-	assert.True(t, h.HandleMessage("gw-1", []byte(`{"type":"usage","payload":{"allowances":[]}}`)))
+	assert.True(t, h.HandleMessage("gw-1", []byte(`{"type":"budget.usage","payload":{"allowances":[]}}`)))
 	assert.Equal(t, "gw-1", usage.gateway)
 	assert.JSONEq(t, `{"allowances":[]}`, string(usage.payload))
-	assert.False(t, NewDeploymentAckHandler(nil, nil, nil).HandleMessage("gw-1", []byte(`{"type":"usage","payload":{}}`)),
+	assert.False(t, NewDeploymentAckHandler(nil, nil, nil).HandleMessage("gw-1", []byte(`{"type":"budget.usage","payload":{}}`)),
 		"without budgets the message is not handled")
 }
 
@@ -304,4 +309,30 @@ func TestBudgetWarnings_UsageCostsAreRecorded(t *testing.T) {
 
 	assert.Equal(t, budgetTestOrg, recorder.ouID)
 	assert.Equal(t, []GatewayCostUsage{cost}, recorder.costs)
+}
+
+// A message is written in one transaction, and each budget's channels are read once.
+func TestBudgetWarnings_OneMessageIsOneWrite(t *testing.T) {
+	env := newWarningsEnv(t)
+	other := supportAgentUsage("10")
+	other.AllowanceUUID = "6e7f3d2b-9a4c-5d58-b2ea-8f3c5d7a1b94"
+	other.Allowance = map[string]string{"agent": "api-platform/billing-agent"}
+	env.svc.HandleUsage(context.Background(), "gw-1", usagePayload(t, supportAgentUsage("80.14"), other))
+
+	require.Len(t, env.usage.RecordCalls(), 1)
+	assert.Len(t, env.usage.RecordCalls()[0].Rows, 2)
+	assert.Len(t, env.events.ListDestinationsCalls(), 1)
+	assert.Len(t, env.rows, 2)
+}
+
+// Once started, usage is recorded by the worker, not on the gateway's connection.
+func TestBudgetWarnings_StartedUsageIsRecordedByTheWorker(t *testing.T) {
+	env := newWarningsEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, env.svc.Start(ctx))
+	defer func() { require.NoError(t, env.svc.Stop()) }()
+
+	env.svc.HandleUsage(ctx, "gw-1", usagePayload(t, supportAgentUsage("80.14")))
+	assert.Eventually(t, func() bool { return len(env.usage.RecordCalls()) == 1 }, 2*time.Second, 10*time.Millisecond)
 }

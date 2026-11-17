@@ -22,14 +22,14 @@ import (
 	"github.com/google/uuid"
 )
 
-// BudgetUsage is one budget allowance's spend in its current period, as gateways
-// report it (Interfaces 1.2). Spent is a decimal string in USD.
+// BudgetUsage is one budget allowance's spend in one period, as gateways report it
+// (Interfaces 1.2); each period keeps its own row. Spent is a decimal string in USD.
 type BudgetUsage struct {
 	BudgetID         uuid.UUID         `gorm:"column:budget_id;primaryKey"`
 	AllowanceID      uuid.UUID         `gorm:"column:allowance_id;primaryKey"`
 	OUID             string            `gorm:"column:org_id"`
 	Allowance        map[string]string `gorm:"column:allowance;serializer:json"`
-	PeriodStart      time.Time         `gorm:"column:period_start"`
+	PeriodStart      time.Time         `gorm:"column:period_start;primaryKey"`
 	Spent            string            `gorm:"column:spent"`
 	UnpricedRequests int64             `gorm:"column:unpriced_requests"`
 	UpdatedAt        time.Time         `gorm:"column:updated_at"`

@@ -230,7 +230,7 @@ func TestWriteGatewayKeepsGeneratedMaterial(t *testing.T) {
 	conf := readFile(t, filepath.Join(dir, GatewayConfigFile))
 	for _, want := range []string{
 		`token = "` + token + `"`, `host = "amp-api:9243"`, "listener_port = 19080", `gatewayhost = "default-default.gateway.localhost"`,
-		"[budgets]\nenabled = true", "[ai_cost_stats]\nenabled = true",
+		"[ai_cost_management.tracking]\nenabled = true", "[ai_cost_management.budgets]\nenabled = true",
 	} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("config.toml lacks %q", want)

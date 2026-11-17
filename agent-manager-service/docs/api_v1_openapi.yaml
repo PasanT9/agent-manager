@@ -6320,7 +6320,8 @@ paths:
       description: |
         Creates many budgets from a CSV file, one budget per row (Interfaces 2.5). Each row is
         checked like a created budget; if any row fails, nothing is saved. With dryRun, every
-        row is checked and nothing is saved.
+        row is checked and nothing is saved. Needs budget:create; with onExisting=update, also
+        budget:update (dry run included).
       operationId: importBudgets
       tags:
         - Budgets
@@ -6643,16 +6644,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-  /orgs/{orgName}/ai-costs:
+  /orgs/{orgName}/costs:
     get:
-      summary: AI costs
+      summary: Costs
       description: >-
         What LLM traffic cost in the last 3 months, the current one so far, grouped by one
-        value (Interfaces 2.6). Counted by gateways with AI cost stats on, with or without
-        budgets. Every group, highest total first; no paging.
-      operationId: getAICosts
+        value (Interfaces 2.6). Counted by gateways with cost tracking on, with or without
+        budgets. Every group, highest cost first; no paging. Needs cost:read.
+      operationId: getCosts
       tags:
-        - AI Costs
+        - Costs
       parameters:
         - name: orgName
           in: path
@@ -17705,8 +17706,8 @@ components:
       properties:
         amount:
           type: string
-          pattern: ^[0-9]+(\.[0-9]{1,2})?$
-          description: Above zero, up to 2 decimals; never rounded
+          pattern: '^([1-9][0-9]{0,11}(\.[0-9]{1,2})?|0\.([1-9][0-9]?|0[1-9]))$'
+          description: Above zero; at most 12 whole digits and 2 decimals, no leading zeros; never rounded
           example: "100.00"
         currency:
           type: string
@@ -17755,6 +17756,9 @@ components:
         id:
           type: string
           description: Handle, or API key name; required when shared, except for attribute
+        project:
+          type: string
+          description: The agent's project; required for a shared agent (agent names are unique only per project)
         expression:
           type: string
           description: "attribute only: CEL, bool when shared, string or list(string) when separate"
@@ -17833,51 +17837,71 @@ components:
           format: int64
     CostReport:
       type: object
-      description: Costs per month, grouped by one value
-      required: [groupBy, months, groups]
+      description: Costs per month for each value of the requested groupBy
+      required: [currency, costByGroup]
       properties:
-        groupBy:
+        currency:
           type: string
-        months:
+          description: Currency of every amount
+          example: USD
+        costByGroup:
           type: array
-          description: The 3 kept months, oldest first, as YYYY-MM; the last is the current month
+          description: One entry per value of groupBy, highest cost first
           items:
-            type: string
-        groups:
-          type: array
-          items:
-            $ref: "#/components/schemas/CostGroup"
-    CostGroup:
+            $ref: "#/components/schemas/CostByGroup"
+    CostByGroup:
       type: object
       description: >-
-        One group's cost per month (costs[i] belongs to months[i]). It names its value and, for
-        an agent, its project; a value no request carried is left out.
-      required: [costs, total, missingPriceRequests, usageUnavailableRequests]
+        What one value of groupBy cost. Amounts are decimal strings; a month without
+        traffic is "0.00".
+      required: [id, cost, unpricedRequests, monthly]
       properties:
+        id:
+          type: string
+          nullable: true
+          description: >-
+            The groupBy value (a project, agent, LLM provider or organization handle, an API
+            key name, a user id or a model); null when requests carried none (e.g. no user).
+          example: support-prod
         project:
           type: string
-        agent:
+          description: The agent's project; set only when groupBy is agent
+          example: customer-support
+        cost:
           type: string
-        apiKey:
-          type: string
-        user:
-          type: string
-        llmProvider:
-          type: string
-        model:
-          type: string
-        costs:
+          description: Total over the kept months
+          example: "10048.98"
+        unpricedRequests:
+          $ref: "#/components/schemas/UnpricedRequests"
+        monthly:
           type: array
+          description: The 3 kept months, oldest first; the last is the current month so far
           items:
-            type: string
-        total:
+            $ref: "#/components/schemas/MonthlyCost"
+    UnpricedRequests:
+      type: object
+      description: Requests left out of cost over the kept months, by reason
+      required: [missingPrice, usageUnavailable]
+      properties:
+        missingPrice:
+          type: integer
+          format: int64
+          description: No price for the model
+        usageUnavailable:
+          type: integer
+          format: int64
+          description: The provider reported no token usage
+    MonthlyCost:
+      type: object
+      required: [month, cost]
+      properties:
+        month:
           type: string
-        missingPriceRequests:
-          type: integer
-          format: int64
-        usageUnavailableRequests:
-          type: integer
-          format: int64
+          description: UTC calendar month, YYYY-MM
+          example: "2026-11"
+        cost:
+          type: string
+          example: "1591.78"
     BudgetCurrentPeriod:
       type: object
       description: Spend in the current period

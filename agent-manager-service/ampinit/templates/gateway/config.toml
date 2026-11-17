@@ -222,7 +222,7 @@ append_resource_path_to_backend = false
 # Spend limits on LLM traffic, and what every LLM request costs, reported to Agent Manager.
 # This gateway runs alone, so the shared counters stay in the controller's memory; a
 # deployment of several gateways turns on [counters.redis] so they share one total.
-[budgets]
+[ai_cost_management.tracking]
 enabled = true
-[ai_cost_stats]
+[ai_cost_management.budgets]
 enabled = true

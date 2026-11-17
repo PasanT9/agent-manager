@@ -376,10 +376,13 @@ func TestBudgetService_CreateRefusesInvalidPayloads(t *testing.T) {
 		}, utils.ErrCodeReferenceNotFound, "consumers[2].id"},
 		{"named agent without its project", func(r *budgetRequest) {
 			r.Consumers = []spec.BudgetConsumer{{Type: "agent", Id: strPtr("hotel-booking")}}
-		}, utils.ErrCodeValidation, "consumers[0].id"},
+		}, utils.ErrCodeValidation, "consumers[0].project"},
+		{"project on a separate agent", func(r *budgetRequest) {
+			r.Consumers = []spec.BudgetConsumer{{Type: "agent", Allocation: strPtr("separate"), Project: strPtr("api-platform")}}
+		}, utils.ErrCodeValidation, "consumers[0].project"},
 		{"unknown agent", func(r *budgetRequest) {
-			r.Consumers = []spec.BudgetConsumer{{Type: "project", Id: strPtr("api-platform")}, {Type: "agent", Id: strPtr("nope")}}
-		}, utils.ErrCodeReferenceNotFound, "consumers[1].id"},
+			r.Consumers = []spec.BudgetConsumer{{Type: "agent", Project: strPtr("api-platform"), Id: strPtr("nope")}}
+		}, utils.ErrCodeReferenceNotFound, "consumers[0].id"},
 		{"shared api key without its name", func(r *budgetRequest) {
 			r.Consumers = []spec.BudgetConsumer{{Type: "apiKey"}}
 		}, utils.ErrCodeValidation, "consumers[0].id"},
@@ -602,6 +605,30 @@ func TestBudgetService_UpdateReplacesTheEditableFields(t *testing.T) {
 	assert.Nil(t, resp.Spec.Limit.BlockAt)
 }
 
+func TestFixedFieldsUnchanged_AllProviderResourceFormsAreEquivalent(t *testing.T) {
+	shared := budgetAllocationShared
+	explicit := &models.BudgetResource{Type: budgetTypeLLMProvider, Allocation: budgetAllocationShared}
+	request := budgetRequest{
+		Limit: spec.BudgetLimit{Period: "month"},
+		Resource: &spec.BudgetResource{
+			Type: budgetTypeLLMProvider, Allocation: &shared,
+		},
+	}
+	stored := &models.Budget{Configuration: models.BudgetConfig{Limit: models.BudgetLimit{Period: "month"}}}
+	require.NoError(t, fixedFieldsUnchanged(stored, request))
+
+	stored.Configuration.Resource = explicit
+	request.Resource = nil
+	require.NoError(t, fixedFieldsUnchanged(stored, request))
+
+	request.Resource = &spec.BudgetResource{
+		Type: budgetTypeLLMProvider, Allocation: &shared, Id: strPtr("openai"),
+	}
+	err := fixedFieldsUnchanged(stored, request)
+	require.Error(t, err)
+	assert.Equal(t, utils.ErrCodeValidation, budgetErrorCode(t, err), "a real resource change remains forbidden")
+}
+
 func TestBudgetService_UpdateRefusals(t *testing.T) {
 	ok := func() budgetUpdateRequest {
 		return budgetUpdateRequest{DisplayName: strPtr("Team A"), Limit: budgetUpdateLimit{Amount: "150.00", Action: "block"}}
@@ -616,6 +643,9 @@ func TestBudgetService_UpdateRefusals(t *testing.T) {
 		{"gateway budget", "from-gateway", func(*budgetUpdateRequest) {}, utils.ErrCodeBudgetReadOnly},
 		{"bad status", "team-a", func(r *budgetUpdateRequest) { r.Status = strPtr("paused") }, utils.ErrCodeValidation},
 		{"bad amount", "team-a", func(r *budgetUpdateRequest) { r.Limit.Amount = "0" }, utils.ErrCodeValidation},
+		// Amounts a gateway's schema refuses are refused here too, so none is saved unenforced.
+		{"leading zero", "team-a", func(r *budgetUpdateRequest) { r.Limit.Amount = "0100" }, utils.ErrCodeValidation},
+		{"13 whole digits", "team-a", func(r *budgetUpdateRequest) { r.Limit.Amount = "1000000000000" }, utils.ErrCodeValidation},
 		{"blockAt with allow", "team-a", func(r *budgetUpdateRequest) {
 			r.Limit.Action, r.Limit.BlockAt = "allow", budgetI32(50)
 		}, utils.ErrCodeValidation},
@@ -754,14 +784,15 @@ func TestBudgetService_ProjectAgentAndAPIKeyBudgets(t *testing.T) {
 	req := budgetTestRequest()
 	req.Consumers = []spec.BudgetConsumer{
 		{Type: "project", Id: strPtr("api-platform")},
-		{Type: "agent", Id: strPtr("hotel-booking")},
+		{Type: "agent", Project: strPtr("api-platform"), Id: strPtr("hotel-booking")},
 		{Type: "apiKey", Allocation: strPtr("separate")},
 	}
 	req.Exemptions = []spec.BudgetExemption{{Type: "attribute", Expression: strPtr(budgetAdminExpr)}}
 	resp, err := env.create(context.Background(), budgetTestOrg, "alice", req)
 	require.NoError(t, err)
 	require.Len(t, resp.Spec.Consumers, 3)
-	assert.Nil(t, env.created[0].Configuration.Consumers[1].Project, "the stored agent names no project: the project consumer does")
+	require.NotNil(t, env.created[0].Configuration.Consumers[1].Project, "the agent is stored with its project")
+	assert.Equal(t, "api-platform", *resp.Spec.Consumers[1].Project, "and returned with it")
 
 	kind := BuildBudgetKind(resp.Metadata.Name, budgetTestOrgName, env.created[0].Configuration, true)
 	agent := kind.Spec.Consumers[1]
@@ -851,4 +882,18 @@ func TestBudgetService_UsageListsAllowancesByHighestSpend(t *testing.T) {
 	assert.Equal(t, utils.ErrCodeBudgetNotFound, budgetErrorCode(t, err))
 	_, err = env.svc.Usage(context.Background(), budgetTestOrg, "team-a", 101, 0)
 	assert.Equal(t, utils.ErrCodeValidation, budgetErrorCode(t, err))
+}
+
+// A budget stored before consumers took a project gets its agent's project from its
+// project consumer, in responses and in the kind gateways get.
+func TestWithAgentProjects_FillsOlderBudgets(t *testing.T) {
+	project, agent := "api-platform", "hotel-booking"
+	older := []models.BudgetConsumer{
+		{Type: budgetTypeProject, Allocation: budgetAllocationShared, ID: &project},
+		{Type: budgetTypeAgent, Allocation: budgetAllocationShared, ID: &agent},
+	}
+	got := withAgentProjects(older)
+	require.NotNil(t, got[1].Project)
+	assert.Equal(t, project, *got[1].Project)
+	assert.Nil(t, older[1].Project, "the stored consumers are not changed")
 }

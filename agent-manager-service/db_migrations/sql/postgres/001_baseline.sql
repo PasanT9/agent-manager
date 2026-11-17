@@ -362,6 +362,7 @@ CREATE TABLE budgets (
     configuration JSONB NOT NULL,
     created_by VARCHAR(255),
     CONSTRAINT pk_budgets PRIMARY KEY (id),
+    CONSTRAINT uq_budgets_org_id_id UNIQUE (org_id, id),
     CONSTRAINT fk_budgets_org_id_id FOREIGN KEY (org_id, id) REFERENCES artifacts (org_id, id) ON DELETE CASCADE,
     CONSTRAINT fk_budgets_org_id_gateway_id FOREIGN KEY (org_id, gateway_id) REFERENCES gateways (org_id, id),
     CONSTRAINT fk_budgets_org_id_project_id FOREIGN KEY (org_id, project_id) REFERENCES projects (org_id, id),
@@ -380,10 +381,10 @@ CREATE TABLE budget_usage (
     spent VARCHAR(32) NOT NULL,
     unpriced_requests BIGINT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
-    CONSTRAINT pk_budget_usage PRIMARY KEY (budget_id, allowance_id),
-    CONSTRAINT fk_budget_usage_budget_id FOREIGN KEY (budget_id) REFERENCES budgets (id) ON DELETE CASCADE
+    CONSTRAINT pk_budget_usage PRIMARY KEY (budget_id, allowance_id, period_start),
+    CONSTRAINT fk_budget_usage_org_id_budget_id FOREIGN KEY (org_id, budget_id) REFERENCES budgets (org_id, id) ON DELETE CASCADE
 );
-CREATE INDEX idx_budget_usage_org_id ON budget_usage (org_id);
+CREATE INDEX idx_budget_usage_org_id_budget_id_period_start ON budget_usage (org_id, budget_id, period_start);
 
 CREATE TABLE cost_usage (
     org_id UUID NOT NULL,

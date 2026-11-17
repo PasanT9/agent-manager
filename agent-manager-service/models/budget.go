@@ -100,7 +100,7 @@ type BudgetConsumer struct {
 	Allocation string  `json:"allocation"`
 	ID         *string `json:"id,omitempty"`
 	Expression *string `json:"expression,omitempty"`
-	// Project is set only in the kind sent to gateways, on a named agent: its project.
+	// Project is a shared agent's project (agent names are unique only per project).
 	Project *string `json:"project,omitempty"`
 }
 

@@ -19,6 +19,7 @@ package repositories
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"gorm.io/gorm"
@@ -32,9 +33,9 @@ import (
 //
 //go:generate moq -rm -fmt goimports -skip-ensure -pkg repomocks -out repomocks/cost_usage_repository_mock.go . CostUsageRepository:CostUsageRepositoryMock
 type CostUsageRepository interface {
-	// Record merges a gateway's report into its row, in one transaction: each total keeps
-	// the higher value (every gateway reports the shared total; one may lag).
-	Record(ctx context.Context, u models.CostUsage) error
+	// Record merges a gateway's reports into their rows, all in one transaction: each
+	// total keeps the higher value (every gateway reports the shared total; one may lag).
+	Record(ctx context.Context, rows []models.CostUsage) error
 	// Since returns the organization's rows from the month starting at from.
 	Since(ctx context.Context, ouID string, from time.Time) ([]models.CostUsage, error)
 	// DeleteBefore deletes every organization's rows of months before before, and
@@ -51,47 +52,76 @@ func NewCostUsageRepository(db *gorm.DB) CostUsageRepository {
 	return &costUsageRepository{db: db}
 }
 
-func (r *costUsageRepository) Record(ctx context.Context, u models.CostUsage) error {
-	u.Month = u.Month.UTC()
-	u.UpdatedAt = dbx.Now()
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		const where = "org_id = ? AND month = ? AND cost_key = ?"
-		args := []any{u.OUID, u.Month, u.CostKey}
-		locked, err := dbx.LockRows(tx, "cost_usage", "cost", where, args...)
-		if err != nil {
-			return err
+func (r *costUsageRepository) Record(ctx context.Context, rows []models.CostUsage) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	now := dbx.Now()
+	batch := make([]models.CostUsage, len(rows))
+	for i, u := range rows {
+		u.Month = u.Month.UTC()
+		u.UpdatedAt = now
+		batch[i] = u
+	}
+	// Rows are locked in key order, so two batches never wait on each other's rows.
+	sort.Slice(batch, func(i, j int) bool {
+		a, b := batch[i], batch[j]
+		if a.OUID != b.OUID {
+			return a.OUID < b.OUID
 		}
-		if locked == 0 {
-			stored := u
-			inserted, err := dbx.InsertIfAbsent(tx, &stored)
-			if err != nil || inserted {
-				return err
-			}
-			// Another report inserted it first: merge under its lock.
-			if err := dbx.LockRow(tx, "cost_usage", "cost", where, args...); err != nil {
-				return err
-			}
+		if !a.Month.Equal(b.Month) {
+			return a.Month.Before(b.Month)
 		}
-		var current models.CostUsage
-		if err := tx.Where(where, args...).Take(&current).Error; err != nil {
-			return err
-		}
-		updates := map[string]any{}
-		if greater(u.Cost, current.Cost) {
-			updates["cost"] = u.Cost
-		}
-		if u.MissingPriceRequests > current.MissingPriceRequests {
-			updates["missing_price_requests"] = u.MissingPriceRequests
-		}
-		if u.UsageUnavailableRequests > current.UsageUnavailableRequests {
-			updates["usage_unavailable_requests"] = u.UsageUnavailableRequests
-		}
-		if len(updates) == 0 {
-			return nil
-		}
-		updates["updated_at"] = u.UpdatedAt
-		return tx.Model(&models.CostUsage{}).Where(where, args...).Updates(updates).Error
+		return a.CostKey.String() < b.CostKey.String()
 	})
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, u := range batch {
+			if err := mergeCostRow(tx, u); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// mergeCostRow merges one report into its row under the row's lock.
+func mergeCostRow(tx *gorm.DB, u models.CostUsage) error {
+	const where = "org_id = ? AND month = ? AND cost_key = ?"
+	args := []any{u.OUID, u.Month, u.CostKey}
+	locked, err := dbx.LockRows(tx, "cost_usage", "cost", where, args...)
+	if err != nil {
+		return err
+	}
+	if locked == 0 {
+		stored := u
+		inserted, err := dbx.InsertIfAbsent(tx, &stored)
+		if err != nil || inserted {
+			return err
+		}
+		// Another report inserted it first: merge under its lock.
+		if err := dbx.LockRow(tx, "cost_usage", "cost", where, args...); err != nil {
+			return err
+		}
+	}
+	var current models.CostUsage
+	if err := tx.Where(where, args...).Take(&current).Error; err != nil {
+		return err
+	}
+	updates := map[string]any{}
+	if greater(u.Cost, current.Cost) {
+		updates["cost"] = u.Cost
+	}
+	if u.MissingPriceRequests > current.MissingPriceRequests {
+		updates["missing_price_requests"] = u.MissingPriceRequests
+	}
+	if u.UsageUnavailableRequests > current.UsageUnavailableRequests {
+		updates["usage_unavailable_requests"] = u.UsageUnavailableRequests
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	updates["updated_at"] = u.UpdatedAt
+	return tx.Model(&models.CostUsage{}).Where(where, args...).Updates(updates).Error
 }
 
 func (r *costUsageRepository) Since(ctx context.Context, ouID string, from time.Time) ([]models.CostUsage, error) {

@@ -63,7 +63,7 @@ func TestBudgetUsageRepository_RecordMergesAndQueuesWarningsOnce(t *testing.T) {
 		}}
 	}
 
-	queued, err := repo.Record(ctx, report(november, "80.14", 3), warn)
+	queued, err := repo.Record(ctx, []models.BudgetUsage{report(november, "80.14", 3)}, warn)
 	require.NoError(t, err)
 	require.Len(t, queued, 1, "the first crossing is queued")
 	assert.Equal(t, models.EventDeliveryPending, queued[0].Status)
@@ -72,7 +72,7 @@ func TestBudgetUsageRepository_RecordMergesAndQueuesWarningsOnce(t *testing.T) {
 	require.NotNil(t, got.BudgetID)
 	assert.Equal(t, budgetID, *got.BudgetID)
 
-	queued, err = repo.Record(ctx, report(november, "90", 2), warn)
+	queued, err = repo.Record(ctx, []models.BudgetUsage{report(november, "90", 2)}, warn)
 	require.NoError(t, err)
 	assert.Empty(t, queued, "the same warning is queued once")
 	rows, err := repo.ForBudget(ctx, budgetID)
@@ -83,21 +83,26 @@ func TestBudgetUsageRepository_RecordMergesAndQueuesWarningsOnce(t *testing.T) {
 	assert.Equal(t, map[string]string{"agent": "support-agent"}, rows[0].Allowance)
 
 	seen = nil
-	_, err = repo.Record(ctx, report(november, "85", 3), warn)
+	_, err = repo.Record(ctx, []models.BudgetUsage{report(november, "85", 3)}, warn)
 	require.NoError(t, err)
 	assert.Empty(t, seen, "a lower total changes nothing, so nothing is checked")
 
-	_, err = repo.Record(ctx, report(november.AddDate(0, -1, 0), "500", 9), warn)
+	_, err = repo.Record(ctx, []models.BudgetUsage{report(november.AddDate(0, -1, 0), "500", 9)}, warn)
 	require.NoError(t, err)
 	rows, _ = repo.ForBudget(ctx, budgetID)
-	assert.Equal(t, "90", rows[0].Spent, "an earlier period is ignored")
+	require.Len(t, rows, 1, "reads show each allowance once")
+	assert.Equal(t, "90", rows[0].Spent, "a late report for an earlier period keeps the current one")
 
 	december := november.AddDate(0, 1, 0)
-	_, err = repo.Record(ctx, report(december, "1.5", 0), nil)
+	_, err = repo.Record(ctx, []models.BudgetUsage{report(december, "1.5", 0)}, nil)
 	require.NoError(t, err)
 	rows, _ = repo.ForBudget(ctx, budgetID)
-	assert.Equal(t, "1.5", rows[0].Spent, "a new period replaces the row")
+	require.Len(t, rows, 1)
+	assert.Equal(t, "1.5", rows[0].Spent, "reads show the latest period")
 	assert.True(t, rows[0].PeriodStart.Equal(december))
+	var periods int64
+	require.NoError(t, gdb.Model(&models.BudgetUsage{}).Where("budget_id = ?", budgetID).Count(&periods).Error)
+	assert.Equal(t, int64(3), periods, "October, November and December each keep their own row")
 
 	more, err := repo.QueueWarnings(ctx, []models.EventDelivery{{
 		BudgetID: &budgetID, OUID: ou, DestinationID: dest.ID, SubscriptionIDs: []string{},
@@ -121,10 +126,10 @@ func TestBudgetUsageRepository_ForBudgets(t *testing.T) {
 		budget uuid.UUID
 		org    string
 	}{{a, ou}, {a, ou}, {b, ou}, {elsewhere, other}} {
-		_, err := repo.Record(ctx, models.BudgetUsage{
+		_, err := repo.Record(ctx, []models.BudgetUsage{{
 			BudgetID: row.budget, AllowanceID: uuid.New(), OUID: row.org, Allowance: map[string]string{},
 			PeriodStart: november, Spent: "1", UpdatedAt: november,
-		}, nil)
+		}}, nil)
 		require.NoError(t, err)
 	}
 	rows, err := repo.ForBudgets(ctx, ou, []uuid.UUID{a, b, elsewhere})

@@ -397,6 +397,7 @@ tables:
       - {name: configuration, type: json}
       - {name: created_by, type: text, size: 255, nullable: true}
     primary_key: [id]
+    unique: [[org_id, id]]
     foreign_keys:
       - {columns: [org_id, id], references: artifacts, ref_columns: [org_id, id], on_delete: cascade}
       - {columns: [org_id, gateway_id], references: gateways, ref_columns: [org_id, id]}
@@ -406,7 +407,7 @@ tables:
       - "(origin = 'gateway_api') = (gateway_id IS NOT NULL)"
     indexes: [[gateway_id], [project_id]]
 
-  # One row per budget allowance: its spend in the current period, as gateways report it
+  # One row per budget allowance and period: its spend, as gateways report it
   # (Interfaces 1.2). Spend is a decimal string in USD, compared in code.
   - name: budget_usage
     columns:
@@ -418,10 +419,10 @@ tables:
       - {name: spent, type: text, size: 32}
       - {name: unpriced_requests, type: bigint}
       - {name: updated_at, type: time}
-    primary_key: [budget_id, allowance_id]
+    primary_key: [budget_id, allowance_id, period_start]
     foreign_keys:
-      - {columns: [budget_id], references: budgets, ref_columns: [id], on_delete: cascade}
-    indexes: [[org_id]]
+      - {columns: [org_id, budget_id], references: budgets, ref_columns: [org_id, id], on_delete: cascade}
+    indexes: [[org_id, budget_id, period_start]]
 
   # What LLM traffic cost per month and combination of project, agent, API key, user,
   # provider and model, as gateways report it (AI cost stats, Interfaces 1.3). Values are

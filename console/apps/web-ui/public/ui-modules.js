@@ -44,6 +44,7 @@ window.__UI_MODULES__ = {
   'ai-gateway/agent-security': true,
   'ai-gateway/configure-agent': true,
   'ai-gateway/external-agent': true,
+  'ai-gateway/ai-cost-management': true,
 
   'ai-observability': true,
   'ai-observability/traces': true,

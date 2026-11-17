@@ -20,43 +20,43 @@ import (
 	"strings"
 )
 
-// AICostsAPIService AICostsAPI service
-type AICostsAPIService service
+// CostsAPIService CostsAPI service
+type CostsAPIService service
 
-type ApiGetAICostsRequest struct {
+type ApiGetCostsRequest struct {
 	ctx        context.Context
-	ApiService *AICostsAPIService
+	ApiService *CostsAPIService
 	orgName    string
 	groupBy    *string
 	filter     *[]string
 }
 
-func (r ApiGetAICostsRequest) GroupBy(groupBy string) ApiGetAICostsRequest {
+func (r ApiGetCostsRequest) GroupBy(groupBy string) ApiGetCostsRequest {
 	r.groupBy = &groupBy
 	return r
 }
 
 // type:value with type project, agent (project/agent), apiKey, user, llmProvider or model; a comma list matches any of the values; repeat for AND.
-func (r ApiGetAICostsRequest) Filter(filter []string) ApiGetAICostsRequest {
+func (r ApiGetCostsRequest) Filter(filter []string) ApiGetCostsRequest {
 	r.filter = &filter
 	return r
 }
 
-func (r ApiGetAICostsRequest) Execute() (*CostReport, *http.Response, error) {
-	return r.ApiService.GetAICostsExecute(r)
+func (r ApiGetCostsRequest) Execute() (*CostReport, *http.Response, error) {
+	return r.ApiService.GetCostsExecute(r)
 }
 
 /*
-GetAICosts AI costs
+GetCosts Costs
 
-What LLM traffic cost in the last 3 months, the current one so far, grouped by one value (Interfaces 2.6). Counted by gateways with AI cost stats on, with or without budgets. Every group, highest total first; no paging.
+What LLM traffic cost in the last 3 months, the current one so far, grouped by one value (Interfaces 2.6). Counted by gateways with cost tracking on, with or without budgets. Every group, highest cost first; no paging. Needs cost:read.
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param orgName Organization name
-	@return ApiGetAICostsRequest
+	@return ApiGetCostsRequest
 */
-func (a *AICostsAPIService) GetAICosts(ctx context.Context, orgName string) ApiGetAICostsRequest {
-	return ApiGetAICostsRequest{
+func (a *CostsAPIService) GetCosts(ctx context.Context, orgName string) ApiGetCostsRequest {
+	return ApiGetCostsRequest{
 		ApiService: a,
 		ctx:        ctx,
 		orgName:    orgName,
@@ -66,7 +66,7 @@ func (a *AICostsAPIService) GetAICosts(ctx context.Context, orgName string) ApiG
 // Execute executes the request
 //
 //	@return CostReport
-func (a *AICostsAPIService) GetAICostsExecute(r ApiGetAICostsRequest) (*CostReport, *http.Response, error) {
+func (a *CostsAPIService) GetCostsExecute(r ApiGetCostsRequest) (*CostReport, *http.Response, error) {
 	var (
 		localVarHTTPMethod  = http.MethodGet
 		localVarPostBody    interface{}
@@ -74,12 +74,12 @@ func (a *AICostsAPIService) GetAICostsExecute(r ApiGetAICostsRequest) (*CostRepo
 		localVarReturnValue *CostReport
 	)
 
-	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "AICostsAPIService.GetAICosts")
+	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "CostsAPIService.GetCosts")
 	if err != nil {
 		return localVarReturnValue, nil, &GenericOpenAPIError{error: err.Error()}
 	}
 
-	localVarPath := localBasePath + "/orgs/{orgName}/ai-costs"
+	localVarPath := localBasePath + "/orgs/{orgName}/costs"
 	localVarPath = strings.Replace(localVarPath, "{"+"orgName"+"}", url.PathEscape(parameterValueToString(r.orgName, "orgName")), -1)
 
 	localVarHeaderParams := make(map[string]string)

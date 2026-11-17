@@ -20,7 +20,7 @@ import (
 //			DeleteBeforeFunc: func(ctx context.Context, before time.Time) (int64, error) {
 //				panic("mock out the DeleteBefore method")
 //			},
-//			RecordFunc: func(ctx context.Context, u models.CostUsage) error {
+//			RecordFunc: func(ctx context.Context, rows []models.CostUsage) error {
 //				panic("mock out the Record method")
 //			},
 //			SinceFunc: func(ctx context.Context, ouID string, from time.Time) ([]models.CostUsage, error) {
@@ -37,7 +37,7 @@ type CostUsageRepositoryMock struct {
 	DeleteBeforeFunc func(ctx context.Context, before time.Time) (int64, error)
 
 	// RecordFunc mocks the Record method.
-	RecordFunc func(ctx context.Context, u models.CostUsage) error
+	RecordFunc func(ctx context.Context, rows []models.CostUsage) error
 
 	// SinceFunc mocks the Since method.
 	SinceFunc func(ctx context.Context, ouID string, from time.Time) ([]models.CostUsage, error)
@@ -55,8 +55,8 @@ type CostUsageRepositoryMock struct {
 		Record []struct {
 			// Ctx is the ctx argument value.
 			Ctx context.Context
-			// U is the u argument value.
-			U models.CostUsage
+			// Rows is the rows argument value.
+			Rows []models.CostUsage
 		}
 		// Since holds details about calls to the Since method.
 		Since []struct {
@@ -110,21 +110,21 @@ func (mock *CostUsageRepositoryMock) DeleteBeforeCalls() []struct {
 }
 
 // Record calls RecordFunc.
-func (mock *CostUsageRepositoryMock) Record(ctx context.Context, u models.CostUsage) error {
+func (mock *CostUsageRepositoryMock) Record(ctx context.Context, rows []models.CostUsage) error {
 	if mock.RecordFunc == nil {
 		panic("CostUsageRepositoryMock.RecordFunc: method is nil but CostUsageRepository.Record was just called")
 	}
 	callInfo := struct {
-		Ctx context.Context
-		U   models.CostUsage
+		Ctx  context.Context
+		Rows []models.CostUsage
 	}{
-		Ctx: ctx,
-		U:   u,
+		Ctx:  ctx,
+		Rows: rows,
 	}
 	mock.lockRecord.Lock()
 	mock.calls.Record = append(mock.calls.Record, callInfo)
 	mock.lockRecord.Unlock()
-	return mock.RecordFunc(ctx, u)
+	return mock.RecordFunc(ctx, rows)
 }
 
 // RecordCalls gets all the calls that were made to Record.
@@ -132,12 +132,12 @@ func (mock *CostUsageRepositoryMock) Record(ctx context.Context, u models.CostUs
 //
 //	len(mockedCostUsageRepository.RecordCalls())
 func (mock *CostUsageRepositoryMock) RecordCalls() []struct {
-	Ctx context.Context
-	U   models.CostUsage
+	Ctx  context.Context
+	Rows []models.CostUsage
 } {
 	var calls []struct {
-		Ctx context.Context
-		U   models.CostUsage
+		Ctx  context.Context
+		Rows []models.CostUsage
 	}
 	mock.lockRecord.RLock()
 	calls = mock.calls.Record
