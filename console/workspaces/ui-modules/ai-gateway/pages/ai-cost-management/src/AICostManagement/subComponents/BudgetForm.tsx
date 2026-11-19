@@ -28,15 +28,14 @@ import {
   Autocomplete,
   Box,
   Button,
-  Card,
-  CardContent,
   Chip,
-  Divider,
+  FormControlLabel,
   IconButton,
   InputAdornment,
-  Link,
   Menu,
   MenuItem,
+  Radio,
+  RadioGroup,
   Skeleton,
   Stack,
   TextField,
@@ -45,15 +44,23 @@ import {
   Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
-import { Lock, Plus, ServerCrash, X } from "@wso2/oxygen-ui-icons-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Lock,
+  Plus,
+  SearchX,
+  ServerCrash,
+  X,
+} from "@wso2/oxygen-ui-icons-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   useCreateBudget,
   useGetBudget,
-  useListAgents,
   useListBudgets,
   useListEventDestinations,
   useListLLMProviders,
+  useListLLMProvidersAPIKeys,
   useListOrgAgents,
   useListProjects,
   useUpdateBudget,
@@ -69,11 +76,14 @@ import {
   type BudgetAllocation,
 } from "@agent-management-platform/types";
 import {
+  allocationFormula,
   budgetFromForm,
   defaultExpression,
   EMPTY_FORM,
+  consumerBreaksExemptions,
   exemptionKinds,
   expressionPlaceholder,
+  MAX_EXPRESSION_LENGTH,
   formFor,
   formFromBudget,
   handleFor,
@@ -81,8 +91,11 @@ import {
   newConsumer,
   newExemption,
   startFromQuery,
+  duplicateNameError,
+  isBudgetNotFound,
   serverFieldError,
   validateBudgetForm,
+  type AllocationFactor,
   type BudgetFormErrors,
   type BudgetFormState,
   type ConsumerRow,
@@ -91,44 +104,32 @@ import {
 } from "../budgetForm";
 import { PERIOD_LABELS, inSentence } from "./budgetLabels";
 
-interface BudgetFormPageProps {
+interface BudgetWizardProps {
   orgName?: string;
-  /** Set on a project's page: the new budget is owned by this project. */
-  projectName?: string;
   /** Set to edit an existing budget. */
   budgetName?: string;
-  /** Where Cancel returns to. */
+  /** The page's back link: the Budgets list, or the budget. */
   backHref: string;
   backLabel: string;
-  /** A budget's detail page, opened after saving. */
-  viewHref: (budgetName: string) => string;
+  /** After a save: the budget's name. */
+  onSaved: (budgetName: string) => void;
 }
 
-/** The form's three parts and six cards, in page order (UX 3). */
-const PARTS = [
-  {
-    id: "about",
-    title: "About the budget",
-    cards: [{ id: "details", n: 1, title: "Budget details" }],
-  },
-  {
-    id: "scope",
-    title: "Scope",
-    cards: [
-      { id: "resources", n: 2, title: "Resources" },
-      { id: "consumers", n: 3, title: "Consumers" },
-      { id: "exemptions", n: 4, title: "Exemptions" },
-    ],
-  },
-  {
-    id: "limit-and-alerts",
-    title: "Limit and alerts",
-    cards: [
-      { id: "limit", n: 5, title: "Limit" },
-      { id: "warnings", n: 6, title: "Warnings" },
-    ],
-  },
-];
+/** The form's pages, in order. */
+const STEPS = [
+  { key: "details", label: "Details" },
+  { key: "resource", label: "Resources" },
+  { key: "consumers", label: "Consumers and exemptions" },
+  { key: "limit", label: "Limits & alerts" },
+] as const;
+
+/** The page a field's error belongs to. */
+function stepOfField(field: string): number {
+  if (field === "displayName" || field === "description") return 0;
+  if (field === "providerId") return 1;
+  if (field.startsWith("consumers") || field.startsWith("exemptions")) return 2;
+  return 3;
+}
 
 const KIND_LABEL: Record<ScopeKind, string> = {
   project: "Project",
@@ -147,7 +148,6 @@ const CONSUMER_KINDS: ScopeKind[] = [
   "attribute",
 ];
 const THRESHOLD_SUGGESTIONS = [50, 80, 90, 100];
-const PILL = { borderRadius: 999, textTransform: "none" } as const;
 
 type Option = { value: string; label: string };
 
@@ -183,93 +183,48 @@ function LoadFailed({ list }: { list: ListState }) {
   );
 }
 
-const usd = (v: number) =>
-  v.toLocaleString("en-US", { style: "currency", currency: "USD" });
-
-/** "PART n OF 3", the part's title and purpose, then a rule. */
-function PartHeading({ n, id }: { n: number; id: string }) {
-  const part = PARTS[n - 1];
-  return (
-    <Box id={id} sx={{ scrollMarginTop: 80, pt: n === 1 ? 0 : 2 }}>
-      <Typography
-        variant="caption"
-        color="primary.main"
-        fontWeight={600}
-        sx={{ letterSpacing: "0.08em" }}
-      >
-        PART {n} OF 3
-      </Typography>
-      <Typography variant="h5" sx={{ mt: 0.25 }}>
-        {part.title}
-      </Typography>
-      <Divider sx={{ mt: 2 }} />
-    </Box>
-  );
-}
-
-/** A numbered card with its purpose; optional ones say so, locked ones show a lock. */
-function FormCard({
-  id,
-  n,
+/** A titled section of a step; optional ones say so, locked ones show a lock. */
+function Section({
   title,
-  purpose,
+  description,
   optional,
   locked,
   children,
 }: {
-  id: string;
-  n: number;
   title: string;
-  purpose: string;
+  /** One line under the title, only where a choice needs it. */
+  description?: string;
   optional?: boolean;
   locked?: boolean;
   children: ReactNode;
 }) {
   return (
-    <Card id={id} variant="outlined" sx={{ scrollMarginTop: 80 }}>
-      <Box sx={{ px: 3, py: 2.5 }}>
-        <Stack direction="row" spacing={1.5} alignItems="center">
-          <Box
-            sx={{
-              width: 28,
-              height: 28,
-              borderRadius: "50%",
-              display: "grid",
-              placeItems: "center",
-              bgcolor: "action.hover",
-              color: "primary.main",
-              typography: "body2",
-              fontWeight: 700,
-              flexShrink: 0,
-            }}
-          >
-            {n}
-          </Box>
-          <Typography variant="h6">{title}</Typography>
+    <Box component="section">
+      <Stack direction="row" spacing={1} alignItems="center">
+        <Typography variant="subtitle1">
+          {title}
           {optional && (
-            <Chip size="small" variant="outlined" label="Optional" />
+            <Typography component="span" variant="body2" color="text.secondary">
+              {" "}
+              (optional)
+            </Typography>
           )}
-          {locked && (
-            <Tooltip title="Fixed once the budget is created. Create a new budget to change it.">
-              <Box sx={{ display: "flex", color: "text.secondary" }}>
-                <Lock size={16} />
-              </Box>
-            </Tooltip>
-          )}
-        </Stack>
-        <Typography
-          variant="body2"
-          color="text.secondary"
-          sx={{ mt: 0.5, ml: 5.5 }}
-        >
-          {purpose}
         </Typography>
-      </Box>
-      <Divider />
-      <CardContent sx={{ p: 3, "&:last-child": { pb: 3 } }}>
-        {children}
-      </CardContent>
-    </Card>
+        {locked && (
+          <Tooltip title="Fixed once the budget is created.">
+            <Box sx={{ display: "flex", color: "text.secondary" }}>
+              <Lock size={16} />
+            </Box>
+          </Tooltip>
+        )}
+      </Stack>
+      {description && (
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
+          {description}
+        </Typography>
+      )}
+      <Box sx={{ mt: 2 }}>{children}</Box>
+    </Box>
   );
 }
 
@@ -332,38 +287,72 @@ export function Segmented<T extends string>({
   );
 }
 
-/** Shared or separate allowances, with what each means for this kind. */
-function AllocationField({
+/** Two or more choices as radio buttons in a row. */
+function ChoiceField<T extends string>({
+  label,
   value,
+  options,
   onChange,
   disabled,
-  each,
 }: {
-  value: BudgetAllocation;
-  onChange: (v: BudgetAllocation) => void;
+  label: string;
+  value: T;
+  options: { value: T; label: string; description?: string }[];
+  onChange: (v: T) => void;
   disabled?: boolean;
-  /** What gets its own allowance, e.g. "LLM provider", "user". */
-  each: string;
 }) {
+  const described = options.some((o) => o.description);
   return (
-    <Field label="Budget allocation">
-      <Segmented
-        label="Budget allocation"
+    <Field label={label}>
+      <RadioGroup
+        row={!described}
         value={value}
-        disabled={disabled}
-        onChange={onChange}
-        options={[
-          { value: "shared", label: "Shared allowance" },
-          { value: "separate", label: "Separate allowances" },
-        ]}
-      />
-      <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-        {value === "separate"
-          ? `Each matching ${each} gets its own allowance.`
-          : "All matching usage draws from one allowance."}
-      </Typography>
+        onChange={(_, v) => onChange(v as T)}
+        aria-label={label}
+      >
+        {options.map((o) => (
+          <FormControlLabel
+            key={o.value}
+            value={o.value}
+            control={<Radio size="small" />}
+            disabled={disabled}
+            sx={described ? { alignItems: "flex-start", mb: 1 } : undefined}
+            label={
+              o.description ? (
+                <Box sx={{ pt: 0.75 }}>
+                  <Typography variant="body2" fontWeight={500}>
+                    {o.label}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {o.description}
+                  </Typography>
+                </Box>
+              ) : (
+                <Typography variant="body2">{o.label}</Typography>
+              )
+            }
+          />
+        ))}
+      </RadioGroup>
     </Field>
   );
+}
+
+/** "Specific agent" or "Each agent separately": a consumer's two allocations. */
+function allocationChoices(
+  kind: ScopeKind,
+): { value: BudgetAllocation; label: string }[] {
+  if (kind === "attribute") {
+    return [
+      { value: "shared", label: "Requests matching a condition" },
+      { value: "separate", label: "Each value — independent limit" },
+    ];
+  }
+  const noun = inSentence(KIND_LABEL[kind]);
+  return [
+    { value: "shared", label: `Specific ${noun}` },
+    { value: "separate", label: `Each ${noun} — independent limit` },
+  ];
 }
 
 /** Picks a project, an agent or an LLM provider from a list, or names an API key. */
@@ -387,26 +376,16 @@ function ValuePicker({
   list?: ListState;
 }) {
   const empty =
-    kind === "agent"
-      ? "No agents yet. Add one from a project's Agents page."
-      : kind === "project" && placeholder.includes("LLM provider")
-        ? "No LLM providers yet. Add one under Resources → LLM service providers."
-        : "No projects yet. Add one from Projects.";
-  if (kind === "apiKey") {
-    return (
-      <TextInput
-        size="small"
-        fullWidth
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        disabled={disabled}
-        error={!!error}
-        helperText={error}
-        maxLength={INPUT_LIMITS.HANDLE}
-        hideCharacterCount
-      />
-    );
+    kind === "apiKey"
+      ? "No API keys on the selected LLM providers. Add one on the LLM provider's page."
+      : kind === "agent"
+        ? "No agents yet. Add one from a project's Agents page."
+        : kind === "project" && placeholder.includes("LLM provider")
+          ? "No LLM providers yet. Add one under Resources → LLM service providers."
+          : "No projects yet. Add one from Projects.";
+  // A saved key no longer listed (deleted, or an agent's own key) stays selectable.
+  if (kind === "apiKey" && value && !options.some((o) => o.value === value)) {
+    options = [...options, { value, label: value }];
   }
   const selected = options.find((o) => o.value === value) ?? null;
   return (
@@ -438,6 +417,7 @@ function ValuePicker({
 function ConditionBox({
   n,
   title = "Condition",
+  label,
   locked,
   note,
   onRemove,
@@ -446,6 +426,8 @@ function ConditionBox({
   n: number;
   /** "Condition" for consumers, "Exemption" for exemptions. */
   title?: string;
+  /** What it is about, after the number: "Condition 1 — User". */
+  label?: string;
   locked?: boolean;
   note?: string;
   onRemove?: () => void;
@@ -454,8 +436,9 @@ function ConditionBox({
   return (
     <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1.5, p: 2.5 }}>
       <Stack direction="row" justifyContent="space-between" alignItems="center">
-        <Typography variant="subtitle1" fontWeight={600}>
+        <Typography variant="body2" fontWeight={600}>
           {title} {n}
+          {label ? ` — ${label}` : ""}
         </Typography>
         {locked ? (
           <Stack
@@ -515,66 +498,18 @@ export function AddChip({
 }) {
   return (
     <Button
-      variant="outlined"
+      variant="text"
       size="small"
       startIcon={<Plus size={14} />}
       onClick={onClick}
       disabled={disabled}
-      sx={PILL}
+      sx={{ textTransform: "none", px: 1, ml: -1, typography: "body2" }}
     >
       {label}
     </Button>
   );
 }
 
-function OnThisPage({ locked }: { locked: string[] }) {
-  const lockedCards = new Set(locked);
-  return (
-    <Box
-      sx={{ position: "sticky", top: 88, display: { xs: "none", lg: "block" } }}
-    >
-      <Typography variant="caption" color="text.secondary" fontWeight={600}>
-        ON THIS PAGE
-      </Typography>
-      <Stack spacing={1.5} sx={{ mt: 1.5 }}>
-        {PARTS.map((part) => (
-          <Box key={part.id}>
-            <Link
-              href={`#${part.id}`}
-              underline="hover"
-              color="text.primary"
-              variant="body2"
-            >
-              {part.title}
-            </Link>
-            <Stack spacing={0.5} sx={{ mt: 0.5, pl: 1.5 }}>
-              {part.cards.map((card) => (
-                <Stack
-                  key={card.id}
-                  direction="row"
-                  spacing={0.5}
-                  alignItems="center"
-                >
-                  <Link
-                    href={`#${card.id}`}
-                    underline="hover"
-                    color="text.secondary"
-                    variant="body2"
-                  >
-                    {card.n}. {card.title}
-                  </Link>
-                  {lockedCards.has(card.id) && <Lock size={12} />}
-                </Stack>
-              ))}
-            </Stack>
-          </Box>
-        ))}
-      </Stack>
-    </Box>
-  );
-}
-
-/** Thresholds as chips, with an inline field to add one. */
 export function Thresholds({
   value,
   onChange,
@@ -586,20 +521,25 @@ export function Thresholds({
 }) {
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
+  const [draftError, setDraftError] = useState("");
   const add = () => {
     const n = Number.parseInt(draft, 10);
-    if (Number.isFinite(n))
-      onChange([...new Set([...value, n])].sort((a, b) => a - b));
+    // Refused here, with the reason next to the input, rather than added and flagged.
+    if (!Number.isFinite(n) || n < 1 || n > 1000) {
+      setDraftError("Enter a percentage from 1 to 1000.");
+      return;
+    }
+    if (value.includes(n)) {
+      setDraftError(`${n}% is already a threshold.`);
+      return;
+    }
+    onChange([...new Set([...value, n])].sort((a, b) => a - b));
     setDraft("");
+    setDraftError("");
     setAdding(false);
   };
   return (
     <Box>
-      {value.length === 0 && !adding && (
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-          No warning thresholds configured.
-        </Typography>
-      )}
       <Stack
         direction="row"
         spacing={1}
@@ -623,13 +563,18 @@ export function Thresholds({
                 (s) => !value.includes(s),
               ).map(String)}
               inputValue={draft}
-              onInputChange={(_, v) => setDraft(v.replace(/[^\d]/g, ""))}
+              onInputChange={(_, v) => {
+                setDraft(v.replace(/[^\d]/g, ""));
+                setDraftError("");
+              }}
               sx={{ width: 150 }}
               renderInput={(params) => (
                 <TextField
                   {...params}
                   autoFocus
                   placeholder="e.g. 80"
+                  error={!!draftError}
+                  helperText={draftError || undefined}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
@@ -662,7 +607,11 @@ export function Thresholds({
             <Button
               size="small"
               variant="text"
-              onClick={() => setAdding(false)}
+              onClick={() => {
+                setAdding(false);
+                setDraft("");
+                setDraftError("");
+              }}
             >
               Cancel
             </Button>
@@ -671,15 +620,16 @@ export function Thresholds({
           <AddChip label="Add warning" onClick={() => setAdding(true)} />
         )}
       </Stack>
-      <Typography
-        variant="caption"
-        color={error ? "error.main" : "text.secondary"}
-        component="div"
-        sx={{ mt: 1.5 }}
-      >
-        {error ??
-          "Enter a percentage between 1 and 1000. Values above 100 warn after the limit is exceeded."}
-      </Typography>
+      {error && (
+        <Typography
+          variant="caption"
+          color="error.main"
+          component="div"
+          sx={{ mt: 1.5 }}
+        >
+          {error}
+        </Typography>
+      )}
     </Box>
   );
 }
@@ -764,14 +714,18 @@ export function Channels({
 }
 
 /** Create or edit a budget: three parts, six numbered cards (UX 3-4). */
-export function BudgetFormPage({
+/**
+ * Create or edit a budget, one step at a time, as the console's other wizards do (the
+ * evaluation Monitor wizard): a page with a back link, Previous and Next under the
+ * content.
+ */
+export function BudgetWizard({
   orgName,
-  projectName,
   budgetName,
   backHref,
   backLabel,
-  viewHref,
-}: BudgetFormPageProps) {
+  onSaved,
+}: BudgetWizardProps) {
   const navigate = useNavigate();
   const editing = !!budgetName;
   const existing = useGetBudget({ orgName, budgetName });
@@ -781,10 +735,6 @@ export function BudgetFormPage({
   const providers = useListLLMProviders({ orgName });
   const projects = useListProjects({ orgName }, { limit: 100 });
   const orgAgents = useListOrgAgents({ orgName });
-  const projectAgents = useListAgents(
-    { orgName, projName: projectName },
-    { limit: 100 },
-  );
   const destinations = useListEventDestinations(orgName);
   const create = useCreateBudget({ orgName });
   const update = useUpdateBudget({ orgName, budgetName });
@@ -797,7 +747,6 @@ export function BudgetFormPage({
   );
   const [form, setForm] = useState<BudgetFormState>(start);
   const [initial, setInitial] = useState<BudgetFormState>(start);
-  const [submitted, setSubmitted] = useState(false);
   useEffect(() => {
     if (existing.data) {
       const loaded = formFromBudget(existing.data);
@@ -806,48 +755,97 @@ export function BudgetFormPage({
     }
   }, [existing.data]);
 
+  // API keys of the providers the budget covers: the one selected, or all of them.
+  const scopedProviders = (providers.data?.providers ?? []).filter(
+    (p) =>
+      form.resourceType === "all" ||
+      form.resourceAllocation === "separate" ||
+      p.id === form.providerId,
+  );
+  const providerKeys = useListLLMProvidersAPIKeys(
+    orgName,
+    scopedProviders.map((p) => p.uuid),
+  );
+
+  // The pages: an edit can open any of them; a new budget goes forward with Next.
+  const [step, setStep] = useState(0);
+  // Pages whose errors are shown: those Next or Save has checked.
+  const [checked, setChecked] = useState<Set<number>>(new Set());
+
   const isDirty = JSON.stringify(form) !== JSON.stringify(initial);
   const { allowNavigation } = useUnsavedChangesGuard(isDirty);
+  // A check that failed brings the first field in error into view and focuses it.
+  const [failedChecks, setFailedChecks] = useState(0);
+  useEffect(() => {
+    if (!failedChecks) return;
+    const first = document.querySelector<HTMLElement>('[aria-invalid="true"]');
+    first?.scrollIntoView({ behavior: "smooth", block: "center" });
+    first?.focus({ preventScroll: true });
+  }, [failedChecks, step]);
   // A failed save's message sits next to the field the server named, until the next change.
   const [serverErrors, setServerErrors] = useState<BudgetFormErrors>({});
+  const duplicateName = duplicateNameError(
+    form.displayName,
+    budgets.data?.budgets ?? [],
+    budgetName,
+  );
+  const allErrors: BudgetFormErrors = {
+    ...validateBudgetForm(form),
+    ...(duplicateName ? { displayName: duplicateName } : {}),
+  };
+  const errorsOn = (n: number) =>
+    Object.keys(allErrors).filter((k) => stepOfField(k) === n);
   const errors: BudgetFormErrors = {
-    ...(submitted ? validateBudgetForm(form) : {}),
+    ...Object.fromEntries(
+      Object.entries(allErrors).filter(([k]) => checked.has(stepOfField(k))),
+    ),
     ...serverErrors,
+  };
+  const patch = (changes: Partial<BudgetFormState>) => {
+    setServerErrors({});
+    setForm((f) => ({ ...f, ...changes }));
   };
   const set = <K extends keyof BudgetFormState>(
     key: K,
     value: BudgetFormState[K],
-  ) => {
-    setServerErrors({});
-    setForm((f) => ({ ...f, [key]: value }));
-  };
+  ) => patch({ [key]: value } as Partial<BudgetFormState>);
 
   const providerOptions: Option[] = (providers.data?.providers ?? []).map(
-    (p) => ({
-      value: p.id,
-      label: p.name,
+    (p) => ({ value: p.id, label: p.name }),
+  );
+  // API keys by the name gateways see, shown as "Mock OpenAI / team-alpha-key"
+  // (owner first, as agents are shown "Project / Agent").
+  const apiKeyOptions: Option[] = providerKeys.keys.map(
+    ({ providerId, key }) => ({
+      value: key.name,
+      label: `${
+        scopedProviders.find((p) => p.uuid === providerId)?.name ??
+        "LLM provider"
+      } / ${key.displayName || key.name}`,
     }),
   );
+  const apiKeyList: ListState = {
+    noun: "API keys",
+    loading: providerKeys.isLoading,
+  };
   const projectOptions: Option[] = (projects.data?.projects ?? []).map((p) => ({
     value: p.name,
     label: p.displayName || p.name,
   }));
   // Agents keyed project/agent: names are unique only within a project.
-  const agentOptions: Option[] = projectName
-    ? (projectAgents.data?.agents ?? []).map((a) => ({
-        value: `${projectName}/${a.name}`,
-        label: a.displayName || a.name,
-      }))
-    : (orgAgents.data?.agents ?? []).map((a) => ({
-        value: `${a.projectName}/${a.name}`,
-        label: `${a.projectDisplayName || a.projectName} / ${a.displayName || a.name}`,
-      }));
+  const agentOptions: Option[] = (orgAgents.data?.agents ?? []).map((a) => ({
+    value: `${a.projectName}/${a.name}`,
+    label: `${a.projectDisplayName || a.projectName} / ${a.displayName || a.name}`,
+  }));
   const projectLabel = (name: string) =>
     projectOptions.find((p) => p.value === name)?.label ?? name;
+  const agentLabel = (project: string, agent: string) =>
+    (orgAgents.data?.agents ?? []).find(
+      (a) => a.projectName === project && a.name === agent,
+    )?.displayName || agent;
   const channelOptions = (destinations.data?.destinations ?? []).map(
     (d) => d.name,
   );
-  const agentsQuery = projectName ? projectAgents : orgAgents;
   const providerList: ListState = {
     noun: "LLM providers",
     loading: providers.isLoading,
@@ -862,9 +860,9 @@ export function BudgetFormPage({
   };
   const agentList: ListState = {
     noun: "agents",
-    loading: agentsQuery.isLoading,
-    failed: !!agentsQuery.error,
-    retry: () => void agentsQuery.refetch(),
+    loading: orgAgents.isLoading,
+    failed: !!orgAgents.error,
+    retry: () => void orgAgents.refetch(),
   };
   const channelList: ListState = {
     noun: "notification channels",
@@ -872,40 +870,129 @@ export function BudgetFormPage({
     failed: !!destinations.error,
     retry: () => void destinations.refetch(),
   };
-  // On a project's page the project is the owner and is added for you.
-  const consumerKinds = CONSUMER_KINDS.filter(
-    (k) => !(projectName && k === "project"),
-  );
   const usedKinds = new Set(form.consumers.map((c) => c.type));
-  const allowedExemptionKinds = exemptionKinds(form.consumers).filter(
-    (k) => !(projectName && k === "project"),
-  );
+  const allowedExemptionKinds = exemptionKinds(form.consumers);
   const taken = useMemo(
     () => (budgets.data?.budgets ?? []).map((b) => b.metadata.name),
     [budgets.data],
   );
   const handle = handleFor(form.displayName, taken);
   const limit = Number(form.amount) || 0;
-  const blockAt = Number(form.blockAt) || 0;
 
-  const updateConsumer = (i: number, patch: Partial<ConsumerRow>) =>
+  // The resource: all LLM providers (one budget, or one per provider), or one provider.
+  const ALL = "*";
+  const allProviders =
+    form.resourceType === "all" || form.resourceAllocation === "separate";
+  const perProvider =
+    form.resourceType === "provider" && form.resourceAllocation === "separate";
+  const resourceOptions: Option[] = [
+    { value: ALL, label: "All LLM providers" },
+    ...providerOptions,
+  ];
+
+  // What gets its own allowance, with today's counts where they can be known.
+  const factors: AllocationFactor[] = [];
+  if (perProvider) {
+    factors.push({
+      noun: "provider",
+      plural: "providers",
+      count: providers.data ? providerOptions.length : undefined,
+    });
+  }
+  const sharedProject = form.consumers.find(
+    (c) => c.type === "project" && c.allocation === "shared" && c.id,
+  )?.id;
+  // Exempted projects and agents get no allowance of their own.
+  const exemptProjects = new Set(
+    form.exemptions.filter((e) => e.type === "project").map((e) => e.id),
+  );
+  const exemptAgents = new Set(
+    form.exemptions
+      .filter((e) => e.type === "agent" && e.id)
+      .map((e) => `${e.project}/${e.id}`),
+  );
+  for (const c of form.consumers) {
+    if (c.allocation !== "separate") continue;
+    if (c.type === "project") {
+      const counted = projectOptions.filter(
+        (p) => !exemptProjects.has(p.value),
+      );
+      factors.push({
+        noun: "project",
+        plural: "projects",
+        count: projects.data ? counted.length : undefined,
+      });
+    } else if (c.type === "agent") {
+      const agents = (orgAgents.data?.agents ?? []).filter(
+        (a) =>
+          (!sharedProject || a.projectName === sharedProject) &&
+          !exemptAgents.has(`${a.projectName}/${a.name}`),
+      );
+      factors.push({
+        noun: "agent",
+        plural: "agents",
+        count: orgAgents.data ? agents.length : undefined,
+      });
+    } else {
+      const noun =
+        c.type === "attribute" ? "value" : inSentence(KIND_LABEL[c.type]);
+      factors.push({ noun, plural: `${noun}s` });
+    }
+  }
+  const allocation = allocationFormula(limit, form.period, factors);
+  // What the formula covers, from the selections: the resource, the shared consumers and
+  // the exemptions.
+  const scope: string[] = [];
+  if (!perProvider) {
+    scope.push(
+      allProviders
+        ? "Across all LLM providers"
+        : `On ${providerOptions.find((p) => p.value === form.providerId)?.label ?? (form.providerId || "the selected LLM provider")}`,
+    );
+  }
+  const shared = form.consumers.filter((c) => c.allocation === "shared");
+  for (const c of shared) {
+    if (c.type === "project")
+      scope.push(`for project ${projectLabel(c.id) || "(not selected)"}`);
+    else if (c.type === "agent")
+      scope.push(
+        `for agent ${c.id ? agentLabel(c.project, c.id) : "(not selected)"}`,
+      );
+    else if (c.type === "apiKey")
+      scope.push(`for API key ${c.id || "(not named)"}`);
+    else
+      scope.push(
+        `for requests matching the ${inSentence(KIND_LABEL[c.type])} condition`,
+      );
+  }
+  if (!form.consumers.length) scope.push("for all consumers");
+  if (form.exemptions.length) {
+    scope.push(
+      `excluding ${form.exemptions.length} ${form.exemptions.length === 1 ? "exemption" : "exemptions"}`,
+    );
+  }
+  const scopeText = scope.length
+    ? `${scope.join(", ").replace(/^./, (ch) => ch.toUpperCase())}.`
+    : "";
+
+  const updateConsumer = (i: number, change: Partial<ConsumerRow>) =>
     set(
       "consumers",
-      form.consumers.map((c, j) => (j === i ? { ...c, ...patch } : c)),
+      form.consumers.map((c, j) => (j === i ? { ...c, ...change } : c)),
     );
-  const setConsumerAllocation = (i: number, allocation: BudgetAllocation) => {
+  const setConsumerAllocation = (i: number, value: BudgetAllocation) => {
     const c = form.consumers[i];
     // Team and User rows swap between a named value and the claim itself.
     const expression =
       c.type === "team" || c.type === "user"
-        ? defaultExpression(c.type, allocation)
+        ? defaultExpression(c.type, value)
         : c.expression;
-    updateConsumer(i, { allocation, expression });
+    updateConsumer(i, { allocation: value, expression });
   };
-  const updateExemption = (i: number, patch: Partial<ExemptionRow>) =>
+  const updateExemption = (i: number, change: Partial<ExemptionRow>) =>
     set(
       "exemptions",
-      form.exemptions.map((e, j) => (j === i ? { ...e, ...patch } : e)),
+      form.exemptions.map((e, j) => (j === i ? { ...e, ...change } : e)),
     );
   const agentValue = (r: { id: string; project: string }) =>
     r.id ? `${r.project}/${r.id}` : "";
@@ -915,24 +1002,40 @@ export function BudgetFormPage({
   };
   const pickerPlaceholder = (kind: ScopeKind) =>
     kind === "apiKey"
-      ? "e.g. support-prod"
+      ? "Choose an API key"
       : `Choose ${kind === "agent" ? "an agent" : kind === "project" ? "a project" : "one"}`;
+
+  const check = (pages: number[]) => {
+    setChecked((c) => new Set([...c, ...pages]));
+    const failing = pages.filter((n) => errorsOn(n).length > 0);
+    if (failing.length) {
+      setStep(failing[0]);
+      setFailedChecks((n) => n + 1);
+    }
+    return failing.length === 0;
+  };
+  const goTo = (n: number) => {
+    setStep(n);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const next = () => {
+    if (check([step])) goTo(step + 1);
+  };
 
   const onSaveError = (err: unknown) => {
     const { field, message } = serverFieldError(err);
     setServerErrors({ [field]: message });
+    setStep(field === "form" ? STEPS.length - 1 : stepOfField(field));
+    setFailedChecks((n) => n + 1);
   };
 
   const save = () => {
-    setSubmitted(true);
-    if (Object.keys(validateBudgetForm(form)).length) return;
+    if (!check(STEPS.map((_, i) => i))) return;
     const body = budgetFromForm(form, {
       name: handle,
-      projectOwner: projectName,
       existing: existing.data,
     });
-    const done = (name: string) =>
-      allowNavigation(() => navigate(viewHref(name)));
+    const done = (name: string) => allowNavigation(() => onSaved(name));
     if (editing) {
       update.mutate(body, {
         onSuccess: () => done(body.metadata.name),
@@ -946,93 +1049,115 @@ export function BudgetFormPage({
     }
   };
 
+  // The add-condition menu's anchor; conditions whose expression is shown; the review.
+  const [addAnchor, setAddAnchor] = useState<HTMLElement | null>(null);
+  const [advanced, setAdvanced] = useState<Set<number>>(new Set());
+
   const title = editing
     ? `Edit ${initial.displayName || budgetName}`
     : "Create budget";
   const saving = create.isPending || update.isPending;
+  const lockedSteps = fromGateway
+    ? new Set([1, 2])
+    : editing
+      ? new Set([1])
+      : new Set<number>();
+  // The page, as the console's other wizards: a back link, the step in the description.
+  const shell = (body: ReactNode, actions?: ReactNode) => (
+    <PageLayout
+      title={title}
+      description={
+        actions && !editing
+          ? `Step ${step + 1} of ${STEPS.length} · ${STEPS[step].label}${lockedSteps.has(step) ? " · Fixed once created" : ""}`
+          : undefined
+      }
+      disableIcon
+      backHref={backHref}
+      backLabel={backLabel}
+    >
+      <Stack spacing={3} sx={{ maxWidth: 960 }}>
+        {body}
+        {actions}
+      </Stack>
+    </PageLayout>
+  );
   if (editing && existing.error) {
-    return (
-      <PageLayout
-        title="Edit budget"
-        backHref={backHref}
-        backLabel={backLabel}
-        avatar={null}
-      >
+    const notFound = isBudgetNotFound(existing.error);
+    return shell(
+      notFound ? (
+        <StateNotice
+          icon={SearchX}
+          title={`There is no budget named ${budgetName}`}
+          description="It may have been deleted, or the link is wrong."
+        />
+      ) : (
         <StateNotice
           icon={ServerCrash}
           tone="error"
           title="Couldn't load the budget"
-          description="It may have been deleted, or the server is unavailable."
+          description="The server didn't answer. Try again in a moment."
           actions={
             <Button variant="outlined" onClick={() => void existing.refetch()}>
               Retry
             </Button>
           }
         />
-      </PageLayout>
+      ),
     );
   }
   if (editing && existing.isLoading) {
-    return (
-      <PageLayout
-        title={title}
-        backHref={backHref}
-        backLabel={backLabel}
-        avatar={null}
-      >
-        <Skeleton variant="rounded" height={480} />
-      </PageLayout>
-    );
+    return shell(<Skeleton variant="rounded" height={320} />);
   }
 
-  // Condition boxes, numbered in order; an agent's project is its own locked box.
+  const pluralOf = (k: ScopeKind) =>
+    k === "attribute" ? "values" : `${inSentence(KIND_LABEL[k])}s`;
+  const toggleAdvanced = (i: number) =>
+    setAdvanced((cur) => {
+      const nextSet = new Set(cur);
+      if (nextSet.has(i)) nextSet.delete(i);
+      else nextSet.add(i);
+      return nextSet;
+    });
+
+  // Condition boxes, numbered in order.
   let conditionNo = 0;
   const conditions = form.consumers.flatMap((c, i) => {
     const boxes: ReactNode[] = [];
     const kindLabel = inSentence(KIND_LABEL[c.type]);
-    if (c.type === "agent" && c.project) {
-      conditionNo += 1;
-      boxes.push(
-        <ConditionBox
-          key={`${i}-project`}
-          n={conditionNo}
-          locked
-          note={
-            `Added because ${c.id} belongs to ${projectLabel(c.project)}. ` +
-            "Agent names are unique only within a project."
-          }
-        >
-          <Stack direction={{ xs: "column", md: "row" }} spacing={3}>
-            <Field label="Consumer type">
-              <TextInput select size="small" fullWidth value="project" disabled>
-                <MenuItem value="project">Project</MenuItem>
-              </TextInput>
-            </Field>
-            <AllocationField
-              value="shared"
-              onChange={() => undefined}
-              disabled
-              each="project"
-            />
-          </Stack>
-          <Box sx={{ mt: 2 }}>
-            <Field label="Project">
-              <TextInput
-                size="small"
-                fullWidth
-                value={projectLabel(c.project)}
-                disabled
-              />
-            </Field>
-          </Box>
-        </ConditionBox>,
-      );
-    }
     conditionNo += 1;
+    // Team and User fill the identity expression in; it is shown on request.
+    const filledIn =
+      (c.type === "team" || c.type === "user") && c.allocation === "separate";
+    const identity = c.allocation === "separate";
+    const expressionField = (
+      <Field label={identity ? "Identity expression" : "Match expression"}>
+        <TextInput
+          size="small"
+          fullWidth
+          multiline
+          minRows={2}
+          value={c.expression}
+          disabled={editing}
+          onChange={(e) => updateConsumer(i, { expression: e.target.value })}
+          placeholder={expressionPlaceholder(c.type)}
+          error={!!errors[`consumers.${i}`]}
+          helperText={
+            errors[`consumers.${i}`] ??
+            (identity
+              ? `CEL expression used to identify individual ${pluralOf(c.type)}.`
+              : "CEL expression that selects the requests this condition covers.")
+          }
+          maxLength={MAX_EXPRESSION_LENGTH}
+          hideCharacterCount
+          sx={{ "& textarea": { fontFamily: "monospace" } }}
+        />
+      </Field>
+    );
     boxes.push(
       <ConditionBox
         key={i}
         n={conditionNo}
+        label={KIND_LABEL[c.type]}
         locked={editing}
         onRemove={() =>
           set(
@@ -1041,584 +1166,547 @@ export function BudgetFormPage({
           )
         }
       >
-        <Stack direction={{ xs: "column", md: "row" }} spacing={3}>
-          <Field label="Consumer type">
-            <TextInput
-              select
-              size="small"
-              fullWidth
-              value={c.type}
-              disabled={editing}
-              onChange={(e) =>
-                updateConsumer(
-                  i,
-                  newConsumer(e.target.value as ScopeKind, c.allocation),
-                )
-              }
-            >
-              {consumerKinds
-                .filter(
-                  (k) => k === c.type || k === "attribute" || !usedKinds.has(k),
-                )
-                .map((k) => (
-                  <MenuItem key={k} value={k}>
-                    {KIND_LABEL[k]}
-                  </MenuItem>
-                ))}
-            </TextInput>
-          </Field>
-          <AllocationField
+        <Stack spacing={2}>
+          <ChoiceField
+            label="Allocation"
             value={c.allocation}
+            options={allocationChoices(c.type)}
             onChange={(v) => setConsumerAllocation(i, v)}
             disabled={editing}
-            each={kindLabel}
           />
-        </Stack>
-        <Box sx={{ mt: 2 }}>
           {isCelKind(c.type) ? (
-            <Field label="CEL expression">
-              <TextInput
-                size="small"
-                fullWidth
-                multiline
-                minRows={2}
-                value={c.expression}
-                disabled={editing}
-                onChange={(e) =>
-                  updateConsumer(i, { expression: e.target.value })
-                }
-                placeholder={expressionPlaceholder(c.type)}
-                error={!!errors[`consumers.${i}`]}
-                helperText={errors[`consumers.${i}`]}
-                maxLength={INPUT_LIMITS.SHORT_TEXT}
-                hideCharacterCount
-                sx={{ "& textarea": { fontFamily: "monospace" } }}
-              />
-            </Field>
-          ) : c.allocation === "separate" ? (
-            <Typography variant="body2" color="text.secondary">
-              Every {kindLabel} is counted, each with its own allowance.
-            </Typography>
+            filledIn && !advanced.has(i) && !errors[`consumers.${i}`] ? (
+              <Box>
+                <Button
+                  size="small"
+                  variant="text"
+                  onClick={() => toggleAdvanced(i)}
+                  sx={{ px: 0 }}
+                >
+                  Advanced: identity expression
+                </Button>
+              </Box>
+            ) : (
+              expressionField
+            )
           ) : (
-            <Field
-              label={
-                c.type === "apiKey" ? "API key name" : `Select ${kindLabel}`
-              }
-            >
-              <ValuePicker
-                kind={c.type}
-                value={c.type === "agent" ? agentValue(c) : c.id}
-                onChange={(v) =>
-                  updateConsumer(
-                    i,
-                    c.type === "agent" ? splitAgent(v) : { id: v },
-                  )
-                }
-                options={c.type === "agent" ? agentOptions : projectOptions}
-                list={c.type === "agent" ? agentList : projectList}
-                disabled={editing}
-                error={errors[`consumers.${i}`]}
-                placeholder={pickerPlaceholder(c.type)}
-              />
-            </Field>
+            c.allocation === "shared" && (
+              <Field label={`Select ${kindLabel}`}>
+                <ValuePicker
+                  kind={c.type}
+                  value={c.type === "agent" ? agentValue(c) : c.id}
+                  onChange={(v) =>
+                    updateConsumer(
+                      i,
+                      c.type === "agent" ? splitAgent(v) : { id: v },
+                    )
+                  }
+                  options={
+                    c.type === "agent"
+                      ? agentOptions
+                      : c.type === "apiKey"
+                        ? apiKeyOptions
+                        : projectOptions
+                  }
+                  list={
+                    c.type === "agent"
+                      ? agentList
+                      : c.type === "apiKey"
+                        ? apiKeyList
+                        : projectList
+                  }
+                  disabled={editing}
+                  error={errors[`consumers.${i}`]}
+                  placeholder={pickerPlaceholder(c.type)}
+                />
+              </Field>
+            )
           )}
-        </Box>
+        </Stack>
       </ConditionBox>,
     );
     return boxes;
   });
 
-  return (
-    <PageLayout
-      title={title}
-      description={
-        projectName && !editing ? (
-          <span>
-            The budget is owned by project <strong>{projectName}</strong>.
-          </span>
-        ) : undefined
-      }
-      backHref={backHref}
-      backLabel={backLabel}
-      avatar={null}
-    >
-      <Box
-        sx={{
-          display: "grid",
-          gridTemplateColumns: {
-            xs: "minmax(0, 1fr)",
-            lg: "minmax(0, 1060px) 220px",
-          },
-          gap: 4,
-          alignItems: "start",
-        }}
-      >
-        <Stack spacing={3}>
-          {fromGateway && (
-            <Alert severity="info">
-              This budget was created on a gateway. Its limit and scope are
-              managed there; only the name, description and warnings can be
-              changed here.
-            </Alert>
-          )}
-          <PartHeading n={1} id="about" />
-          <FormCard
-            id="details"
-            n={1}
-            title="Budget details"
-            purpose="Specify the budget name and description."
-          >
-            <Stack direction={{ xs: "column", md: "row" }} spacing={3}>
-              <TextInput
-                label="Name"
-                required
-                fullWidth
-                value={form.displayName}
-                onChange={(e) => set("displayName", e.target.value)}
-                placeholder="e.g. Payments on OpenAI"
-                error={!!errors.displayName}
-                helperText={errors.displayName}
-                maxLength={INPUT_LIMITS.NAME}
-                hideCharacterCount
-              />
-              <TextInput
-                label="Description (optional)"
-                fullWidth
-                multiline
-                minRows={2}
-                value={form.description}
-                onChange={(e) => set("description", e.target.value)}
-                error={!!errors.description}
-                helperText={errors.description}
-                placeholder="e.g. Payments team's OpenAI spend, funded by Finance"
-                maxLength={INPUT_LIMITS.DESCRIPTION}
-                hideCharacterCount
-              />
-            </Stack>
-          </FormCard>
+  const fieldWidth = {};
 
-          <PartHeading n={2} id="scope" />
-          <FormCard
-            id="resources"
-            n={2}
-            title="Resources"
-            purpose="Select the LLM providers subject to this budget."
-            locked={editing}
-          >
-            <Stack direction={{ xs: "column", md: "row" }} spacing={3}>
-              <Field label="Resource type">
-                <TextInput
-                  select
-                  size="small"
-                  fullWidth
-                  value={form.resourceType}
-                  disabled={editing}
-                  onChange={(e) =>
-                    set(
-                      "resourceType",
-                      e.target.value as BudgetFormState["resourceType"],
-                    )
-                  }
-                >
-                  <MenuItem value="all">All LLM providers</MenuItem>
-                  <MenuItem value="provider">LLM provider</MenuItem>
-                </TextInput>
-              </Field>
-              {form.resourceType === "provider" ? (
-                <AllocationField
-                  value={form.resourceAllocation}
-                  onChange={(v) => set("resourceAllocation", v)}
-                  disabled={editing}
-                  each="LLM provider"
-                />
-              ) : (
-                <Box sx={{ width: "100%", pt: { md: 4 } }}>
-                  <Typography variant="body2" color="text.secondary">
-                    A shared budget applies across all LLM providers.
-                  </Typography>
-                </Box>
-              )}
-            </Stack>
-            {errors.providerId &&
-              !(
-                form.resourceType === "provider" &&
-                form.resourceAllocation === "shared"
-              ) && (
-                <Alert severity="error" sx={{ mt: 2 }}>
-                  {errors.providerId}
-                </Alert>
-              )}
-            {form.resourceType === "provider" &&
-              form.resourceAllocation === "shared" && (
-                <Box sx={{ mt: 2 }}>
-                  <Field label="Select resource">
-                    <ValuePicker
-                      kind="project"
-                      value={form.providerId}
-                      onChange={(v) => set("providerId", v)}
-                      options={providerOptions}
-                      list={providerList}
-                      disabled={editing}
-                      error={errors.providerId}
-                      placeholder="Choose an LLM provider"
-                    />
-                  </Field>
-                </Box>
-              )}
-          </FormCard>
+  const details = (
+    <Section title="Budget information">
+      <Stack spacing={3} sx={fieldWidth}>
+        <TextInput
+          label="Name"
+          required
+          fullWidth
+          value={form.displayName}
+          onChange={(e) => set("displayName", e.target.value)}
+          placeholder="e.g. Payments on OpenAI"
+          error={!!errors.displayName}
+          helperText={errors.displayName}
+          maxLength={INPUT_LIMITS.NAME}
+          hideCharacterCount
+        />
+        <TextInput
+          label="Description (optional)"
+          fullWidth
+          multiline
+          minRows={3}
+          value={form.description}
+          onChange={(e) => set("description", e.target.value)}
+          placeholder="e.g. Monthly OpenAI spend for the Payments team, funded by Finance"
+          error={!!errors.description}
+          helperText={errors.description}
+          maxLength={INPUT_LIMITS.DESCRIPTION}
+          hideCharacterCount
+        />
+      </Stack>
+    </Section>
+  );
 
-          <FormCard
-            id="consumers"
-            n={3}
-            title="Consumers"
-            purpose={
-              projectName
-                ? "Define the consumers in this project subject to this budget."
-                : "Define the consumers subject to this budget."
+  const resource = (
+    <Section title="Resources" locked={editing}>
+      <Stack spacing={3} sx={fieldWidth}>
+        <Field label="Resource type">
+          <TextInput select size="small" fullWidth value="llmProvider" disabled>
+            <MenuItem value="llmProvider">LLM provider</MenuItem>
+          </TextInput>
+        </Field>
+        <Field label="Resource selection">
+          <ValuePicker
+            kind="project"
+            value={allProviders ? ALL : form.providerId}
+            onChange={(v) =>
+              v === ALL || !v
+                ? patch({
+                    resourceType: "all",
+                    resourceAllocation: "shared",
+                    providerId: "",
+                  })
+                : patch({
+                    resourceType: "provider",
+                    resourceAllocation: "shared",
+                    providerId: v,
+                  })
             }
-            optional
-            locked={editing}
-          >
-            {errors.consumers && (
-              <Alert severity="error" sx={{ mb: 2 }}>
-                {errors.consumers}
-              </Alert>
-            )}
-            <Stack>
-              {conditions.map((box, i) => (
-                <Box key={i}>
-                  {i > 0 && <AndRule />}
-                  {box}
-                </Box>
-              ))}
-            </Stack>
-            {!editing && (
-              <Box sx={{ mt: conditions.length ? 2.5 : 0 }}>
-                {!conditions.length && (
-                  <Typography
-                    variant="body2"
-                    color="text.secondary"
-                    sx={{ mb: 2 }}
-                  >
-                    {projectName
-                      ? "Specify consumer conditions. If none are configured, the budget applies " +
-                        "to all consumers in this project."
-                      : "Specify consumer conditions. If none are configured, the budget applies " +
-                        "to all consumers."}
-                  </Typography>
-                )}
-                <Typography variant="body2" sx={{ mb: 1 }}>
-                  Add consumer condition
-                </Typography>
-                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                  {consumerKinds.map((k) => (
-                    <AddChip
-                      key={k}
-                      label={KIND_LABEL[k]}
-                      disabled={k !== "attribute" && usedKinds.has(k)}
-                      onClick={() =>
-                        set("consumers", [...form.consumers, newConsumer(k)])
-                      }
-                    />
-                  ))}
-                </Stack>
-              </Box>
-            )}
-          </FormCard>
+            options={resourceOptions}
+            list={providerList}
+            disabled={editing}
+            error={errors.providerId}
+            placeholder="Choose an LLM provider"
+          />
+        </Field>
+        {allProviders && (
+          <ChoiceField
+            label="Budget allocation"
+            value={perProvider ? "separate" : "shared"}
+            options={[
+              {
+                value: "shared",
+                label: "Shared limit",
+                description:
+                  "All selected LLM providers share one spending limit.",
+              },
+              {
+                value: "separate",
+                label: "Per-provider limit",
+                description:
+                  "Each LLM provider has an independent spending limit.",
+              },
+            ]}
+            onChange={(v) =>
+              patch(
+                v === "separate"
+                  ? { resourceType: "provider", resourceAllocation: "separate" }
+                  : { resourceType: "all", resourceAllocation: "shared" },
+              )
+            }
+            disabled={editing}
+          />
+        )}
+      </Stack>
+    </Section>
+  );
 
-          <FormCard
-            id="exemptions"
-            n={4}
-            title="Exemptions"
-            purpose="Exclude specific consumers from budget enforcement."
-            optional
-            locked={fromGateway}
-          >
-            {errors.exemptions && (
-              <Alert severity="error" sx={{ mb: 2 }}>
-                {errors.exemptions}
-              </Alert>
-            )}
-            <Stack spacing={2}>
-              {form.exemptions.map((e, i) => (
-                <ConditionBox
-                  key={i}
-                  n={i + 1}
-                  title="Exemption"
-                  locked={fromGateway}
-                  onRemove={() =>
-                    set(
-                      "exemptions",
-                      form.exemptions.filter((_, j) => j !== i),
-                    )
-                  }
+  const consumers = (
+    <Stack spacing={4}>
+      <Section
+        title="Consumers"
+        description="All consumers are included unless you add a condition."
+        optional
+        locked={editing}
+      >
+        {errors.consumers && (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            {errors.consumers}
+          </Alert>
+        )}
+        {conditions.length > 1 && (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+            Requests must match all conditions (AND).
+          </Typography>
+        )}
+        <Stack>
+          {conditions.map((box, i) => (
+            <Box key={i}>
+              {i > 0 && <AndRule />}
+              {box}
+            </Box>
+          ))}
+        </Stack>
+        {!editing && (
+          <Box sx={{ mt: conditions.length ? 2 : 0 }}>
+            <AddChip
+              label="Add consumer condition"
+              onClick={(e) => setAddAnchor(e.currentTarget)}
+            />
+            <Menu
+              open={!!addAnchor}
+              anchorEl={addAnchor}
+              onClose={() => setAddAnchor(null)}
+            >
+              {/* One note for the types an exemption rules out, not one per type. */}
+              {CONSUMER_KINDS.some(
+                (k) =>
+                  !(k !== "attribute" && usedKinds.has(k)) &&
+                  consumerBreaksExemptions(form, k),
+              ) && (
+                <Typography
+                  component="li"
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: "block", px: 2, py: 1, maxWidth: 280 }}
                 >
-                  <Stack
-                    direction={{ xs: "column", md: "row" }}
-                    spacing={3}
-                    alignItems="flex-start"
-                  >
-                    <Field label="Type">
-                      <TextInput
-                        select
-                        size="small"
-                        fullWidth
-                        value={e.type}
-                        disabled={fromGateway}
-                        onChange={(ev) =>
-                          updateExemption(
-                            i,
-                            newExemption(
-                              ev.target.value as ExemptionRow["type"],
-                            ),
-                          )
-                        }
-                      >
-                        {[...new Set([e.type, ...allowedExemptionKinds])].map(
-                          (k) => (
-                            <MenuItem key={k} value={k}>
-                              {KIND_LABEL[k]}
-                            </MenuItem>
-                          ),
-                        )}
-                      </TextInput>
-                    </Field>
-                    {isCelKind(e.type) ? (
-                      <Field label="CEL expression">
-                        <TextInput
-                          size="small"
-                          fullWidth
-                          value={e.expression}
-                          disabled={fromGateway}
-                          onChange={(ev) =>
-                            updateExemption(i, { expression: ev.target.value })
-                          }
-                          placeholder={expressionPlaceholder(e.type)}
-                          error={!!errors[`exemptions.${i}`]}
-                          helperText={errors[`exemptions.${i}`]}
-                          maxLength={INPUT_LIMITS.SHORT_TEXT}
-                          hideCharacterCount
-                          sx={{ "& input": { fontFamily: "monospace" } }}
-                        />
-                      </Field>
-                    ) : (
-                      <Field label={`Select ${inSentence(KIND_LABEL[e.type])}`}>
-                        <ValuePicker
-                          kind={e.type}
-                          value={e.type === "agent" ? agentValue(e) : e.id}
-                          onChange={(v) =>
-                            updateExemption(
-                              i,
-                              e.type === "agent" ? splitAgent(v) : { id: v },
-                            )
-                          }
-                          options={
-                            e.type === "agent" ? agentOptions : projectOptions
-                          }
-                          list={e.type === "agent" ? agentList : projectList}
-                          error={errors[`exemptions.${i}`]}
-                          placeholder={pickerPlaceholder(e.type)}
-                          disabled={fromGateway}
-                        />
-                      </Field>
-                    )}
-                  </Stack>
-                </ConditionBox>
+                  Some types are unavailable: an exemption must stay narrower
+                  than the consumers. Remove the exemption to use them.
+                </Typography>
+              )}
+              {CONSUMER_KINDS.map((k) => (
+                <MenuItem
+                  key={k}
+                  disabled={
+                    (k !== "attribute" && usedKinds.has(k)) ||
+                    consumerBreaksExemptions(form, k)
+                  }
+                  onClick={() => {
+                    setAddAnchor(null);
+                    set("consumers", [...form.consumers, newConsumer(k)]);
+                  }}
+                >
+                  {KIND_LABEL[k]}
+                </MenuItem>
               ))}
-              {!fromGateway && (
-                <Box>
-                  <Tooltip
-                    title={
-                      allowedExemptionKinds.length
-                        ? ""
-                        : "Nothing is narrower than the budget's consumers."
+            </Menu>
+          </Box>
+        )}
+      </Section>
+
+      <Section
+        title="Exemptions"
+        description="Exclude matching traffic from this budget."
+        optional
+        locked={fromGateway}
+      >
+        {errors.exemptions && (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            {errors.exemptions}
+          </Alert>
+        )}
+        <Stack spacing={2}>
+          {form.exemptions.map((e, i) => (
+            <ConditionBox
+              key={i}
+              n={i + 1}
+              title="Exemption"
+              label={KIND_LABEL[e.type]}
+              locked={fromGateway}
+              onRemove={() =>
+                set(
+                  "exemptions",
+                  form.exemptions.filter((_, j) => j !== i),
+                )
+              }
+            >
+              <Stack spacing={2}>
+                <Field label="Type">
+                  <TextInput
+                    select
+                    size="small"
+                    fullWidth
+                    value={e.type}
+                    disabled={fromGateway}
+                    onChange={(ev) =>
+                      updateExemption(
+                        i,
+                        newExemption(ev.target.value as ExemptionRow["type"]),
+                      )
                     }
                   >
-                    <span>
-                      <AddChip
-                        label="Add exemption"
-                        disabled={!allowedExemptionKinds.length}
-                        onClick={() =>
-                          set("exemptions", [
-                            ...form.exemptions,
-                            newExemption(allowedExemptionKinds[0]),
-                          ])
-                        }
-                      />
-                    </span>
-                  </Tooltip>
-                </Box>
-              )}
-            </Stack>
-          </FormCard>
-
-          <PartHeading n={3} id="limit-and-alerts" />
-          <FormCard
-            id="limit"
-            n={5}
-            locked={fromGateway}
-            title="Limit"
-            purpose="Define the spending threshold, reset period, and enforcement behavior."
-          >
-            <Stack spacing={3}>
-              <Stack direction={{ xs: "column", md: "row" }} spacing={3}>
-                <TextInput
-                  label="Amount"
-                  required
-                  fullWidth
-                  value={form.amount}
-                  disabled={fromGateway}
-                  onChange={(e) => set("amount", e.target.value)}
-                  placeholder="e.g. 1000"
-                  error={!!errors.amount}
-                  helperText={errors.amount}
-                  inputMode="decimal"
-                  slotProps={{
-                    input: {
-                      startAdornment: (
-                        <InputAdornment position="start">$</InputAdornment>
+                    {[...new Set([e.type, ...allowedExemptionKinds])].map(
+                      (k) => (
+                        <MenuItem key={k} value={k}>
+                          {KIND_LABEL[k]}
+                        </MenuItem>
                       ),
-                      endAdornment: (
-                        <InputAdornment position="end">USD</InputAdornment>
-                      ),
-                    },
-                  }}
-                />
-                <Field label="Period">
-                  <Segmented
-                    label="Period"
-                    value={form.period}
-                    disabled={editing}
-                    onChange={(v) => set("period", v)}
-                    options={(["day", "week", "month"] as const).map((p) => ({
-                      value: p,
-                      label: PERIOD_LABELS[p],
-                    }))}
-                  />
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    component="div"
-                    sx={{ mt: 1 }}
-                  >
-                    {editing
-                      ? "Fixed once created."
-                      : "Budget periods are calculated using UTC."}
-                  </Typography>
+                    )}
+                  </TextInput>
                 </Field>
+                {isCelKind(e.type) ? (
+                  <Field label="Match expression">
+                    <TextInput
+                      size="small"
+                      fullWidth
+                      value={e.expression}
+                      disabled={fromGateway}
+                      onChange={(ev) =>
+                        updateExemption(i, { expression: ev.target.value })
+                      }
+                      placeholder={expressionPlaceholder(e.type)}
+                      error={!!errors[`exemptions.${i}`]}
+                      helperText={
+                        errors[`exemptions.${i}`] ??
+                        "CEL expression that selects the requests to exclude."
+                      }
+                      maxLength={MAX_EXPRESSION_LENGTH}
+                      hideCharacterCount
+                      sx={{ "& input": { fontFamily: "monospace" } }}
+                    />
+                  </Field>
+                ) : (
+                  <Field label={`Select ${inSentence(KIND_LABEL[e.type])}`}>
+                    <ValuePicker
+                      kind={e.type}
+                      value={e.type === "agent" ? agentValue(e) : e.id}
+                      onChange={(v) =>
+                        updateExemption(
+                          i,
+                          e.type === "agent" ? splitAgent(v) : { id: v },
+                        )
+                      }
+                      options={
+                        e.type === "agent" ? agentOptions : projectOptions
+                      }
+                      list={e.type === "agent" ? agentList : projectList}
+                      error={errors[`exemptions.${i}`]}
+                      placeholder={pickerPlaceholder(e.type)}
+                      disabled={fromGateway}
+                    />
+                  </Field>
+                )}
               </Stack>
-              <Field label="When the limit is reached">
-                <Segmented
-                  label="When the limit is reached"
-                  value={form.action}
-                  disabled={fromGateway}
-                  onChange={(v) => set("action", v)}
-                  options={[
-                    { value: "block", label: "Block" },
-                    { value: "allow", label: "Allow" },
-                  ]}
-                />
-                <Typography
-                  variant="body2"
-                  color="text.secondary"
-                  sx={{ mt: 1 }}
-                >
-                  {form.action === "block"
-                    ? "Reject requests when accumulated spending reaches the configured threshold."
-                    : "Allow requests to continue and send warnings only."}
-                </Typography>
-              </Field>
-              {form.action === "block" && (
-                <Box>
-                  <TextInput
-                    label="Block at"
-                    value={form.blockAt}
-                    disabled={fromGateway}
-                    onChange={(e) => set("blockAt", e.target.value)}
-                    error={!!errors.blockAt}
-                    helperText={errors.blockAt}
-                    inputMode="numeric"
-                    slotProps={{
-                      input: {
-                        endAdornment: (
-                          <InputAdornment position="end">%</InputAdornment>
-                        ),
-                      },
-                    }}
-                    sx={{ maxWidth: 280 }}
-                  />
-                  <Typography
-                    variant="body2"
-                    color="text.secondary"
-                    sx={{ mt: 1 }}
-                  >
-                    {`Requests are blocked when spending reaches ${usd((limit * blockAt) / 100)}.`}
-                  </Typography>
-                </Box>
-              )}
-            </Stack>
-          </FormCard>
-
-          <FormCard
-            id="warnings"
-            n={6}
-            title="Warnings"
-            purpose="Configure warning thresholds and notification channels."
-            optional
-          >
-            <Stack spacing={3}>
-              <Field label="Thresholds">
-                <Thresholds
-                  value={form.thresholds}
-                  onChange={(v) => set("thresholds", v)}
-                  error={errors.thresholds}
-                />
-              </Field>
-              {form.thresholds.length > 0 && (
-                <Channels
-                  value={form.channels}
-                  onChange={(v) => set("channels", v)}
-                  options={channelOptions}
-                  list={channelList}
-                  error={errors.channels}
-                />
-              )}
-            </Stack>
-          </FormCard>
-
-          {errors.form ? (
-            <Alert severity="error">{errors.form}</Alert>
-          ) : (
-            submitted &&
-            Object.keys(errors).length > 0 && (
-              <Alert severity="error">
-                Fix the highlighted fields to save the budget.
-              </Alert>
-            )
+            </ConditionBox>
+          ))}
+          {!fromGateway && (
+            <Box>
+              <AddChip
+                label="Add exemption"
+                disabled={!allowedExemptionKinds.length}
+                onClick={() =>
+                  set("exemptions", [
+                    ...form.exemptions,
+                    newExemption(allowedExemptionKinds[0]),
+                  ])
+                }
+              />
+            </Box>
           )}
-          <Stack direction="row" spacing={1.5}>
-            <Button
-              variant="outlined"
-              onClick={() => allowNavigation(() => navigate(backHref))}
-              disabled={saving}
-            >
-              Cancel
-            </Button>
-            <Button variant="contained" onClick={save} disabled={saving}>
-              {editing ? "Save changes" : "Create budget"}
-            </Button>
-          </Stack>
         </Stack>
-        <OnThisPage
-          locked={
-            fromGateway
-              ? ["resources", "consumers", "exemptions", "limit"]
-              : editing
-                ? ["resources", "consumers"]
-                : []
-          }
-        />
-      </Box>
-    </PageLayout>
+      </Section>
+    </Stack>
+  );
+
+  const limitAndWarnings = (
+    <Stack spacing={4}>
+      <Section title="Spending limit" locked={fromGateway}>
+        <Stack spacing={3} sx={fieldWidth}>
+          <Field label="Amount" required>
+            <TextInput
+              size="small"
+              fullWidth
+              value={form.amount}
+              disabled={fromGateway}
+              onChange={(e) => set("amount", e.target.value)}
+              placeholder="e.g. 1000"
+              error={!!errors.amount}
+              helperText={errors.amount}
+              inputMode="decimal"
+              slotProps={{
+                input: {
+                  startAdornment: (
+                    <InputAdornment position="start">$</InputAdornment>
+                  ),
+                  endAdornment: (
+                    <InputAdornment position="end">USD</InputAdornment>
+                  ),
+                },
+              }}
+            />
+          </Field>
+          <Field label="Reset period">
+            <TextInput
+              select
+              size="small"
+              fullWidth
+              value={form.period}
+              disabled={editing}
+              onChange={(e) =>
+                set("period", e.target.value as typeof form.period)
+              }
+            >
+              {(["day", "week", "month"] as const).map((p) => (
+                <MenuItem key={p} value={p}>
+                  {PERIOD_LABELS[p]} (UTC)
+                </MenuItem>
+              ))}
+            </TextInput>
+          </Field>
+          <ChoiceField
+            label="Enforcement"
+            value={form.action}
+            disabled={fromGateway}
+            onChange={(v) => set("action", v)}
+            options={[
+              {
+                value: "block",
+                label: "Block requests",
+                description:
+                  "Requests are refused once spending reaches the block threshold.",
+              },
+              {
+                value: "allow",
+                label: "Allow requests",
+                description: "Requests continue; only warnings are sent.",
+              },
+            ]}
+          />
+          {form.action === "block" && (
+            <Field label="Block threshold">
+              <TextInput
+                size="small"
+                fullWidth
+                value={form.blockAt}
+                disabled={fromGateway}
+                onChange={(e) => set("blockAt", e.target.value)}
+                error={!!errors.blockAt}
+                helperText={errors.blockAt}
+                inputMode="numeric"
+                slotProps={{
+                  input: {
+                    endAdornment: (
+                      <InputAdornment position="end">%</InputAdornment>
+                    ),
+                  },
+                }}
+              />
+            </Field>
+          )}
+          {limit > 0 && (
+            <Field label="Total budget allocation">
+              <Box aria-live="polite">
+                <Typography variant="body1" fontWeight={600}>
+                  {allocation.formula}
+                </Typography>
+                {(scopeText || allocation.legend) && (
+                  <Typography variant="body2" color="text.secondary">
+                    {[scopeText, allocation.legend].filter(Boolean).join(" ")}
+                  </Typography>
+                )}
+              </Box>
+            </Field>
+          )}
+        </Stack>
+      </Section>
+
+      <Section title="Warning thresholds" optional>
+        <Stack spacing={2} sx={fieldWidth}>
+          <Thresholds
+            value={form.thresholds}
+            onChange={(v) => set("thresholds", v)}
+            error={errors.thresholds}
+          />
+          {form.thresholds.length > 0 && (
+            <Channels
+              value={form.channels}
+              onChange={(v) => set("channels", v)}
+              options={channelOptions}
+              list={channelList}
+              error={errors.channels}
+            />
+          )}
+        </Stack>
+      </Section>
+    </Stack>
+  );
+
+  const pages = [details, resource, consumers, limitAndWarnings];
+  const last = step === STEPS.length - 1;
+
+  // Edit shows every section on one page; create walks through them one step at a time.
+  return shell(
+    <Stack spacing={editing ? 5 : 3}>
+      {fromGateway && (
+        <Alert severity="info">
+          Created on a gateway: only the name, description and warnings can
+          change here.
+        </Alert>
+      )}
+      {editing
+        ? pages.map((page, i) => <Box key={i}>{page}</Box>)
+        : pages[step]}
+      {errors.form && <Alert severity="error">{errors.form}</Alert>}
+    </Stack>,
+    editing ? (
+      <Stack direction="row" gap={2}>
+        <Button
+          variant="contained"
+          color="primary"
+          onClick={save}
+          disabled={saving}
+        >
+          Save changes
+        </Button>
+        <Button
+          variant="outlined"
+          color="primary"
+          onClick={() => allowNavigation(() => navigate(backHref))}
+          disabled={saving}
+        >
+          Cancel
+        </Button>
+      </Stack>
+    ) : (
+      <Stack direction="row" gap={2}>
+        {step > 0 && (
+          <Button
+            variant="outlined"
+            color="primary"
+            startIcon={<ArrowLeft size={20} />}
+            onClick={() => goTo(step - 1)}
+            disabled={saving}
+          >
+            Previous
+          </Button>
+        )}
+        {!last && (
+          <Button
+            variant="contained"
+            color="primary"
+            endIcon={<ArrowRight size={20} />}
+            onClick={next}
+            disabled={saving}
+          >
+            Next
+          </Button>
+        )}
+        {last && (
+          <Button
+            variant="contained"
+            color="primary"
+            onClick={save}
+            disabled={saving}
+          >
+            Create budget
+          </Button>
+        )}
+      </Stack>
+    ),
   );
 }

@@ -19,15 +19,7 @@
 // Cost sections contributed to other pages' overviews (see plugin.ts), and the
 // one the LLM provider page shows. Each opens the Dashboard picked to its entity.
 import React, { useState, type ReactNode } from "react";
-import {
-  Box,
-  Button,
-  Card,
-  CardContent,
-  Divider,
-  Skeleton,
-  Typography,
-} from "@wso2/oxygen-ui";
+import { Box, Button, Card, CardContent, Typography } from "@wso2/oxygen-ui";
 import { ChevronRight, Plus } from "@wso2/oxygen-ui-icons-react";
 import { useFeatureManagement } from "@agent-management-platform/feature-management";
 import { generatePath, Link } from "react-router-dom";
@@ -36,9 +28,8 @@ import {
   type AgentOverviewPanelProps,
   type ProjectOverviewPanelProps,
 } from "@agent-management-platform/shared-component";
-import { formatUsd } from "../AICostManagement/costFormat";
 import { useEntityNames } from "../AICostManagement/useEntityNames";
-import { EntityCostTiles, useEntityCost } from "./EntityCostPanel";
+import { EntityCostChart, EntityCostTiles } from "./EntityCostPanel";
 import {
   QuickBudgetDialog,
   type QuickBudgetDialogProps,
@@ -72,7 +63,7 @@ function AddBudget(props: AddBudgetProps): ReactNode {
 }
 
 /** Shared section header for the agent and LLM provider cost summaries. */
-function CostSectionHeader({ add }: { add: ReactNode }) {
+function CostSectionHeader({ add }: { add?: ReactNode }) {
   return (
     <Box
       display="flex"
@@ -111,19 +102,16 @@ function ViewCostDetails({ href }: { href: string }) {
 }
 
 /** Budget pages at org level, or under a project. */
-function budgetRoutes(orgId: string, projectId?: string) {
-  const page = projectId
-    ? orgNav.projects.children.aiCostManagement
-    : orgNav.aiCostManagement;
-  const params = { orgId, projectId };
+function budgetRoutes(orgId: string) {
+  // Budgets are created and managed at organization level.
+  const page = orgNav.aiCostManagement;
   return {
-    createHref: generatePath(
-      page.children.budgets.children.create.path,
-      params,
-    ),
+    createHref: generatePath(page.children.budgets.children.create.path, {
+      orgId,
+    }),
     viewHref: (budgetName: string) =>
       generatePath(page.children.budgets.children.view.path, {
-        ...params,
+        orgId,
         budgetName,
       }),
   };
@@ -136,113 +124,42 @@ function dashboardHref(base: string, groupBy?: string, pick?: string): string {
   return `${base}?${q.toString()}`;
 }
 
-function CostLine({
-  label,
-  value,
-  caption,
-  highlight,
-  loading,
-}: {
-  label: string;
-  value: string;
-  caption?: string;
-  highlight?: boolean;
-  loading?: boolean;
-}) {
-  return (
-    <Box
-      display="flex"
-      justifyContent="space-between"
-      alignItems="flex-start"
-      gap={2}
-    >
-      <Box>
-        <Typography variant="body2">{label}</Typography>
-        {caption && (
-          <Typography variant="caption" color="text.secondary">
-            {caption}
-          </Typography>
-        )}
-      </Box>
-      {loading ? (
-        <Skeleton variant="text" width={64} />
-      ) : (
-        <Typography
-          variant="body2"
-          fontWeight={highlight ? 600 : 400}
-          sx={{
-            color: highlight ? "primary.main" : "text.primary",
-            fontVariantNumeric: "tabular-nums",
-          }}
-        >
-          {value}
-        </Typography>
-      )}
-    </Box>
-  );
-}
-
-/** A project's cost, in its overview's side column. */
-export const ProjectCostCard: React.FC<ProjectOverviewPanelProps> = ({
+/** A project's cost, a section of its overview below its agents. */
+export const ProjectCostSection: React.FC<ProjectOverviewPanelProps> = ({
   orgId,
   projectId,
 }) => {
-  const c = useEntityCost(orgId, `project:${projectId}`);
-  const projectName = useEntityNames(orgId).project?.[projectId] ?? projectId;
+  const names = useEntityNames(orgId);
+  const projectName = names.project?.[projectId] ?? projectId;
   const href = generatePath(orgNav.projects.children.aiCostManagement.path, {
     orgId,
     projectId,
   });
   return (
-    <Card variant="outlined" sx={{ minWidth: 300, flexGrow: 1 }}>
+    <Card variant="outlined" sx={{ width: "100%" }}>
       <CardContent>
-        <Box display="flex" flexDirection="column" gap={1.5}>
-          <Box
-            display="flex"
-            justifyContent="space-between"
-            alignItems="center"
-          >
-            <Typography variant="h6">Cost</Typography>
+        <CostSectionHeader
+          add={
+            // An organization budget scoped to this project.
             <AddBudget
               orgName={orgId}
               start={{ project: projectId }}
               kind="Project"
               label={projectName}
-              projectOwner={projectId}
-              {...budgetRoutes(orgId, projectId)}
+              {...budgetRoutes(orgId)}
             />
-          </Box>
-          {c.error ? (
-            <Typography variant="body2" color="text.secondary">
-              Couldn&apos;t load cost. Reload the page to try again.
-            </Typography>
-          ) : (
-            <>
-              <CostLine
-                label={`This month (${c.thisMonth})`}
-                caption="So far"
-                value={formatUsd(c.current)}
-                highlight
-                loading={c.isLoading}
-              />
-              <Divider />
-              <CostLine
-                label={`Last month (${c.lastMonth})`}
-                caption={c.changeText}
-                value={formatUsd(c.last)}
-                loading={c.isLoading}
-              />
-              <Divider />
-              <CostLine
-                label={`Last 3 months (${c.firstMonth}–${c.thisMonth})`}
-                caption={`Includes ${c.thisMonth} so far`}
-                value={formatUsd(c.window)}
-                loading={c.isLoading}
-              />
-            </>
-          )}
-          <ViewCostDetails href={href} />
+          }
+        />
+        <EntityCostTiles orgName={orgId} filter={`project:${projectId}`} fill />
+        <Box sx={{ mt: 1.5 }}>
+          <EntityCostChart
+            orgName={orgId}
+            filter={`project:${projectId}`}
+            groupBy="agent"
+            names={names}
+          />
         </Box>
+        <ViewCostDetails href={href} />
       </CardContent>
     </Card>
   );
@@ -264,13 +181,13 @@ export const AgentCostSection: React.FC<AgentOverviewPanelProps> = ({
     <Box sx={{ width: "100%" }}>
       <CostSectionHeader
         add={
+          // An organization budget scoped to this agent (and its project).
           <AddBudget
             orgName={orgId}
             start={{ agent: `${projectId}/${agentId}` }}
             kind="Agent"
             label={agentName}
-            projectOwner={projectId}
-            {...budgetRoutes(orgId, projectId)}
+            {...budgetRoutes(orgId)}
           />
         }
       />
@@ -279,6 +196,13 @@ export const AgentCostSection: React.FC<AgentOverviewPanelProps> = ({
         filter={`agent:${projectId}/${agentId}`}
         fill
       />
+      <Box sx={{ mt: 1.5 }}>
+        <EntityCostChart
+          orgName={orgId}
+          filter={`agent:${projectId}/${agentId}`}
+          groupBy="model"
+        />
+      </Box>
       <ViewCostDetails
         href={dashboardHref(base, "agent", `${projectId}/${agentId}`)}
       />
@@ -316,6 +240,13 @@ export const LLMProviderCostSection: React.FC<{
         filter={`llmProvider:${providerId}`}
         fill
       />
+      <Box sx={{ mt: 1.5 }}>
+        <EntityCostChart
+          orgName={orgId}
+          filter={`llmProvider:${providerId}`}
+          groupBy="model"
+        />
+      </Box>
       <ViewCostDetails href={dashboardHref(base, "llmProvider", providerId)} />
     </Box>
   );

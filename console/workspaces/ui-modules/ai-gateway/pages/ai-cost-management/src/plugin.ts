@@ -67,15 +67,15 @@ export const aiCostManagementPlugin: PluginManifest = {
       load: loadPage,
     },
     {
-      // The project overview's side column, after the deployment pipeline (10).
+      // The project overview, below its agents.
       type: "panel",
       id: "project-overview-cost",
       useActivation: useCostRead,
-      mountPoint: PLUGIN_MOUNT_POINTS.projectOverviewSide,
+      mountPoint: PLUGIN_MOUNT_POINTS.projectOverviewMain,
       order: 20,
       load: () =>
         import("./panels/OverviewCostPanels").then((m) => ({
-          default: m.ProjectCostCard as ComponentType,
+          default: m.ProjectCostSection as ComponentType,
         })),
     },
     {

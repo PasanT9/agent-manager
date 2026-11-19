@@ -475,3 +475,32 @@ func TestGatewayResourceSync_ABudgetNamingAnotherOrganizationFails(t *testing.T)
 	assert.Equal(t, models.GatewayResourceStatusSynced, resp.Resources["dp-none"].Status, "left out: the gateway's organization")
 	assert.ElementsMatch(t, []string{"own-daily", "none-daily"}, saved)
 }
+
+func TestBudgetService_ANamedAgentGetsItsProjectConsumer(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	ctx := context.Background()
+	sent := budgetRequest{
+		Name: "hotel-booking-monthly", DisplayName: strPtr("Hotel booking"),
+		Limit: spec.BudgetLimit{Amount: "50", Period: "month", Action: "block"},
+		Consumers: []spec.BudgetConsumer{
+			{Type: "agent", Allocation: strPtr("shared"), Project: strPtr("api-platform"), Id: strPtr("hotel-booking")},
+		},
+	}
+	resp, err := env.create(ctx, budgetTestOrg, "alice", sent)
+	require.NoError(t, err)
+
+	stored := env.created[0].Configuration.Consumers
+	require.Len(t, stored, 2)
+	assert.Equal(t, "agent", stored[0].Type, "as sent")
+	assert.Equal(t, "project", stored[1].Type, "added last")
+	assert.Equal(t, "shared", stored[1].Allocation)
+	assert.Equal(t, "api-platform", *stored[1].ID)
+	assert.Nil(t, env.created[0].ProjectID, "still an organization budget")
+	require.Len(t, resp.Spec.Consumers, 2, "the response lists it")
+
+	// The body first sent, without the project consumer, can be sent again as an update.
+	sent.Limit.Amount = "60"
+	updated, err := env.svc.Update(ctx, budgetTestOrg, sent.Name, asKind(sent))
+	require.NoError(t, err)
+	assert.Equal(t, "60", updated.Spec.Limit.Amount)
+}

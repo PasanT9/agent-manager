@@ -44,6 +44,7 @@ import { TextInput } from "@agent-management-platform/views";
 import { INPUT_LIMITS } from "@agent-management-platform/types";
 import {
   budgetFromForm,
+  duplicateNameError,
   formFor,
   handleFor,
   serverFieldError,
@@ -97,7 +98,8 @@ export function QuickBudgetDialog({
   const budgets = useListBudgets({ orgName }, { limit: 100 });
   const destinations = useListEventDestinations(orgName, open);
   const create = useCreateBudget({ orgName });
-  const [form, setForm] = useState<BudgetFormState>(() => formFor(start));
+  const [initialForm] = useState<BudgetFormState>(() => formFor(start));
+  const [form, setForm] = useState<BudgetFormState>(initialForm);
   const [submitted, setSubmitted] = useState(false);
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
   const set = <K extends keyof BudgetFormState>(
@@ -107,9 +109,25 @@ export function QuickBudgetDialog({
     setServerErrors({});
     setForm((f) => ({ ...f, [key]: value }));
   };
+  const duplicateName = duplicateNameError(
+    form.displayName,
+    budgets.data?.budgets ?? [],
+  );
   const errors: Record<string, string | undefined> = {
     ...(submitted ? validateBudgetForm(form) : {}),
+    ...(submitted && duplicateName ? { displayName: duplicateName } : {}),
     ...serverErrors,
+  };
+  // Typed input is not thrown away by a stray click outside or Escape; Cancel and the
+  // close button still close.
+  const dirty = JSON.stringify(form) !== JSON.stringify(initialForm);
+  const closeUnlessDirty = (
+    _: unknown,
+    reason?: "backdropClick" | "escapeKeyDown",
+  ) => {
+    if (dirty && (reason === "backdropClick" || reason === "escapeKeyDown"))
+      return;
+    onClose();
   };
   const taken = useMemo(
     () => (budgets.data?.budgets ?? []).map((b) => b.metadata.name),
@@ -121,7 +139,7 @@ export function QuickBudgetDialog({
 
   const save = () => {
     setSubmitted(true);
-    if (Object.keys(validateBudgetForm(form)).length) return;
+    if (Object.keys(validateBudgetForm(form)).length || duplicateName) return;
     const body = budgetFromForm(form, {
       name: handleFor(form.displayName, taken),
       projectOwner,
@@ -141,7 +159,7 @@ export function QuickBudgetDialog({
   };
 
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
+    <Dialog open={open} onClose={closeUnlessDirty} fullWidth maxWidth="sm">
       <DialogTitle sx={{ pr: 6 }}>
         Add budget for {label}
         <IconButton

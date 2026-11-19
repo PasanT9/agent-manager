@@ -17,14 +17,19 @@
  */
 
 import {
+  allocationFormula,
   budgetFromForm,
   EMPTY_FORM,
   AMOUNT_PATTERN,
+  consumerBreaksExemptions,
   exemptionKinds,
+  duplicateNameError,
   formFieldOf,
   formFromBudget,
+  isBudgetNotFound,
   handleFor,
   newConsumer,
+  newExemption,
   validateBudgetForm,
   type BudgetFormState,
 } from "./budgetForm";
@@ -46,7 +51,7 @@ describe("budgetForm", () => {
     expect(handleFor("x".repeat(80), []).length).toBeLessThanOrEqual(50);
   });
 
-  it("sends an agent with its project, and reads it back as one row", () => {
+  it("sends only the agent; the server's project consumer reads back as its own row", () => {
     const agent = {
       ...newConsumer("agent"),
       id: "checkout",
@@ -56,7 +61,6 @@ describe("budgetForm", () => {
       name: "payments",
     });
     expect(budget.spec.consumers).toEqual([
-      { type: "project", allocation: "shared", id: "payments" },
       {
         type: "agent",
         allocation: "shared",
@@ -64,13 +68,16 @@ describe("budgetForm", () => {
         project: "payments",
       },
     ]);
+    // As stored: the server adds the agent's project first.
+    budget.spec.consumers = [
+      { type: "project", allocation: "shared", id: "payments" },
+      ...(budget.spec.consumers ?? []),
+    ];
     const back = formFromBudget(budget);
-    expect(back.consumers).toHaveLength(1);
-    expect(back.consumers[0]).toMatchObject({
-      type: "agent",
-      id: "checkout",
-      project: "payments",
-    });
+    expect(back.consumers.map((c) => [c.type, c.id, c.project])).toEqual([
+      ["project", "payments", ""],
+      ["agent", "checkout", "payments"],
+    ]);
   });
 
   it("owns a new budget by the project of the page, and keeps metadata on edit", () => {
@@ -235,6 +242,48 @@ describe("budgetForm", () => {
     }
   });
 
+  it("keeps a per-agent budget's project as its own condition", () => {
+    const back = formFromBudget({
+      apiVersion: "gateway.api-platform.wso2.com/v1",
+      kind: "Budget",
+      metadata: { name: "each-agent" },
+      spec: {
+        limit: { amount: "10.00", period: "month", action: "block" },
+        consumers: [
+          { type: "project", allocation: "shared", id: "online-shop" },
+          { type: "agent", allocation: "separate" },
+        ],
+      },
+    });
+    expect(back.consumers.map((c) => [c.type, c.id, c.project])).toEqual([
+      ["project", "online-shop", ""],
+      ["agent", "", ""],
+    ]);
+  });
+
+  it("refuses a name another budget uses, but not the budget's own", () => {
+    const budgets = [
+      {
+        metadata: { name: "shop-weekly" },
+        spec: { displayName: "Shop weekly" },
+      },
+    ];
+    expect(duplicateNameError(" shop WEEKLY ", budgets)).toBe(
+      "A budget named shop WEEKLY already exists.",
+    );
+    expect(
+      duplicateNameError("Shop weekly", budgets, "shop-weekly"),
+    ).toBeUndefined();
+    expect(duplicateNameError("Shop daily", budgets)).toBeUndefined();
+  });
+
+  it("tells a missing budget from a failure", () => {
+    expect(isBudgetNotFound({ code: "BUDGET_NOT_FOUND", message: "x" })).toBe(
+      true,
+    );
+    expect(isBudgetNotFound(new TypeError("Failed to fetch"))).toBe(false);
+  });
+
   it("maps the server's field names onto the form's fields", () => {
     expect(formFieldOf("spec.limit.amount")).toBe("amount");
     expect(formFieldOf("warnings.channels")).toBe("channels");
@@ -268,5 +317,80 @@ describe("budgetForm", () => {
         "providerId",
       ].sort(),
     );
+  });
+});
+
+describe("allocationFormula", () => {
+  it("shows one shared limit", () => {
+    expect(allocationFormula(100, "month", [])).toEqual({
+      formula: "$100.00 per month",
+    });
+  });
+  it("multiplies by today's counts", () => {
+    expect(
+      allocationFormula(10, "month", [
+        { noun: "provider", plural: "providers", count: 2 },
+        { noun: "agent", plural: "agents", count: 3 },
+      ]),
+    ).toEqual({
+      formula: "$10.00 × 2 providers × 3 agents = $60.00 per month",
+    });
+  });
+  it("uses letters for counts that can't be known", () => {
+    expect(
+      allocationFormula(10, "month", [
+        { noun: "provider", plural: "providers", count: 2 },
+        { noun: "user", plural: "users" },
+      ]),
+    ).toEqual({
+      formula: "$10.00 × 2 providers × N users = $20.00 × N per month",
+      legend: "N = number of users",
+    });
+  });
+  it("stands in for an amount not entered yet", () => {
+    expect(
+      allocationFormula(0, "day", [{ noun: "API key", plural: "API keys" }])
+        .formula,
+    ).toBe("Amount × N API keys = Amount × N per day");
+  });
+});
+
+describe("exemptions stay narrower than consumers", () => {
+  const agentExempt = {
+    ...newExemption("agent"),
+    id: "returns-bot",
+    project: "shop",
+  };
+  it("blocks adding a consumer the exemption is not narrower than", () => {
+    const f = {
+      consumers: [newConsumer("project")],
+      exemptions: [agentExempt],
+    };
+    expect(consumerBreaksExemptions(f, "agent")).toBe(true);
+    expect(consumerBreaksExemptions(f, "apiKey")).toBe(true);
+    expect(consumerBreaksExemptions(f, "attribute")).toBe(true);
+    expect(
+      consumerBreaksExemptions(
+        { consumers: [], exemptions: [agentExempt] },
+        "project",
+      ),
+    ).toBe(false);
+  });
+  it("flags an exemption the consumers no longer allow", () => {
+    const errors = validateBudgetForm(
+      form({
+        consumers: [{ ...newConsumer("agent"), id: "a", project: "p" }],
+        exemptions: [agentExempt],
+      }),
+    );
+    expect(errors["exemptions.0"]).toMatch(/narrower/);
+    expect(
+      validateBudgetForm(
+        form({
+          consumers: [newConsumer("project", "separate")],
+          exemptions: [agentExempt],
+        }),
+      )["exemptions.0"],
+    ).toBeUndefined();
   });
 });

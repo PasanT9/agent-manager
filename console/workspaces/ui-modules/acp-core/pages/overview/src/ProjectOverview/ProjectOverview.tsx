@@ -17,13 +17,19 @@
  */
 
 import React, { useEffect } from "react";
-import { Box, Button, Stack } from "@wso2/oxygen-ui";
+import { Button, Stack } from "@wso2/oxygen-ui";
 import { Edit } from "@wso2/oxygen-ui-icons-react";
 import { PageLayout } from "@agent-management-platform/views";
 import { AgentList } from "@agent-management-platform/level-resource-listing";
 import { generatePath, useNavigate, useParams } from "react-router-dom";
-import { absoluteRouteMap, PLUGIN_MOUNT_POINTS } from "@agent-management-platform/types";
-import { useFeatureAccess, useResourceAccess } from "@agent-management-platform/feature-management";
+import {
+  absoluteRouteMap,
+  PLUGIN_MOUNT_POINTS,
+} from "@agent-management-platform/types";
+import {
+  useFeatureAccess,
+  useResourceAccess,
+} from "@agent-management-platform/feature-management";
 import {
   useListAgents,
   useGetProject,
@@ -48,7 +54,11 @@ export const ProjectOverview: React.FC = () => {
     orgName: orgId,
     projName: projectId,
   });
-  const { data: agents, isSuccess: isAgentsLoaded, isFetching: isAgentsFetching } = useListAgents({
+  const {
+    data: agents,
+    isSuccess: isAgentsLoaded,
+    isFetching: isAgentsFetching,
+  } = useListAgents({
     orgName: orgId,
     projName: projectId,
   });
@@ -57,13 +67,32 @@ export const ProjectOverview: React.FC = () => {
 
   // A project with no agents has nothing to overview; send the user to create one.
   useEffect(() => {
-    if (canCreateAgent && orgId && projectId && hasNoAgents && !isAgentsFetching) {
+    if (
+      canCreateAgent &&
+      orgId &&
+      projectId &&
+      hasNoAgents &&
+      !isAgentsFetching
+    ) {
       // Replace so browser Back doesn't land here and redirect again.
-      navigate(generatePath(projectRoutes.children.newAgent.path, { orgId, projectId }), {
-        replace: true,
-      });
+      navigate(
+        generatePath(projectRoutes.children.newAgent.path, {
+          orgId,
+          projectId,
+        }),
+        {
+          replace: true,
+        },
+      );
     }
-  }, [canCreateAgent, orgId, projectId, hasNoAgents, isAgentsFetching, navigate]);
+  }, [
+    canCreateAgent,
+    orgId,
+    projectId,
+    hasNoAgents,
+    isAgentsFetching,
+    navigate,
+  ]);
 
   return (
     <PageLayout
@@ -77,7 +106,12 @@ export const ProjectOverview: React.FC = () => {
             size="small"
             startIcon={<Edit size={16} />}
             onClick={() =>
-              navigate(generatePath(projectRoutes.children.edit.path, { orgId, projectId }))
+              navigate(
+                generatePath(projectRoutes.children.edit.path, {
+                  orgId,
+                  projectId,
+                }),
+              )
             }
             disabled={!project}
           >
@@ -86,10 +120,19 @@ export const ProjectOverview: React.FC = () => {
         )
       }
     >
-      <Stack direction={{ xs: "column", lg: "row" }} gap={3} alignItems="flex-start">
-        <Box sx={{ flex: 1, minWidth: 0, width: "100%" }}>
+      <Stack
+        direction={{ xs: "column", lg: "row" }}
+        gap={3}
+        alignItems="flex-start"
+      >
+        <Stack gap={3} sx={{ flex: 1, minWidth: 0, width: "100%" }}>
           <AgentList showCreateAction />
-        </Box>
+          {/* Module sections below the agents (e.g. the project's cost). */}
+          <OverviewPanels<ProjectOverviewPanelProps>
+            mountPoint={PLUGIN_MOUNT_POINTS.projectOverviewMain}
+            props={{ orgId, projectId }}
+          />
+        </Stack>
         <Stack gap={2} sx={{ width: { xs: "100%", lg: 380 }, flexShrink: 0 }}>
           <AgentTypeSummary />
           {/* Module sections (e.g. the deployment pipeline, from agent-runtime). */}

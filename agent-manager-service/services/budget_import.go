@@ -576,8 +576,13 @@ func checkCSVColumns(cells map[string]string, row *importRow) {
 		row.fail(csvName, utils.ErrCodeValidation, "name must be 1-63 lowercase letters, digits or '-', starting and ending with a letter or digit.")
 	}
 	if required(csvAmount) {
-		amount, ok := new(big.Rat).SetString(cells[csvAmount])
-		if !budgetAmountPattern.MatchString(cells[csvAmount]) || !ok || amount.Sign() <= 0 {
+		// The pattern goes first, so exponents are refused before they are parsed.
+		valid := budgetAmountPattern.MatchString(cells[csvAmount])
+		if valid {
+			amount, ok := new(big.Rat).SetString(cells[csvAmount])
+			valid = ok && amount.Sign() > 0
+		}
+		if !valid {
 			row.fail(csvAmount, utils.ErrCodeValidation, "amount must be a decimal above zero, with at most 12 whole digits, 2 decimals and no leading zeros, e.g. 100.00.")
 		}
 	}

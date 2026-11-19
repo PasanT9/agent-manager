@@ -21,6 +21,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import type {
   Budget,
   BudgetListResponse,
+  BudgetImportOnExisting,
+  BudgetImportResult,
   BudgetPathParams,
   BudgetUsageListResponse,
   CostReport,
@@ -36,10 +38,37 @@ import {
   getCosts,
   getBudget,
   getBudgetUsage,
+  importBudgets,
   listBudgets,
   updateBudget,
 } from "../apis/budgets";
-import { useApiMutation, useApiQuery } from "../../shared/react-query-notifications";
+import {
+  extractServerErrorMessage,
+  MAX_SNACKBAR_REASON_LENGTH,
+  useApiMutation,
+  useApiQuery,
+} from "../../shared/react-query-notifications";
+
+/** True for a request that never reached the server (browser "Failed to fetch"). */
+export function isNetworkError(error: unknown): boolean {
+  const message = (error as { message?: unknown } | null)?.message;
+  return (
+    error instanceof TypeError ||
+    (typeof message === "string" && /failed to fetch|networkerror|load failed/i.test(message))
+  );
+}
+
+/**
+ * The message for a budget change that failed: a plain one when the server could not
+ * be reached (never the browser's "Failed to fetch"), else what the server said.
+ */
+function budgetErrorMessage(verb: string) {
+  return (error: unknown) =>
+    isNetworkError(error)
+      ? `Couldn't ${verb} the budget: the server can't be reached. Try again.`
+      : (extractServerErrorMessage(error, { maxReasonLength: MAX_SNACKBAR_REASON_LENGTH }) ??
+        `Couldn't ${verb} the budget.`);
+}
 import { useUIModulePresent } from "../../shared/useUIModulePresent";
 
 export function useListBudgets(params: ListBudgetsPathParams, query?: ListBudgetsQuery) {
@@ -77,6 +106,7 @@ export function useCreateBudget(params: ListBudgetsPathParams) {
   const queryClient = useQueryClient();
   return useApiMutation<Budget, unknown, Budget>({
     action: { verb: "create", target: "budget" },
+    errorMessage: budgetErrorMessage("create"),
     mutationFn: (body) => createBudget(params, body, getToken),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["budgets"] });
@@ -89,6 +119,7 @@ export function useUpdateBudget(params: BudgetPathParams) {
   const queryClient = useQueryClient();
   return useApiMutation<Budget, unknown, Budget>({
     action: { verb: "update", target: "budget" },
+    errorMessage: budgetErrorMessage("update"),
     mutationFn: (body) => updateBudget(params, body, getToken),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["budgets"] });
@@ -102,6 +133,7 @@ export function useDeleteBudget() {
   const queryClient = useQueryClient();
   return useApiMutation<void, unknown, BudgetPathParams>({
     action: { verb: "delete", target: "budget" },
+    errorMessage: budgetErrorMessage("delete"),
     mutationFn: (params) => deleteBudget(params, getToken),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["budgets"] });
@@ -116,5 +148,45 @@ export function useCosts(params: GetCostsPathParams, query?: GetCostsQuery) {
     queryKey: ["costs", params, query],
     queryFn: () => getCosts(params, query, getToken),
     enabled: gatewayPresent && !!params.orgName,
+  });
+}
+
+/** A CSV file to import, and what to do with rows naming budgets that exist. */
+export interface BudgetImportRequest {
+  csv: string;
+  onExisting: BudgetImportOnExisting;
+}
+
+/** Checks a CSV file without saving anything (dryRun); its outcome is shown in place. */
+export function useCheckBudgetImport(params: ListBudgetsPathParams) {
+  const { getToken } = useAuthHooks();
+  return useApiMutation<BudgetImportResult, unknown, BudgetImportRequest>({
+    showSuccess: false,
+    showError: false,
+    mutationFn: ({ csv, onExisting }) =>
+      importBudgets(params, csv, { dryRun: true, onExisting }, getToken),
+  });
+}
+
+/** Imports the budgets of a CSV file; errors are shown in place. */
+export function useImportBudgets(params: ListBudgetsPathParams) {
+  const { getToken } = useAuthHooks();
+  const queryClient = useQueryClient();
+  return useApiMutation<BudgetImportResult, unknown, BudgetImportRequest>({
+    showError: false,
+    successMessage: (result: BudgetImportResult) => {
+      const { created, updated, skipped } = result.summary;
+      const parts = [
+        created ? `${created} created` : "",
+        updated ? `${updated} updated` : "",
+        skipped ? `${skipped} skipped` : "",
+      ].filter(Boolean);
+      return `Budgets imported: ${parts.join(", ") || "nothing to change"}.`;
+    },
+    mutationFn: ({ csv, onExisting }) =>
+      importBudgets(params, csv, { onExisting }, getToken),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["budgets"] });
+    },
   });
 }

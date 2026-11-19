@@ -17762,6 +17762,7 @@ components:
         expression:
           type: string
           description: "attribute only: CEL, bool when shared, string or list(string) when separate"
+          maxLength: 1024
     BudgetExemption:
       type: object
       required: [type]
@@ -17778,6 +17779,7 @@ components:
         expression:
           type: string
           description: "attribute only: CEL returning bool"
+          maxLength: 1024
     BudgetWarnings:
       type: object
       required: [thresholds, channels]

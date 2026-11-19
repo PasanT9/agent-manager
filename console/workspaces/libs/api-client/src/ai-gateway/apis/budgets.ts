@@ -16,18 +16,22 @@
  * under the License.
  */
 
-import type {
-  Budget,
-  BudgetListResponse,
-  BudgetPathParams,
-  BudgetUsageListResponse,
-  CostReport,
-  GetCostsPathParams,
-  GetCostsQuery,
-  ListBudgetsPathParams,
-  ListBudgetsQuery,
-  ListQuery,
+import {
+  globalConfig,
+  type Budget,
+  type BudgetListResponse,
+  type BudgetPathParams,
+  type BudgetImportResult,
+  type BudgetUsageListResponse,
+  type CostReport,
+  type GetCostsPathParams,
+  type GetCostsQuery,
+  type ImportBudgetsQuery,
+  type ListBudgetsPathParams,
+  type ListBudgetsQuery,
+  type ListQuery,
 } from "@agent-management-platform/types";
+import { backendFetch } from "@agent-management-platform/auth";
 import {
   encodeRequired,
   httpDELETE,
@@ -138,4 +142,38 @@ export async function getCosts(
   const res = await httpGET(`${SERVICE_BASE}/orgs/${org}/costs`, { searchParams, token });
   if (!res.ok) throw await res.json();
   return res.json();
+}
+
+/**
+ * Imports budgets from a CSV file (POST /budgets/import, text/csv). A file with row errors
+ * comes back as a 400 that still carries the per-row result, so it is returned like a
+ * success; any other failure is thrown.
+ */
+export async function importBudgets(
+  params: ListBudgetsPathParams,
+  csv: string,
+  query?: ImportBudgetsQuery,
+  getToken?: () => Promise<string>,
+): Promise<BudgetImportResult> {
+  const org = encodeRequired(params.orgName, "orgName");
+  const token = getToken ? await getToken() : undefined;
+  const search = new URLSearchParams();
+  if (query?.dryRun !== undefined) search.set("dryRun", String(query.dryRun));
+  if (query?.onExisting) search.set("onExisting", query.onExisting);
+  const headers: Record<string, string> = { "Content-Type": "text/csv" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await backendFetch(
+    `${globalConfig.apiBaseUrl}${SERVICE_BASE}/orgs/${org}/budgets/import?${search.toString()}`,
+    { method: "POST", headers, body: csv },
+  );
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    throw Object.assign(new Error(`HTTP error! status: ${res.status}`), { status: res.status });
+  }
+  if (res.ok || (res.status === 400 && Array.isArray((body as BudgetImportResult)?.results))) {
+    return body as BudgetImportResult;
+  }
+  throw body;
 }

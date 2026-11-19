@@ -31,12 +31,24 @@ import { Bar, BarChart, Cell } from "@wso2/oxygen-ui-charts-react";
 import { useCosts } from "@agent-management-platform/api-client";
 import { NESTED_CARD_SX } from "@agent-management-platform/shared-component";
 import {
+  amount,
   changePercent,
+  type CostNames,
+  zeroCostNote,
+  entryMonthly,
   formatUsd,
+  groupKey,
+  groupLabel,
   keptMonths,
   monthLabel,
   monthlyTotals,
 } from "../AICostManagement/costFormat";
+import {
+  CostChart,
+  type CostChartRow,
+  type CostSeries,
+} from "../AICostManagement/subComponents/CostChart";
+import type { CostGroupBy } from "@agent-management-platform/types";
 
 export interface EntityCostPanelProps {
   orgName: string;
@@ -238,5 +250,103 @@ export function EntityCostTiles({
         />
       </Grid>
     </Grid>
+  );
+}
+
+/** Groups shown on their own in an entity's chart; the rest are summed as "Other". */
+const CHART_GROUPS = 5;
+
+/**
+ * One entity's monthly cost as the Dashboard's chart, stacked by `groupBy` (an agent's
+ * cost by model): the three kept UTC months, the current one so far.
+ */
+export function EntityCostChart({
+  orgName,
+  filter,
+  groupBy,
+  height = 260,
+  names,
+  bare,
+}: EntityCostPanelProps & {
+  groupBy: CostGroupBy;
+  height?: number;
+  /** Display names for the groups (agents, projects, providers). */
+  names?: CostNames;
+  /** Inside another card (a side column): no card of its own. */
+  bare?: boolean;
+}) {
+  const { data, isLoading, error } = useCosts(
+    { orgName },
+    { groupBy, filter: [filter] },
+  );
+  if (error) return null; // the tiles above already say cost couldn't be loaded
+  if (isLoading) return <Skeleton variant="rounded" height={height} />;
+  const entries = data?.costByGroup ?? [];
+  const months = keptMonths(entries);
+  // Groups that cost nothing (no price, no usage) would only crowd the legend.
+  const ranked = entries
+    .filter((g) => amount(g.cost) > 0)
+    .sort((a, b) => amount(b.cost) - amount(a.cost));
+  const zeroCost = entries
+    .filter((g) => amount(g.cost) <= 0)
+    .map((g) => groupLabel(groupKey(g, groupBy), groupBy, true, names));
+  const top = ranked.slice(0, CHART_GROUPS);
+  const rest = ranked.slice(CHART_GROUPS);
+  const series: (CostSeries & { costs: number[] })[] = top.map((g, i) => ({
+    key: `s${i}`,
+    name: groupLabel(groupKey(g, groupBy), groupBy, true, names),
+    costs: entryMonthly(g, months),
+  }));
+  if (rest.length) {
+    series.push({
+      key: "other",
+      name: `Other (${rest.length})`,
+      other: true,
+      costs: monthlyTotals(rest, months),
+    });
+  }
+  const rows: CostChartRow[] = months.map((m, i) => {
+    const row: CostChartRow = {
+      month:
+        i === months.length - 1 ? `${monthLabel(m)} (so far)` : monthLabel(m),
+    };
+    // Exact amounts: the tooltip adds them, and rounds only what it shows.
+    series.forEach((s) => {
+      row[s.key] = s.costs[i];
+    });
+    return row;
+  });
+  const title = (
+    <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>
+      Monthly cost by {groupBy === "llmProvider" ? "LLM provider" : groupBy}{" "}
+      (USD)
+    </Typography>
+  );
+  // With no cost the chart is still drawn, empty, over the three months.
+  const chart = (
+    <>
+      <CostChart rows={rows} series={series} height={height} />
+      {zeroCost.length > 0 && (
+        <Typography variant="caption" color="text.secondary">
+          {zeroCostNote(zeroCost)}
+        </Typography>
+      )}
+    </>
+  );
+  if (bare) {
+    return (
+      <Box>
+        {title}
+        {chart}
+      </Box>
+    );
+  }
+  return (
+    <Card variant="outlined" sx={NESTED_CARD_SX}>
+      <CardContent>
+        {title}
+        {chart}
+      </CardContent>
+    </Card>
   );
 }

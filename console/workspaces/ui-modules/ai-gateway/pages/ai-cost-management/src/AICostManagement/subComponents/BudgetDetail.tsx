@@ -26,7 +26,7 @@ import {
   Chip,
   Divider,
   formatRelativeTime,
-  ListingTable,
+  Link,
   Skeleton,
   Stack,
   Tooltip,
@@ -50,16 +50,15 @@ import {
   Users,
   Wallet,
   Zap,
+  SearchX,
 } from "@wso2/oxygen-ui-icons-react";
-import { useNavigate } from "react-router-dom";
+import { Link as RouterLink, useNavigate } from "react-router-dom";
 import {
   useBudgetUsage,
-  useDeleteBudget,
   useGetBudget,
   useUpdateBudget,
 } from "@agent-management-platform/api-client";
 import { useFeatureManagement } from "@agent-management-platform/feature-management";
-import { useConfirmationDialog } from "@agent-management-platform/shared-component";
 import {
   PageLayout,
   PageMetaItem,
@@ -71,8 +70,11 @@ import {
   type BudgetConsumer,
   type BudgetPeriod,
 } from "@agent-management-platform/types";
-import { amount, formatUsd, type CostNames } from "../costFormat";
+import { amount, type CostNames } from "../costFormat";
+import { isBudgetNotFound } from "../budgetForm";
+import { useConfirmDeleteBudget } from "./useConfirmDeleteBudget";
 import { PERIOD_LABELS, inSentence } from "./budgetLabels";
+import { separateKind } from "./BudgetsTab";
 import { useEntityNames } from "../useEntityNames";
 
 interface BudgetDetailProps {
@@ -82,6 +84,34 @@ interface BudgetDetailProps {
   backHref: string;
   /** The budget's edit page. */
   editHref: string;
+  /** A project's view: budgets are managed at organization level only. */
+  readOnly?: boolean;
+  /** The Requests charged $0 page. */
+  unpricedHref?: string;
+}
+
+/** The Requests charged $0 page narrowed to what the budget names: its agent, else its
+ * project, else its LLM provider. */
+function unpricedLink(
+  href: string,
+  budget: Budget | undefined,
+  projectView: boolean,
+): string {
+  const shared = (budget?.spec.consumers ?? []).filter(
+    (c) => (c.allocation ?? "shared") === "shared" && c.id,
+  );
+  const agent = shared.find((c) => c.type === "agent" && c.project);
+  const project = shared.find((c) => c.type === "project");
+  const provider = budget?.spec.resource?.id;
+  const [groupBy, pick] = agent
+    ? ["agent", `${agent.project}/${agent.id}`]
+    : project && !projectView // a project's page is that project already
+      ? ["project", project.id ?? ""]
+      : provider
+        ? ["llmProvider", provider]
+        : [];
+  if (!groupBy || !pick) return href;
+  return `${href}?${new URLSearchParams({ groupBy, pick }).toString()}`;
 }
 
 const KIND_LABEL: Record<BudgetConsumer["type"], string> = {
@@ -200,6 +230,7 @@ function Figure({
 
 /** This period's spend against the limit. */
 function ThisPeriod({ budget }: { budget: Budget }) {
+  if (separateKind(budget)) return <ThisPeriodEach budget={budget} />;
   const { limit: lim, warnings } = budget.spec;
   const limit = amount(lim.amount);
   const period = budget.status?.currentPeriod;
@@ -354,7 +385,91 @@ function ThisPeriod({ budget }: { budget: Budget }) {
           <Box sx={{ flex: 1 }}>
             <Figure
               icon={<Coins size={28} />}
-              {...remainingFigure(limit, spent, blockAt)}
+              {...remainingFigure(
+                limit,
+                spent,
+                blockAt,
+                budget.spec.status === "inactive",
+              )}
+            />
+          </Box>
+          <Box sx={{ flex: 1 }}>
+            <Figure
+              icon={<CalendarDays size={28} />}
+              label="Resets"
+              value={span?.resets ?? "—"}
+              hint="UTC"
+            />
+          </Box>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
+const PERIOD_PER: Record<string, string> = {
+  day: "per day",
+  week: "per week",
+  month: "per month",
+};
+
+/**
+ * This period of a budget counted separately (each agent, each API key, ...): every
+ * allowance has the whole limit, so the total is a sum, not a share of it. The list of
+ * allowances below shows each one against its own limit.
+ */
+function ThisPeriodEach({ budget }: { budget: Budget }) {
+  const lim = budget.spec.limit;
+  const kind = separateKind(budget) ?? "consumer";
+  const period = budget.status?.currentPeriod;
+  const span = period ? periodSpan(period.periodStart, lim.period) : null;
+  const limit = amount(lim.amount);
+  const blockAt = lim.action === "block" ? (lim.blockAt ?? 100) : undefined;
+  return (
+    <Card variant="outlined" sx={{ height: "100%" }}>
+      <CardContent sx={{ p: 3 }}>
+        <Stack
+          direction="row"
+          justifyContent="space-between"
+          alignItems="center"
+        >
+          <Typography variant="subtitle1" fontWeight={600}>
+            This period
+          </Typography>
+          {span && (
+            <Stack
+              direction="row"
+              spacing={1}
+              alignItems="center"
+              color="text.secondary"
+            >
+              <CalendarDays size={16} />
+              <Typography variant="body2">
+                {PERIOD_LABELS[lim.period]} · {span.from} – {span.resets} (UTC)
+              </Typography>
+            </Stack>
+          )}
+        </Stack>
+        <Typography variant="h6" sx={{ mt: 2 }}>
+          {`Each ${kind} can spend up to ${usd(limit)} ${PERIOD_PER[lim.period]}`}
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          {blockAt !== undefined
+            ? `Its requests are blocked once it reaches ${usd((limit * blockAt) / 100)}.`
+            : "It is allowed to go over; only warnings are sent."}
+        </Typography>
+        <Divider sx={{ my: 2.5 }} />
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          divider={<Divider orientation="vertical" flexItem />}
+          spacing={3}
+        >
+          <Box sx={{ flex: 1 }}>
+            <Figure
+              icon={<Coins size={28} />}
+              label="Spent in total"
+              value={usd(amount(period?.spent))}
+              hint="Across every allowance"
             />
           </Box>
           <Box sx={{ flex: 1 }}>
@@ -375,14 +490,21 @@ function ThisPeriod({ budget }: { budget: Budget }) {
  * What is left this period: up to the block point for a Block budget (requests stop
  * there, not at the amount), up to the amount for an Allow budget, which can go over.
  */
-function remainingFigure(limit: number, spent: number, blockAt?: number) {
+function remainingFigure(
+  limit: number,
+  spent: number,
+  blockAt?: number,
+  inactive = false,
+) {
   if (blockAt !== undefined) {
     const point = (limit * blockAt) / 100;
     return {
       label: "Remaining",
       value: usd(Math.max(point - spent, 0)),
-      hint:
-        spent >= point
+      // A disabled budget counts and blocks nothing.
+      hint: inactive
+        ? "Not enforced while disabled"
+        : spent >= point
           ? "Requests are blocked"
           : `Until blocking at ${usd(point)}`,
     };
@@ -477,7 +599,7 @@ function ScopeRow({
 }
 
 const allocationText = (a?: string) =>
-  a === "separate" ? "Separate allowance each" : "Shared allowance";
+  a === "separate" ? "Separate budget for each" : "Shared budget";
 
 /** A consumer or exemption as the page names it: display names where known. */
 function entityText(
@@ -493,7 +615,7 @@ function entityText(
       ? (names.agent?.[`${e.project}/${e.id}`] ?? e.id)
       : e.id;
     return e.project
-      ? `${agent} (${names.project?.[e.project] ?? e.project})`
+      ? `${names.project?.[e.project] ?? e.project} / ${agent}`
       : agent;
   }
   return e.id;
@@ -520,9 +642,13 @@ function Scope({ budget, orgName }: { budget: Budget; orgName: string }) {
             value={
               spec.resource?.id
                 ? (names.llmProvider?.[spec.resource.id] ?? spec.resource.id)
-                : "LLM provider"
+                : "All LLM providers"
             }
-            note={spec.resource?.id ? "LLM provider" : "Any LLM provider"}
+            note={
+              spec.resource?.id
+                ? "LLM provider"
+                : "Every LLM provider in the organization"
+            }
             badge={
               spec.resource?.id
                 ? undefined
@@ -600,17 +726,21 @@ function AlertRow({
       sx={{ py: 1.75, px: 1 }}
     >
       <Box sx={{ color: "text.secondary", display: "flex" }}>{icon}</Box>
-      <Typography variant="body1" sx={{ width: 140, flexShrink: 0 }}>
+      <Typography
+        variant="body1"
+        sx={{ width: { xs: 90, sm: 140 }, flexShrink: 0 }}
+      >
         {label}
       </Typography>
-      <Box sx={{ flex: 1 }}>{children}</Box>
+      <Box sx={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
+        {children}
+      </Box>
     </Stack>
   );
 }
 
 function Alerts({ budget }: { budget: Budget }) {
-  const { limit: lim, warnings } = budget.spec;
-  const limit = amount(lim.amount);
+  const { warnings } = budget.spec;
   return (
     <Card variant="outlined" sx={{ height: "100%" }}>
       <CardContent sx={{ p: 3 }}>
@@ -624,11 +754,7 @@ function Alerts({ budget }: { budget: Budget }) {
             {warnings?.thresholds.length ? (
               <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
                 {warnings.thresholds.map((t) => (
-                  <Chip
-                    key={t}
-                    size="small"
-                    label={`${t}% · ${formatUsd((limit * t) / 100)}`}
-                  />
+                  <Chip key={t} size="small" label={`${t}%`} />
                 ))}
               </Stack>
             ) : (
@@ -659,13 +785,19 @@ function Alerts({ budget }: { budget: Budget }) {
 /** Spend per allowance, when the budget counts consumers separately. */
 function Allowances({ budget, orgName }: { budget: Budget; orgName?: string }) {
   const limit = amount(budget.spec.limit.amount);
+  const blockAt =
+    budget.spec.limit.action === "block"
+      ? (budget.spec.limit.blockAt ?? 100)
+      : undefined;
+  const point = blockAt !== undefined ? (limit * blockAt) / 100 : limit;
+  const inactive = budget.spec.status === "inactive";
+  const names = useEntityNames(orgName ?? "");
   const usage = useBudgetUsage(
     { orgName, budgetName: budget.metadata.name },
     { limit: 100 },
   );
-  const allowances = (usage.data?.allowances ?? []).filter(
-    (a) => Object.keys(a.allowance).length > 0,
-  );
+  const kind = separateKind(budget);
+  if (!kind) return null;
   if (usage.error) {
     return (
       <Alert
@@ -684,48 +816,179 @@ function Allowances({ budget, orgName }: { budget: Budget; orgName?: string }) {
       </Alert>
     );
   }
-  if (!allowances.length) return null;
+  const rows = allowanceRows(budget, usage.data?.allowances ?? [], names);
   return (
     <Card variant="outlined">
       <CardContent sx={{ p: 3 }}>
         <CardHeading
           icon={<Layers size={24} />}
-          title="Spend per allowance"
-          purpose={`Each consumer counted separately has its own ${usd(limit)} this period.`}
+          title="Spend breakdown"
+          purpose="Each entry has its own limit for the current period."
         />
-        <ListingTable>
-          <ListingTable.Head>
-            <ListingTable.Row>
-              <ListingTable.Cell>Allowance</ListingTable.Cell>
-              <ListingTable.Cell align="right">Spent</ListingTable.Cell>
-              <ListingTable.Cell align="right">Of its limit</ListingTable.Cell>
-              <ListingTable.Cell align="right">Charged $0</ListingTable.Cell>
-            </ListingTable.Row>
-          </ListingTable.Head>
-          <ListingTable.Body>
-            {allowances.map((a) => {
-              const value = amount(a.spent);
+        {usage.isLoading ? (
+          <Skeleton variant="rounded" height={120} />
+        ) : rows.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            Nothing has been spent this period.
+          </Typography>
+        ) : (
+          <Stack divider={<Divider flexItem />}>
+            {rows.map((r) => {
+              const share = limit > 0 ? (r.spent / limit) * 100 : 0;
+              const reached = r.spent >= point;
+              const fill = reached
+                ? "error.main"
+                : share >= (blockAt ?? 100) * 0.8
+                  ? "warning.main"
+                  : "primary.main";
               return (
-                <ListingTable.Row key={JSON.stringify(a.allowance)}>
-                  <ListingTable.Cell>
-                    {Object.values(a.allowance).join(" · ")}
-                  </ListingTable.Cell>
-                  <ListingTable.Cell align="right">
-                    {formatUsd(value)}
-                  </ListingTable.Cell>
-                  <ListingTable.Cell align="right">
-                    {limit > 0 ? `${Math.round((value / limit) * 100)}%` : "—"}
-                  </ListingTable.Cell>
-                  <ListingTable.Cell align="right">
-                    {a.unpricedRequests}
-                  </ListingTable.Cell>
-                </ListingTable.Row>
+                <Stack key={r.key} spacing={0.75} sx={{ py: 1.5 }}>
+                  <Stack
+                    direction={{ xs: "column", sm: "row" }}
+                    justifyContent="space-between"
+                    alignItems={{ xs: "flex-start", sm: "baseline" }}
+                    spacing={{ xs: 0.25, sm: 2 }}
+                  >
+                    <Typography
+                      variant="body2"
+                      fontWeight={600}
+                      sx={{ overflowWrap: "anywhere", minWidth: 0 }}
+                    >
+                      {r.label}
+                    </Typography>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        fontVariantNumeric: "tabular-nums",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {`${usd(r.spent)} of ${usd(limit)} · ${Math.round(share)}%`}
+                    </Typography>
+                  </Stack>
+                  <Box
+                    sx={{
+                      height: 8,
+                      borderRadius: 4,
+                      bgcolor: "action.hover",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        width: `${Math.min(share, 100)}%`,
+                        height: "100%",
+                        bgcolor: fill,
+                        borderRadius: 4,
+                      }}
+                    />
+                  </Box>
+                  <Typography
+                    variant="caption"
+                    color={
+                      reached && !inactive ? "error.main" : "text.secondary"
+                    }
+                  >
+                    {inactive
+                      ? "Not enforced while disabled"
+                      : reached
+                        ? blockAt !== undefined
+                          ? "Requests are blocked"
+                          : `Over the limit by ${usd(r.spent - limit)}`
+                        : blockAt !== undefined
+                          ? `${usd(point - r.spent)} until blocking`
+                          : `${usd(limit - r.spent)} remaining`}
+                  </Typography>
+                </Stack>
               );
             })}
-          </ListingTable.Body>
-        </ListingTable>
+          </Stack>
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+interface AllowanceRow {
+  key: string;
+  label: string;
+  spent: number;
+  unpriced: number;
+}
+
+/**
+ * Every allowance of a budget counted separately: those with spend this period and, for
+ * agents and projects, the ones in scope that have not spent yet (they can be listed;
+ * API keys, users and attribute values cannot). Display names; highest share first.
+ */
+function allowanceRows(
+  budget: Budget,
+  usage: {
+    allowance: Record<string, string>;
+    spent: string;
+    unpricedRequests: number;
+  }[],
+  names: CostNames,
+): AllowanceRow[] {
+  const consumers = budget.spec.consumers ?? [];
+  const exemptions = budget.spec.exemptions ?? [];
+  const label = (a: Record<string, string>) => {
+    if (a.agent) {
+      const project = a.project ?? "";
+      const agent = names.agent?.[`${project}/${a.agent}`] ?? a.agent;
+      return project
+        ? `${names.project?.[project] ?? project} / ${agent}`
+        : agent;
+    }
+    if (a.project) return names.project?.[a.project] ?? a.project;
+    if (a.llmProvider)
+      return names.llmProvider?.[a.llmProvider] ?? a.llmProvider;
+    return Object.values(a).join(" · ") || "All traffic";
+  };
+  const rows = new Map<string, AllowanceRow>();
+  for (const u of usage) {
+    const key = JSON.stringify(u.allowance);
+    rows.set(key, {
+      key,
+      label: label(u.allowance),
+      spent: amount(u.spent),
+      unpriced: u.unpricedRequests,
+    });
+  }
+  const zero = (a: Record<string, string>) => {
+    const key = JSON.stringify(a);
+    if (!rows.has(key))
+      rows.set(key, { key, label: label(a), spent: 0, unpriced: 0 });
+  };
+  const owner = budget.metadata.annotations?.[BUDGET_PROJECT_ANNOTATION];
+  const sharedProject =
+    consumers.find((c) => c.type === "project" && c.id)?.id ?? owner;
+  const separate = (type: string) =>
+    consumers.some((c) => c.type === type && c.allocation === "separate");
+  if (separate("agent")) {
+    for (const key of Object.keys(names.agent ?? {})) {
+      const [project, agent] = key.split("/");
+      if (sharedProject && project !== sharedProject) continue;
+      if (
+        exemptions.some(
+          (e) => e.type === "agent" && e.id === agent && e.project === project,
+        )
+      )
+        continue;
+      if (exemptions.some((e) => e.type === "project" && e.id === project))
+        continue;
+      // The gateway reports an agent as its project and agent (allowance values).
+      zero({ agent, project });
+    }
+  } else if (separate("project")) {
+    for (const project of Object.keys(names.project ?? {})) {
+      if (exemptions.some((e) => e.type === "project" && e.id === project))
+        continue;
+      zero({ project });
+    }
+  }
+  return [...rows.values()].sort(
+    (a, b) => b.spent - a.spent || a.label.localeCompare(b.label),
   );
 }
 
@@ -735,27 +998,33 @@ export function BudgetDetail({
   budgetName,
   backHref,
   editHref,
+  readOnly,
+  unpricedHref,
 }: BudgetDetailProps) {
   const navigate = useNavigate();
   const { hasAccess } = useFeatureManagement();
-  const canUpdate = hasAccess("budget_update");
-  const canDelete = hasAccess("budget_delete");
+  const canUpdate = !readOnly && hasAccess("budget_update");
+  const canDelete = !readOnly && hasAccess("budget_delete");
+  const canReadCost = hasAccess("ai_cost_read");
   const {
     data: budget,
     isLoading,
     error,
+    refetch,
   } = useGetBudget({ orgName, budgetName });
+  const notFound = isBudgetNotFound(error);
   const { mutate: update, isPending: isUpdating } = useUpdateBudget({
     orgName,
     budgetName,
   });
-  const { mutate: remove, isPending: isDeleting } = useDeleteBudget();
-  const { addConfirmation } = useConfirmationDialog();
+  const { confirmDelete: confirmBudgetDelete, isDeleting } =
+    useConfirmDeleteBudget(orgName);
 
   const fromGateway = budget?.status?.origin === "gateway_api";
   const inactive = budget?.spec.status === "inactive";
-  const name =
-    budget?.spec.displayName ?? budget?.metadata.name ?? budgetName ?? "";
+  const name = notFound
+    ? "Budget not found"
+    : (budget?.spec.displayName ?? budget?.metadata.name ?? budgetName ?? "");
   const owner = budget?.metadata.annotations?.[BUDGET_PROJECT_ANNOTATION];
   const ownerName = useEntityNames(orgName ?? "").project?.[owner ?? ""];
   const updatedAt = budget?.status?.updatedAt ?? budget?.status?.createdAt;
@@ -773,20 +1042,7 @@ export function BudgetDetail({
   };
 
   const confirmDelete = () =>
-    addConfirmation({
-      title: `Delete ${name}?`,
-      description:
-        "The budget stops counting and blocking at once, and its spend history is deleted. " +
-        "This can't be undone.",
-      confirmButtonText: "Delete",
-      confirmButtonColor: "error",
-      confirmButtonIcon: <Trash2 size={16} />,
-      onConfirm: () =>
-        remove(
-          { orgName, budgetName },
-          { onSuccess: () => navigate(backHref) },
-        ),
-    });
+    confirmBudgetDelete(budgetName ?? "", name, () => navigate(backHref));
 
   const gatewayNote =
     "Created on a gateway: only its name, description and warnings change here.";
@@ -844,7 +1100,11 @@ export function BudgetDetail({
       backHref={backHref}
       backLabel="Back to budgets"
       isLoading={isLoading}
-      avatar={{ children: <Wallet size={22} />, color: "primary.main" }}
+      avatar={
+        notFound
+          ? null
+          : { children: <Wallet size={22} />, color: "primary.main" }
+      }
       titleTail={
         budget && (
           <Stack direction="row" spacing={1} alignItems="center" sx={{ ml: 1 }}>
@@ -873,12 +1133,28 @@ export function BudgetDetail({
       }
       actions={actions}
     >
-      {error ? (
+      {notFound ? (
+        <StateNotice
+          icon={SearchX}
+          title={`There is no budget named ${budgetName}`}
+          description="It may have been deleted, or the link is wrong."
+          actions={
+            <Button variant="outlined" onClick={() => navigate(backHref)}>
+              Back to budgets
+            </Button>
+          }
+        />
+      ) : error ? (
         <StateNotice
           icon={ServerCrash}
           tone="error"
           title="Couldn't load the budget"
-          description="It may have been deleted. Go back to the budgets and try again."
+          description="The server didn't answer. Try again in a moment."
+          actions={
+            <Button variant="outlined" onClick={() => void refetch()}>
+              Retry
+            </Button>
+          }
         />
       ) : isLoading || !budget || !lim ? (
         <Stack spacing={2.5}>
@@ -930,6 +1206,17 @@ export function BudgetDetail({
                 <Typography variant="body2" color="text.secondary">
                   Requests charged $0 this period, not in the spend
                 </Typography>
+                {unpricedHref && canReadCost && (
+                  <Link
+                    component={RouterLink}
+                    to={unpricedLink(unpricedHref, budget, !!readOnly)}
+                    underline="hover"
+                    variant="body2"
+                    sx={{ display: "inline-block", mt: 1 }}
+                  >
+                    View requests charged $0
+                  </Link>
+                )}
               </SideCard>
             </Stack>
           </Box>

@@ -361,6 +361,25 @@ func TestBudgetService_CreateRefusesInvalidPayloads(t *testing.T) {
 		{"long display name", func(r *budgetRequest) { r.DisplayName = strPtr(strings.Repeat("x", 256)) }, utils.ErrCodeValidation, "displayName"},
 		{"zero amount", func(r *budgetRequest) { r.Limit.Amount = "0.00" }, utils.ErrCodeValidation, "limit.amount"},
 		{"three decimals", func(r *budgetRequest) { r.Limit.Amount = "1.005" }, utils.ErrCodeValidation, "limit.amount"},
+		{"exponent amount", func(r *budgetRequest) { r.Limit.Amount = "1e1000000" }, utils.ErrCodeValidation, "limit.amount"},
+		{"consumer expression does not compile", func(r *budgetRequest) {
+			r.Consumers[0].Expression = strPtr("request.Headers[")
+		}, utils.ErrCodeInvalidExpression, "consumers[0].expression"},
+		{"shared consumer expression returns a string", func(r *budgetRequest) {
+			r.Consumers[0].Expression = strPtr("'research'")
+		}, utils.ErrCodeInvalidExpression, "consumers[0].expression"},
+		{"separate consumer expression returns bool", func(r *budgetRequest) {
+			r.Consumers[1].Expression = strPtr("1 == 1")
+		}, utils.ErrCodeInvalidExpression, "consumers[1].expression"},
+		{"exemption expression does not compile", func(r *budgetRequest) {
+			r.Exemptions[0].Expression = strPtr("request.Auth.Subject ==")
+		}, utils.ErrCodeInvalidExpression, "exemptions[0].expression"},
+		{"long consumer expression", func(r *budgetRequest) {
+			r.Consumers[0].Expression = strPtr("true || " + strings.Repeat("x", maxBudgetExpression))
+		}, utils.ErrCodeValidation, "consumers[0].expression"},
+		{"long exemption expression", func(r *budgetRequest) {
+			r.Exemptions[0].Expression = strPtr("true || " + strings.Repeat("x", maxBudgetExpression))
+		}, utils.ErrCodeValidation, "exemptions[0].expression"},
 		{"other currency", func(r *budgetRequest) { r.Limit.Currency = strPtr("EUR") }, utils.ErrCodeValidation, "limit.currency"},
 		{"bad period", func(r *budgetRequest) { r.Limit.Period = "year" }, utils.ErrCodeValidation, "limit.period"},
 		{"bad action", func(r *budgetRequest) { r.Limit.Action = "warn" }, utils.ErrCodeValidation, "limit.action"},

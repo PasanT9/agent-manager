@@ -45,5 +45,5 @@ export default AICostManagement;
 export {
   AgentCostSection,
   LLMProviderCostSection,
-  ProjectCostCard,
+  ProjectCostSection,
 } from "./panels/OverviewCostPanels";

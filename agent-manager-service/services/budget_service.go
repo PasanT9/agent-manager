@@ -27,8 +27,11 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"cel.dev/cel-go/cel"
+	"cel.dev/cel-go/common/types"
 	"github.com/google/uuid"
 
 	"github.com/wso2/agent-manager/agent-manager-service/audit"
@@ -66,6 +69,8 @@ const (
 	maxBudgetThresholds  = 10
 	maxBudgetThreshold   = 1000
 	maxBudgetChannels    = 20
+	// maxBudgetExpression caps an attribute's CEL expression; gateways run it on every request.
+	maxBudgetExpression = 1024
 )
 
 // gatewayConsumerTypes are the consumer and exemption types gateways can identify: token
@@ -95,6 +100,38 @@ func (e *BudgetError) Error() string { return e.Message }
 
 func invalidBudget(field, format string, args ...any) error {
 	return &BudgetError{Code: utils.ErrCodeValidation, Message: fmt.Sprintf(format, args...), Field: field}
+}
+
+// budgetCELEnv is the environment gateways compile budget expressions in (the budget
+// system policy): the policy engine's request, with Auth.
+var budgetCELEnv = sync.OnceValues(func() (*cel.Env, error) {
+	return cel.NewEnv(cel.Variable("request", cel.MapType(cel.StringType, cel.DynType)))
+})
+
+// checkBudgetExpression refuses an expression gateways would skip (INVALID_EXPRESSION): it
+// must compile, and return bool as a condition or a string or list as the value a separate
+// consumer allocates by. Claims are dynamic, so most types are known only when it runs.
+func checkBudgetExpression(field, expression string, separate bool) error {
+	env, err := budgetCELEnv()
+	if err != nil {
+		return fmt.Errorf("failed to create the expression environment: %w", err)
+	}
+	invalid := func(format string, args ...any) error {
+		return &BudgetError{Code: utils.ErrCodeInvalidExpression, Field: field, Message: fmt.Sprintf(format, args...)}
+	}
+	ast, issues := env.Compile(expression)
+	if issues != nil && issues.Err() != nil {
+		return invalid("%s does not compile: %s", field, issues.Err())
+	}
+	out := ast.OutputType()
+	switch {
+	case out == types.DynType:
+	case separate && out != types.StringType && out.Kind() != types.ListKind:
+		return invalid("%s must return a string or a list of strings for a separate consumer, not %s.", field, out)
+	case !separate && out != types.BoolType:
+		return invalid("%s must return bool, not %s.", field, out)
+	}
+	return nil
 }
 
 func unsupportedConsumer(field, typ string) error {
@@ -367,7 +404,7 @@ func budgetProjectID(ctx context.Context, platform repositories.PlatformReposito
 	p, err := platform.GetProject(ctx, ouID, name)
 	if err != nil {
 		if errors.Is(err, utils.ErrProjectNotFound) {
-			return nil, budgetReferenceNotFound(field, "Project %s does not exist.", name)
+			return nil, budgetReferenceNotFound(field, "Project '%s' was not found.", name)
 		}
 		return nil, fmt.Errorf("failed to get project %q: %w", name, err)
 	}
@@ -381,17 +418,28 @@ func budgetProjectID(ctx context.Context, platform repositories.PlatformReposito
 // withProjectConsumer adds the owning project as the first consumer, shared, when a
 // project budget (the project-id annotation) lists no project consumer: a project budget
 // counts only its project's traffic. The stored and returned kind lists it, so gateways
-// get it too. A project consumer the request lists is kept as sent; ownByProject checks it.
+// get it too. A budget naming an agent gets that agent's project the same way, so clients
+// send only the agent. A project consumer the request lists is kept as sent; ownByProject checks it.
 func withProjectConsumer(consumers []spec.BudgetConsumer, project *string) []spec.BudgetConsumer {
-	if project == nil || strings.TrimSpace(*project) == "" {
-		return consumers
-	}
 	for _, c := range consumers {
 		if c.Type == budgetTypeProject {
 			return consumers
 		}
 	}
-	id, allocation := strings.TrimSpace(*project), budgetAllocationShared
+	allocation := budgetAllocationShared
+	if project == nil || strings.TrimSpace(*project) == "" {
+		// A named agent is counted with its project: the project consumer is added last
+		// for it, so clients send only the agent and error indexes match what they sent.
+		for _, c := range consumers {
+			if c.Type == budgetTypeAgent && c.Id != nil && c.Project != nil && strings.TrimSpace(*c.Project) != "" {
+				p := strings.TrimSpace(*c.Project)
+				return append(append([]spec.BudgetConsumer{}, consumers...),
+					spec.BudgetConsumer{Type: budgetTypeProject, Allocation: &allocation, Id: &p})
+			}
+		}
+		return consumers
+	}
+	id := strings.TrimSpace(*project)
 	return append([]spec.BudgetConsumer{{Type: budgetTypeProject, Allocation: &allocation, Id: &id}}, consumers...)
 }
 
@@ -433,7 +481,7 @@ func ownByProject(cfg *models.BudgetConfig, project string) error {
 }
 
 func budgetNotFound(name string) error {
-	return &BudgetError{Code: utils.ErrCodeBudgetNotFound, Message: fmt.Sprintf("Budget %s does not exist.", name)}
+	return &BudgetError{Code: utils.ErrCodeBudgetNotFound, Message: fmt.Sprintf("Budget '%s' was not found.", name)}
 }
 
 // getBudget loads a budget, answering BUDGET_NOT_FOUND when there is none.
@@ -946,8 +994,11 @@ func normalizeBudget(req budgetRequest) (*models.BudgetConfig, error) {
 
 func normalizeBudgetLimit(in spec.BudgetLimit) (models.BudgetLimit, error) {
 	out := models.BudgetLimit{Amount: in.Amount, Currency: budgetCurrencyUSD, Period: in.Period, Action: in.Action}
-	amount, ok := new(big.Rat).SetString(in.Amount)
-	if !budgetAmountPattern.MatchString(in.Amount) || !ok || amount.Sign() <= 0 {
+	// The pattern goes first: it refuses exponents and long strings before they are parsed.
+	if !budgetAmountPattern.MatchString(in.Amount) {
+		return out, invalidBudget("limit.amount", "limit.amount must be a decimal above zero, with at most 12 whole digits, 2 decimals and no leading zeros, e.g. \"100.00\".")
+	}
+	if amount, ok := new(big.Rat).SetString(in.Amount); !ok || amount.Sign() <= 0 {
 		return out, invalidBudget("limit.amount", "limit.amount must be a decimal above zero, with at most 12 whole digits, 2 decimals and no leading zeros, e.g. \"100.00\".")
 	}
 	if in.Currency != nil && *in.Currency != budgetCurrencyUSD {
@@ -1034,6 +1085,12 @@ func normalizeBudgetConsumers(in []spec.BudgetConsumer) ([]models.BudgetConsumer
 			if c.Id != nil {
 				return nil, invalidBudget(field+".id", "An attribute consumer takes an expression, not an id.")
 			}
+			if len([]rune(*c.Expression)) > maxBudgetExpression {
+				return nil, invalidBudget(field+".expression", "expression must be at most %d characters.", maxBudgetExpression)
+			}
+			if err := checkBudgetExpression(field+".expression", *c.Expression, allocation == budgetAllocationSeparate); err != nil {
+				return nil, err
+			}
 		} else {
 			if c.Expression != nil {
 				return nil, invalidBudget(field+".expression", "Only an attribute consumer takes an expression.")
@@ -1083,6 +1140,12 @@ func normalizeBudgetExemptions(in []spec.BudgetExemption) ([]models.BudgetExempt
 		case budgetTypeAttribute:
 			if empty(e.Expression) || e.Id != nil || e.Project != nil {
 				return nil, invalidBudget(field, "An attribute exemption takes only an expression.")
+			}
+			if len([]rune(*e.Expression)) > maxBudgetExpression {
+				return nil, invalidBudget(field+".expression", "expression must be at most %d characters.", maxBudgetExpression)
+			}
+			if err := checkBudgetExpression(field+".expression", *e.Expression, false); err != nil {
+				return nil, err
 			}
 		default:
 			return nil, invalidBudget(field+".type", "Exemption type must be project, agent or attribute.")
@@ -1215,7 +1278,7 @@ func (s *budgetService) checkArtifact(ouID, kind, handle, field, what string) er
 		return fmt.Errorf("failed to check %s %q: %w", what, handle, err)
 	}
 	if !exists {
-		return budgetReferenceNotFound(field, "%s %s does not exist.", what, handle)
+		return budgetReferenceNotFound(field, "%s '%s' was not found.", what, handle)
 	}
 	return nil
 }
@@ -1223,7 +1286,7 @@ func (s *budgetService) checkArtifact(ouID, kind, handle, field, what string) er
 func (s *budgetService) checkProject(ctx context.Context, ouID, name, field string) error {
 	if _, err := s.platform.GetProject(ctx, ouID, name); err != nil {
 		if errors.Is(err, utils.ErrProjectNotFound) {
-			return budgetReferenceNotFound(field, "Project %s does not exist.", name)
+			return budgetReferenceNotFound(field, "Project '%s' was not found.", name)
 		}
 		return fmt.Errorf("failed to get project %q: %w", name, err)
 	}
@@ -1233,7 +1296,7 @@ func (s *budgetService) checkProject(ctx context.Context, ouID, name, field stri
 func (s *budgetService) checkAgent(ctx context.Context, ouID, project, name, field string) error {
 	if _, err := s.platform.GetAgent(ctx, ouID, project, name); err != nil {
 		if errors.Is(err, utils.ErrAgentNotFound) || errors.Is(err, utils.ErrProjectNotFound) {
-			return budgetReferenceNotFound(field, "Agent %s does not exist in project %s.", name, project)
+			return budgetReferenceNotFound(field, "Agent '%s' was not found in project '%s'.", name, project)
 		}
 		return fmt.Errorf("failed to get agent %q: %w", name, err)
 	}
@@ -1258,7 +1321,7 @@ func (s *budgetService) checkChannels(ctx context.Context, ouID, project string,
 		if !ok {
 			return &BudgetError{
 				Code: utils.ErrCodeChannelNotAvailable, Field: field,
-				Message: fmt.Sprintf("Notification channel %s does not exist.", name),
+				Message: fmt.Sprintf("Notification channel '%s' was not found.", name),
 			}
 		}
 		if destination.OUID != ouID || !destination.AvailableToBudget(project) {

@@ -25,14 +25,17 @@ import {
   Routes,
   useNavigate,
   useParams,
+  useSearchParams,
 } from "react-router-dom";
 import { PageLayout } from "@agent-management-platform/views";
+import { useEntityNames } from "./useEntityNames";
 import { useFeatureManagement } from "@agent-management-platform/feature-management";
 import { absoluteRouteMap } from "@agent-management-platform/types";
 import { CostOverview } from "./subComponents/CostOverview";
 import { BudgetsTab } from "./subComponents/BudgetsTab";
 import { BudgetDetail } from "./subComponents/BudgetDetail";
-import { BudgetFormPage } from "./subComponents/BudgetForm";
+import { BudgetWizard } from "./subComponents/BudgetForm";
+import { UnpricedRequests } from "./subComponents/UnpricedRequests";
 
 type View = "overview" | "budgets";
 
@@ -51,6 +54,7 @@ function useScope() {
     orgId,
     projectId,
     overview: generatePath(route.path, params),
+    unpriced: generatePath(route.children.unpricedRequests.path, params),
     budgets: generatePath(budgets.path, params),
     budgetCreate: generatePath(budgets.children.create.path, params),
     budgetView: (budgetName: string) =>
@@ -68,11 +72,16 @@ const TITLES: Record<View, string> = {
   budgets: "Budgets",
 };
 
-function describe(view: View, projectId?: string): React.ReactNode {
+function describe(
+  view: View,
+  projectId?: string,
+  projectName?: string,
+): React.ReactNode {
+  const project = projectName ?? projectId;
   if (view === "overview") {
     return projectId ? (
       <span>
-        What LLM traffic in project <strong>{projectId}</strong> cost per month.
+        What LLM traffic in project <strong>{project}</strong> cost per month.
       </span>
     ) : (
       "What LLM traffic across the organization cost per month."
@@ -80,8 +89,8 @@ function describe(view: View, projectId?: string): React.ReactNode {
   }
   return projectId ? (
     <span>
-      Budgets project <strong>{projectId}</strong> owns, with what they spent
-      this period.
+      Budgets that apply to project <strong>{project}</strong>. Budgets are
+      managed by the organization.
     </span>
   ) : (
     "Budgets that cap what LLM traffic may spend, with what they spent this period."
@@ -90,16 +99,21 @@ function describe(view: View, projectId?: string): React.ReactNode {
 
 function CostManagementPage({ view }: { view: View }) {
   const navigate = useNavigate();
-  const { orgId, projectId, budgetView, budgetCreate } = useScope();
+  const { orgId, projectId, budgetView, budgetCreate, unpriced } = useScope();
+  const projectName = useEntityNames(orgId ?? "").project?.[projectId ?? ""];
   return (
     <PageLayout
       title={TITLES[view]}
-      description={describe(view, projectId)}
+      description={describe(view, projectId, projectName)}
       disableIcon
     >
       <ListingTable.Container>
         {view === "overview" ? (
-          <CostOverview orgName={orgId} projectName={projectId} />
+          <CostOverview
+            orgName={orgId}
+            projectName={projectId}
+            unpricedHref={unpriced}
+          />
         ) : (
           <BudgetsTab
             orgName={orgId}
@@ -126,31 +140,46 @@ function Guard({
   return allowed ? children : <Navigate to={fallback} replace />;
 }
 
+function UnpricedRequestsPage() {
+  const { orgId, projectId, overview } = useScope();
+  const [searchParams] = useSearchParams();
+  const query = searchParams.toString();
+  return (
+    <UnpricedRequests
+      orgName={orgId}
+      projectName={projectId}
+      backHref={query ? `${overview}?${query}` : overview}
+    />
+  );
+}
+
 function BudgetDetailPage() {
   const { budgetName = "" } = useParams<{ budgetName: string }>();
-  const { orgId, budgets, budgetEdit } = useScope();
+  const { orgId, projectId, budgets, budgetEdit, unpriced } = useScope();
   return (
     <BudgetDetail
       orgName={orgId}
       budgetName={budgetName}
       backHref={budgets}
       editHref={budgetEdit(budgetName)}
+      readOnly={!!projectId}
+      unpricedHref={unpriced}
     />
   );
 }
 
-/** The create page, or with `editing` the edit page of the budget in the URL. */
+/** The create wizard, or with `editing` the edit wizard of the budget in the URL. */
 function BudgetFormRoute({ editing }: { editing?: boolean }) {
+  const navigate = useNavigate();
   const { budgetName } = useParams<{ budgetName: string }>();
-  const { orgId, projectId, budgets, budgetView } = useScope();
+  const { orgId, budgets, budgetView } = useScope();
   return (
-    <BudgetFormPage
+    <BudgetWizard
       orgName={orgId}
-      projectName={projectId}
       budgetName={editing ? budgetName : undefined}
       backHref={editing && budgetName ? budgetView(budgetName) : budgets}
       backLabel={editing ? "Back to the budget" : "Back to budgets"}
-      viewHref={budgetView}
+      onSaved={(name) => navigate(budgetView(name))}
     />
   );
 }
@@ -158,7 +187,7 @@ function BudgetFormRoute({ editing }: { editing?: boolean }) {
 /** Cost Management for an organization or one of its projects; the left
  * navigation's Cost Management section opens each view. */
 export const AICostManagement: React.FC = () => {
-  const { overview, budgets } = useScope();
+  const { overview, budgets, projectId } = useScope();
   const { hasAccess } = useFeatureManagement();
   const canReadCost = hasAccess("ai_cost_read");
   const canReadBudgets = hasAccess("budget_read");
@@ -175,6 +204,14 @@ export const AICostManagement: React.FC = () => {
         }
       />
       <Route
+        path="unpriced-requests"
+        element={
+          <Guard allowed={canReadCost} fallback={home}>
+            <UnpricedRequestsPage />
+          </Guard>
+        }
+      />
+      <Route
         path="budgets"
         element={
           <Guard allowed={canReadBudgets} fallback={overview}>
@@ -185,7 +222,10 @@ export const AICostManagement: React.FC = () => {
       <Route
         path="budgets/create"
         element={
-          <Guard allowed={hasAccess("budget_create")} fallback={budgets}>
+          <Guard
+            allowed={hasAccess("budget_create") && !projectId}
+            fallback={budgets}
+          >
             <BudgetFormRoute />
           </Guard>
         }
@@ -210,8 +250,10 @@ export const AICostManagement: React.FC = () => {
 /** Edit, for users who may update budgets; others go to the budget's page. */
 function BudgetEditRoute() {
   const { budgetName = "" } = useParams<{ budgetName: string }>();
-  const { budgetView } = useScope();
-  const allowed = useFeatureManagement().hasAccess("budget_update");
+  const { budgetView, projectId } = useScope();
+  // Budgets are managed at organization level only.
+  const allowed =
+    useFeatureManagement().hasAccess("budget_update") && !projectId;
   return (
     <Guard allowed={allowed} fallback={budgetView(budgetName)}>
       <BudgetFormRoute editing />

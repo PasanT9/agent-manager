@@ -55,6 +55,7 @@ const (
 	ErrCodeReferenceNotFound       = "REFERENCE_NOT_FOUND"
 	ErrCodeChannelNotAvailable     = "CHANNEL_NOT_AVAILABLE"
 	ErrCodeUnsupportedConsumer     = "UNSUPPORTED_CONSUMER"
+	ErrCodeInvalidExpression       = "INVALID_EXPRESSION"
 	ErrCodeBudgetAlreadyExists     = "BUDGET_ALREADY_EXISTS"
 	ErrCodeBudgetNotFound          = "BUDGET_NOT_FOUND"
 	ErrCodeBudgetReadOnly          = "BUDGET_READ_ONLY"

@@ -35,7 +35,7 @@ export interface AgentOverviewPanelProps {
   deploymentStatus?: DeploymentStatus;
 }
 
-/** Props for panels at PLUGIN_MOUNT_POINTS.projectOverviewSide. */
+/** Props for panels at PLUGIN_MOUNT_POINTS.projectOverviewSide and projectOverviewMain. */
 export interface ProjectOverviewPanelProps {
   orgId: string;
   projectId: string;

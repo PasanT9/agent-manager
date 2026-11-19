@@ -244,6 +244,11 @@ export const PLUGIN_MOUNT_POINTS = {
   agentOverviewEnvironment: "agent-overview-environment",
   /** The side column of a project's overview. Props: ProjectOverviewPanelProps. */
   projectOverviewSide: "project-overview-side",
+  /**
+   * A project's overview, below its agents: one full-width section per panel, in
+   * `order`. Props: ProjectOverviewPanelProps.
+   */
+  projectOverviewMain: "project-overview-main",
 } as const;
 
 export type PluginContribution =

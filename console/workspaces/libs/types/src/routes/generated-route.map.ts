@@ -205,6 +205,11 @@ export const generatedRouteMap =  {
           "path": "/org/:orgId/cost-management",
           "wildPath": "/org/:orgId/cost-management/*",
           "children": {
+            "unpricedRequests": {
+              "path": "/org/:orgId/cost-management/unpriced-requests",
+              "wildPath": "/org/:orgId/cost-management/unpriced-requests/*",
+              "children": {}
+            },
             "budgets": {
               "path": "/org/:orgId/cost-management/budgets",
               "wildPath": "/org/:orgId/cost-management/budgets/*",
@@ -296,6 +301,11 @@ export const generatedRouteMap =  {
               "path": "/org/:orgId/project/:projectId/cost-management",
               "wildPath": "/org/:orgId/project/:projectId/cost-management/*",
               "children": {
+                "unpricedRequests": {
+                  "path": "/org/:orgId/project/:projectId/cost-management/unpriced-requests",
+                  "wildPath": "/org/:orgId/project/:projectId/cost-management/unpriced-requests/*",
+                  "children": {}
+                },
                 "budgets": {
                   "path": "/org/:orgId/project/:projectId/cost-management/budgets",
                   "wildPath": "/org/:orgId/project/:projectId/cost-management/budgets/*",

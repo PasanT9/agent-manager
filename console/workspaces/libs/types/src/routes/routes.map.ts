@@ -224,6 +224,11 @@ export const rootRouteMap: AppRoute = {
                     path: 'cost-management',
                     index: true,
                     children: {
+                        unpricedRequests: {
+                            path: 'unpriced-requests',
+                            index: true,
+                            children: {},
+                        },
                         budgets: {
                             path: 'budgets',
                             index: true,
@@ -315,6 +320,11 @@ export const rootRouteMap: AppRoute = {
                             path: 'cost-management',
                             index: true,
                             children: {
+                                unpricedRequests: {
+                                    path: 'unpriced-requests',
+                                    index: true,
+                                    children: {},
+                                },
                                 budgets: {
                                     path: 'budgets',
                                     index: true,

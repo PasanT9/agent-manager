@@ -18,17 +18,13 @@
 
 import { useMemo } from "react";
 import {
-  Autocomplete,
-  Box,
   Button,
   Card,
   CardContent,
   Grid,
-  MenuItem,
   Skeleton,
   Link,
   Stack,
-  TextField,
   Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
@@ -37,17 +33,12 @@ import {
   ExternalLink,
   ServerCrash,
 } from "@wso2/oxygen-ui-icons-react";
-import { useSearchParams } from "react-router-dom";
-import { useCosts } from "@agent-management-platform/api-client";
-import { StateNotice, TextInput } from "@agent-management-platform/views";
-import {
-  globalConfig,
-  type CostGroupBy,
-} from "@agent-management-platform/types";
+import { Link as RouterLink } from "react-router-dom";
+import { StateNotice } from "@agent-management-platform/views";
+import { globalConfig } from "@agent-management-platform/types";
 import {
   amount,
   changePercent,
-  dimensionsFor,
   entryMonthly,
   formatUsd,
   groupKey,
@@ -56,10 +47,10 @@ import {
   monthLabel,
   monthlyTotals,
   unpricedTotals,
+  zeroCostNote,
 } from "../costFormat";
+import { CostFilterBar, useCostSelection } from "./CostFilters";
 import { CostChart, type CostChartRow, type CostSeries } from "./CostChart";
-import { inSentence } from "./budgetLabels";
-import { useEntityNames } from "../useEntityNames";
 
 /** Groups shown on their own in the chart; the rest are summed as "Other". */
 const TOP_GROUPS = 5;
@@ -68,6 +59,8 @@ interface CostOverviewProps {
   orgName?: string;
   /** Set on a project's page: only its cost, grouped by what is below a project. */
   projectName?: string;
+  /** The Requests charged $0 page; the Dashboard selection goes with it. */
+  unpricedHref?: string;
 }
 
 function Tile({
@@ -75,11 +68,13 @@ function Tile({
   value,
   caption,
   highlight,
+  action,
 }: {
   label: string;
   value: string;
   caption?: string;
   highlight?: boolean;
+  action?: React.ReactNode;
 }) {
   return (
     <Card
@@ -99,9 +94,11 @@ function Tile({
         >
           {value}
         </Typography>
-        {caption && (
+        {(caption || action) && (
           <Typography variant="caption" color="text.secondary">
             {caption}
+            {caption && action ? " · " : ""}
+            {action}
           </Typography>
         )}
       </CardContent>
@@ -151,48 +148,23 @@ function AnalyticsLink() {
 }
 
 /** What LLM traffic cost in the kept months, grouped and picked by one dimension. */
-export function CostOverview({ orgName, projectName }: CostOverviewProps) {
-  const projectScoped = !!projectName;
-  const dimensions = dimensionsFor(projectScoped);
-  // Group by and the picks live in the URL, so a cost panel can link here pre-filtered.
-  const [searchParams, setSearchParams] = useSearchParams();
-  const requested = searchParams.get("groupBy") as CostGroupBy | null;
-  const groupBy: CostGroupBy = dimensions.some((d) => d.key === requested)
-    ? (requested as CostGroupBy)
-    : projectScoped
-      ? "agent"
-      : "project";
-  const picked = searchParams.getAll("pick");
-  const dimension = dimensions.find((d) => d.key === groupBy) ?? dimensions[0];
-
-  // Display names for what cost data names by handle (UX: the names used elsewhere).
-  const names = useEntityNames(orgName ?? "");
-  const { data, isLoading, error } = useCosts(
-    { orgName },
-    { groupBy, filter: projectName ? [`project:${projectName}`] : undefined },
-  );
-
-  const setFilters = (nextGroupBy: CostGroupBy, nextPicked: string[]) => {
-    const params = new URLSearchParams(searchParams);
-    params.set("groupBy", nextGroupBy);
-    params.delete("pick");
-    nextPicked.forEach((p) => params.append("pick", p));
-    setSearchParams(params, { replace: true });
-  };
-
-  const allGroups = useMemo(() => data?.costByGroup ?? [], [data]);
+export function CostOverview({
+  orgName,
+  projectName,
+  unpricedHref,
+}: CostOverviewProps) {
+  const selection = useCostSelection(orgName, projectName);
+  const {
+    projectScoped,
+    groupBy,
+    picked,
+    names,
+    allGroups,
+    isLoading,
+    error,
+    searchParams,
+  } = selection;
   const months = useMemo(() => keptMonths(allGroups), [allGroups]);
-  const options = useMemo(
-    () =>
-      allGroups
-        .map((g) => groupKey(g, groupBy))
-        .sort((a, b) =>
-          groupLabel(a, groupBy, projectScoped, names).localeCompare(
-            groupLabel(b, groupBy, projectScoped, names),
-          ),
-        ),
-    [allGroups, groupBy, projectScoped, names],
-  );
   const groups = useMemo(
     () =>
       picked.length
@@ -211,7 +183,16 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
     unpricedTotals(groups);
 
   // The top groups by total, then everything else as one "Other" series.
-  const ranked = [...groups].sort((a, b) => amount(b.cost) - amount(a.cost));
+  // Groups that cost nothing (no price, no usage) have no bar; they are named under
+  // the chart instead of crowding the legend.
+  const ranked = groups
+    .filter((g) => amount(g.cost) > 0)
+    .sort((a, b) => amount(b.cost) - amount(a.cost));
+  const zeroCost = groups
+    .filter((g) => amount(g.cost) <= 0)
+    .map((g) =>
+      groupLabel(groupKey(g, groupBy), groupBy, projectScoped, names),
+    );
   const top = ranked.slice(0, TOP_GROUPS);
   const rest = ranked.slice(TOP_GROUPS);
   const series: (CostSeries & { costs: number[] })[] = top.map((g, i) => ({
@@ -233,7 +214,8 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
         i === months.length - 1 ? `${monthLabel(m)} (so far)` : monthLabel(m),
     };
     series.forEach((s) => {
-      row[s.key] = Math.round(s.costs[i] * 100) / 100;
+      // Exact amounts: the tooltip adds them, and rounds only what it shows.
+      row[s.key] = s.costs[i];
     });
     return row;
   });
@@ -242,11 +224,6 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
   const lastMonth =
     months.length > 1 ? monthLabel(months[months.length - 2]) : "";
   const firstMonth = months.length ? monthLabel(months[0]) : "";
-  const scope = picked.length
-    ? picked.map((p) => groupLabel(p, groupBy, projectScoped, names)).join(", ")
-    : groupBy === "organization"
-      ? "The organization"
-      : `All ${inSentence(dimension.plural)}`;
 
   if (error) {
     return (
@@ -262,64 +239,7 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
 
   return (
     <Stack spacing={2.5}>
-      <Stack
-        direction={{ xs: "column", md: "row" }}
-        spacing={1.5}
-        alignItems={{ md: "center" }}
-      >
-        <Box sx={{ minWidth: 220 }}>
-          <TextInput
-            select
-            size="small"
-            aria-label="Group by"
-            value={groupBy}
-            onChange={(e) => setFilters(e.target.value as CostGroupBy, [])}
-            slotProps={{
-              select: {
-                renderValue: () => `Group by: ${dimension.label}`,
-              },
-            }}
-          >
-            {dimensions.map((d) => (
-              <MenuItem key={d.key} value={d.key}>
-                {d.label}
-              </MenuItem>
-            ))}
-          </TextInput>
-        </Box>
-        {groupBy !== "organization" && (
-          <Autocomplete
-            multiple
-            size="small"
-            sx={{ minWidth: 280, flex: 1, maxWidth: 640 }}
-            options={options}
-            value={picked}
-            onChange={(_, value) => setFilters(groupBy, value)}
-            getOptionLabel={(o) => groupLabel(o, groupBy, projectScoped, names)}
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                placeholder={
-                  picked.length
-                    ? `Add ${inSentence(dimension.label)}`
-                    : `All ${inSentence(dimension.plural)}`
-                }
-                slotProps={{
-                  htmlInput: {
-                    ...params.inputProps,
-                    "aria-label": `${dimension.plural} to show`,
-                  },
-                }}
-              />
-            )}
-          />
-        )}
-      </Stack>
-
-      <Typography variant="body2" color="text.secondary">
-        Showing <strong>{scope}</strong>
-        {projectName ? ` in ${projectName}` : ""}
-      </Typography>
+      <CostFilterBar selection={selection} />
 
       <Grid container spacing={2}>
         {isLoading ? (
@@ -361,6 +281,17 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
                 label={`Requests charged $0 (${firstMonth}–${thisMonth})`}
                 value={String(missing + unavailable)}
                 caption={`${missing} no price · ${unavailable} no usage`}
+                action={
+                  unpricedHref && (
+                    <Link
+                      component={RouterLink}
+                      to={`${unpricedHref}?${searchParams.toString()}`}
+                      underline="hover"
+                    >
+                      Details
+                    </Link>
+                  )
+                }
               />
             </Grid>
           </>
@@ -390,10 +321,19 @@ export function CostOverview({ orgName, projectName }: CostOverviewProps) {
           ) : (
             <CostChart rows={chartRows} series={series} />
           )}
+          {zeroCost.length > 0 && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mt: 1 }}
+            >
+              {zeroCostNote(zeroCost)}
+            </Typography>
+          )}
           <Typography
             variant="caption"
             color="text.secondary"
-            sx={{ display: "block", mt: 1 }}
+            sx={{ display: "block", mt: zeroCost.length ? 0.25 : 1 }}
           >
             UTC calendar months · Kept for 3 months, including the current one
           </Typography>

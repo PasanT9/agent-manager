@@ -113,7 +113,7 @@ export function groupLabel(
     if (!agent) return UNATTRIBUTED;
     const agentName = names.agent?.[key] ?? agent;
     if (projectScoped || !project) return agentName;
-    return `${agentName} (${names.project?.[project] ?? project})`;
+    return `${names.project?.[project] ?? project} / ${agentName}`;
   }
   if (!key) return UNATTRIBUTED;
   if (groupBy === "llmProvider") return names.llmProvider?.[key] ?? key;
@@ -169,4 +169,13 @@ export function changePercent(
 ): number | undefined {
   if (previous <= 0) return undefined;
   return Math.round(((current - previous) / previous) * 100);
+}
+
+/** Under a chart: the groups left out because they cost $0 (no price, or no usage). */
+export function zeroCostNote(labels: string[]): string {
+  const shown =
+    labels.length > 3
+      ? `${labels.slice(0, 3).join(", ")} and ${labels.length - 3} more`
+      : labels.join(", ");
+  return `Not shown: ${shown}, which cost $0 (counted in "Requests charged $0").`;
 }

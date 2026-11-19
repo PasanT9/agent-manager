@@ -18,6 +18,7 @@
 
 import type { CostByGroup } from "@agent-management-platform/types";
 import {
+  zeroCostNote,
   changePercent,
   dimensionsFor,
   formatUsd,
@@ -71,7 +72,7 @@ describe("costFormat", () => {
     );
     expect(key).toBe("api-platform/hotel-booking");
     expect(groupLabel(key, "agent", false)).toBe(
-      "hotel-booking (api-platform)",
+      "api-platform / hotel-booking",
     );
     expect(groupLabel(key, "agent", true)).toBe("hotel-booking");
   });
@@ -92,7 +93,7 @@ describe("costFormat", () => {
       "Test Project",
     );
     expect(groupLabel("test-project/test", "agent", false, names)).toBe(
-      "Test (Test Project)",
+      "Test Project / Test",
     );
     expect(groupLabel("test-project/test", "agent", true, names)).toBe("Test");
   });
@@ -140,5 +141,13 @@ describe("costFormat", () => {
       "2026-12",
       "2027-01",
     ]);
+  });
+});
+
+describe("zeroCostNote", () => {
+  it("names the groups left out of a chart", () => {
+    expect(zeroCostNote(["gpt-4o-nousage", "my-private-model"])).toBe(
+      'Not shown: gpt-4o-nousage, my-private-model, which cost $0 (counted in "Requests charged $0").',
+    );
   });
 });

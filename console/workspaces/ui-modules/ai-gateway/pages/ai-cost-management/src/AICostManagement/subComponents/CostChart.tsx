@@ -302,6 +302,8 @@ export function CostChart({ rows, series, height = 360 }: CostChartProps) {
           tick={tick}
           tickFormatter={axisUsd}
           width={56}
+          // With no cost yet the axis still shows $0 to $1, as an empty chart.
+          domain={[0, (dataMax: number) => (dataMax > 0 ? dataMax : 1)]}
         />
         <ChartTooltip
           cursor={{ fill: theme.palette.action.hover }}

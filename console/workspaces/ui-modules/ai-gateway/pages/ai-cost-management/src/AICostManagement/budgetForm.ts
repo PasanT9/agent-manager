@@ -28,6 +28,7 @@ import {
   type BudgetExemption,
   type BudgetPeriod,
 } from "@agent-management-platform/types";
+import { isNetworkError } from "@agent-management-platform/api-client";
 
 /**
  * What a consumer or exemption is about. Team and User are custom attributes with a
@@ -45,6 +46,9 @@ export type ScopeKind =
 export function apiType(kind: ScopeKind): BudgetConsumer["type"] {
   return kind === "team" || kind === "user" ? "attribute" : kind;
 }
+
+/** The longest CEL expression the API takes: gateways run it on every request. */
+export const MAX_EXPRESSION_LENGTH = 1024;
 
 /** Kinds that take a CEL expression. */
 export const isCelKind = (kind: ScopeKind) =>
@@ -175,14 +179,14 @@ export function handleFor(name: string, taken: Iterable<string>): string {
   }
 }
 
-/** The form's state for an existing budget. Agent consumers take their project from the
- * project consumer added with them. */
+/** The form's state for an existing budget. The project consumer the server adds for a
+ * named agent is shown as its own condition; agents stored without a project take it
+ * from that consumer. */
 export function formFromBudget(budget: Budget): BudgetFormState {
   const { spec } = budget;
   const consumers = spec.consumers ?? [];
   const projectOf =
     consumers.find((c) => c.type === "project" && c.id)?.id ?? "";
-  const hasAgent = consumers.some((c) => c.type === "agent");
   return {
     displayName: spec.displayName ?? budget.metadata.name,
     description: spec.description ?? "",
@@ -192,16 +196,13 @@ export function formFromBudget(budget: Budget): BudgetFormState {
         : "all",
     providerId: spec.resource?.id ?? "",
     resourceAllocation: spec.resource?.allocation ?? "shared",
-    consumers: consumers
-      // The project added with an agent is shown with the agent, not on its own.
-      .filter((c) => !(hasAgent && c.type === "project" && c.id === projectOf))
-      .map((c) => ({
-        type: c.type === "attribute" ? kindOfExpression(c.expression) : c.type,
-        allocation: c.allocation ?? "shared",
-        id: c.id ?? "",
-        project: c.type === "agent" ? (c.project ?? projectOf) : "",
-        expression: c.expression ?? "",
-      })),
+    consumers: consumers.map((c) => ({
+      type: c.type === "attribute" ? kindOfExpression(c.expression) : c.type,
+      allocation: c.allocation ?? "shared",
+      id: c.id ?? "",
+      project: c.type === "agent" && c.id ? (c.project ?? projectOf) : "",
+      expression: c.expression ?? "",
+    })),
     exemptions: (spec.exemptions ?? []).map((e) => ({
       type: e.type === "attribute" ? kindOfExpression(e.expression) : e.type,
       id: e.id ?? "",
@@ -238,10 +239,9 @@ function consumersFor(rows: ConsumerRow[]): BudgetConsumer[] {
       });
       continue;
     }
-    // An agent's name is unique only within its project: the agent names it, and the
-    // project is counted with it (shown as the agent's locked condition).
+    // An agent's name is unique only within its project, so a named agent carries it;
+    // the server adds the matching project consumer.
     const named = r.type === "agent" && r.id && r.project;
-    if (named) add({ type: "project", allocation: "shared", id: r.project });
     add({
       type: r.type,
       allocation: r.allocation,
@@ -348,6 +348,16 @@ export function exemptionKinds(
   return [...new Set([...narrower, ...separate])];
 }
 
+/** Whether adding a consumer of this kind would leave an existing exemption wider
+ * than the consumers (an agent exemption, then agents or API keys as consumers). */
+export function consumerBreaksExemptions(
+  form: Pick<BudgetFormState, "consumers" | "exemptions">,
+  kind: ScopeKind,
+): boolean {
+  const allowed = exemptionKinds([...form.consumers, newConsumer(kind)]);
+  return form.exemptions.some((e) => !allowed.includes(e.type));
+}
+
 /** What a budget started from an entity's page is about. */
 export interface BudgetStart {
   /** A project's own budget. */
@@ -423,6 +433,13 @@ export function serverFieldError(error: unknown): {
   field: string;
   message: string;
 } {
+  if (isNetworkError(error)) {
+    return {
+      field: "form",
+      message:
+        "Couldn't save the budget: the server can't be reached. Your changes are kept; try again.",
+    };
+  }
   const body = (
     error as {
       body?: { message?: string; additionalData?: { field?: string } };
@@ -440,7 +457,12 @@ export function serverFieldError(error: unknown): {
 export function validateBudgetForm(form: BudgetFormState): BudgetFormErrors {
   const errors: BudgetFormErrors = {};
   if (!form.displayName.trim()) errors.displayName = "Enter a name.";
-  if (!AMOUNT_PATTERN.test(form.amount.trim()) || Number(form.amount) <= 0) {
+  if (!form.amount.trim()) {
+    errors.amount = "Enter an amount.";
+  } else if (
+    !AMOUNT_PATTERN.test(form.amount.trim()) ||
+    Number(form.amount) <= 0
+  ) {
     errors.amount =
       "Enter an amount above 0, with at most 12 digits before the decimal point and 2 after.";
   }
@@ -464,8 +486,12 @@ export function validateBudgetForm(form: BudgetFormState): BudgetFormErrors {
       errors[`consumers.${i}`] = "Choose one, or count each one separately.";
     }
   });
+  const allowedExemptions = exemptionKinds(form.consumers);
   form.exemptions.forEach((e, i) => {
-    if (isCelKind(e.type) ? !e.expression.trim() : !e.id) {
+    if (!allowedExemptions.includes(e.type)) {
+      errors[`exemptions.${i}`] =
+        "Not allowed with these consumers: an exemption must be narrower than them. Change the type or remove it.";
+    } else if (isCelKind(e.type) ? !e.expression.trim() : !e.id) {
       errors[`exemptions.${i}`] = isCelKind(e.type)
         ? "Enter the CEL expression."
         : "Choose one.";
@@ -483,4 +509,104 @@ export function validateBudgetForm(form: BudgetFormState): BudgetFormErrors {
   if (form.channels.length > 20)
     errors.channels = "Choose at most 20 channels.";
   return errors;
+}
+
+/**
+ * Another budget already uses this display name (ignoring case and spaces at either end):
+ * names must tell budgets apart on every page. ownName is the budget being edited.
+ */
+export function duplicateNameError(
+  displayName: string,
+  budgets: { metadata: { name: string }; spec: { displayName?: string } }[],
+  ownName?: string,
+): string | undefined {
+  const name = displayName.trim().toLowerCase();
+  if (!name) return undefined;
+  const clash = budgets.find(
+    (b) =>
+      b.metadata.name !== ownName &&
+      (b.spec.displayName ?? b.metadata.name).trim().toLowerCase() === name,
+  );
+  return clash
+    ? `A budget named ${displayName.trim()} already exists.`
+    : undefined;
+}
+
+/**
+ * The budget asked for does not exist: a 404 (the API client's GET errors carry only the
+ * status), or the server's BUDGET_NOT_FOUND body.
+ */
+export function isBudgetNotFound(error: unknown): boolean {
+  const e = error as { code?: unknown; status?: unknown } | null;
+  return e?.status === 404 || e?.code === "BUDGET_NOT_FOUND";
+}
+
+/** One thing a budget gives each its own allowance: providers, agents, API keys, ... */
+export interface AllocationFactor {
+  /** Singular and plural, e.g. "agent" / "agents". */
+  noun: string;
+  plural: string;
+  /** How many there are today; undefined when it can't be known (API keys, users). */
+  count?: number;
+}
+
+const PERIOD_NOUN: Record<BudgetPeriod, string> = {
+  day: "day",
+  week: "week",
+  month: "month",
+};
+
+const money = (v: number) =>
+  v.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+/** Letters for counts that can't be known today: N users, M API keys, ... */
+const UNKNOWN_COUNTS = ["N", "M", "K", "L"];
+
+/**
+ * How a budget's amount is allocated, as a formula: the amount times what gets its own
+ * limit, today's counts as numbers and the rest as letters, e.g.
+ * "$10.00 × 2 providers × N users = $20.00 × N per month", with "N = number of users".
+ * Without an amount yet, "Amount" stands in.
+ */
+export function allocationFormula(
+  amount: number,
+  period: BudgetPeriod,
+  factors: AllocationFactor[],
+): { formula: string; legend?: string } {
+  const per = PERIOD_NOUN[period];
+  const value = amount > 0 ? money(amount) : "Amount";
+  if (!factors.length) {
+    return { formula: `${value} per ${per}` };
+  }
+  let letter = 0;
+  const legend: string[] = [];
+  const letters: string[] = [];
+  const terms = factors.map((f) => {
+    if (f.count !== undefined) {
+      return `${f.count} ${f.count === 1 ? f.noun : f.plural}`;
+    }
+    const l = UNKNOWN_COUNTS[letter++] ?? "X";
+    letters.push(l);
+    legend.push(`${l} = number of ${f.plural}`);
+    return `${l} ${f.plural}`;
+  });
+  const known = factors.reduce((p, f) => p * (f.count ?? 1), 1);
+  const product =
+    amount > 0
+      ? money(amount * known)
+      : known === 1
+        ? value
+        : `${value} × ${known}`;
+  const total = letters.length
+    ? `${product} × ${letters.join(" × ")}`
+    : product;
+  return {
+    formula: `${value} × ${terms.join(" × ")} = ${total} per ${per}`,
+    ...(legend.length ? { legend: legend.join(", ") } : {}),
+  };
 }

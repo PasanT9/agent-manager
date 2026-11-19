@@ -189,3 +189,44 @@ export interface GetCostsQuery {
   /** `type:value` filters; repeat for AND, a comma list inside one is OR. */
   filter?: string[];
 }
+
+/** What a CSV import does with a row naming a budget that exists. */
+export type BudgetImportOnExisting = "fail" | "skip" | "update";
+
+export interface ImportBudgetsQuery {
+  /** Check every row and save nothing. */
+  dryRun?: boolean;
+  onExisting?: BudgetImportOnExisting;
+}
+
+export interface BudgetImportRowError {
+  /** The CSV column; absent when the error is about the whole row. */
+  column?: string;
+  code: string;
+  message: string;
+}
+
+export interface BudgetImportRowResult {
+  /** CSV row number; the header is row 1. */
+  row: number;
+  name?: string;
+  /** What a valid row does, or did when applied. */
+  action?: "create" | "update" | "skip";
+  errors?: BudgetImportRowError[];
+}
+
+export interface BudgetImportSummary {
+  valid: number;
+  error: number;
+  created: number;
+  updated: number;
+  skipped: number;
+}
+
+export interface BudgetImportResult {
+  dryRun: boolean;
+  /** True when the budgets were saved. */
+  applied: boolean;
+  summary: BudgetImportSummary;
+  results: BudgetImportRowResult[];
+}
