@@ -72,36 +72,43 @@ type BudgetConfig struct {
 	Description *string           `json:"description,omitempty"`
 	Status      string            `json:"status"`
 	Limit       BudgetLimit       `json:"limit"`
-	Resource    *BudgetResource   `json:"resource,omitempty"`
-	Consumers   []BudgetConsumer  `json:"consumers"`
+	Filters     []BudgetFilter    `json:"filters"`
 	Exemptions  []BudgetExemption `json:"exemptions"`
 	Warnings    *BudgetWarnings   `json:"warnings,omitempty"`
+	// Labels are the kind's metadata.labels, kept with the spec: one-word labels to
+	// organize and find budgets. Not in the spec's JSON; stored under metadata and never
+	// sent to gateways.
+	Labels []string `json:"-"`
 }
 
-// BudgetLimit is how much may be spent per period, and what happens when it is used up.
+// BudgetLimit is how much may be spent per period, what happens when it is used up, and
+// what gets its own limit.
 type BudgetLimit struct {
 	Amount   string `json:"amount"`
 	Currency string `json:"currency"`
 	Period   string `json:"period"`
 	Action   string `json:"action"`
 	BlockAt  *int32 `json:"blockAt,omitempty"`
+	// SplitBy gives each value of a type its own limit; nil: one shared limit for all
+	// matching usage.
+	SplitBy *BudgetSplit `json:"splitBy,omitempty"`
 }
 
-// BudgetResource is the LLM providers a budget covers; nil covers all, shared.
-type BudgetResource struct {
+// BudgetSplit is what a budget gives a separate limit to: each LLM provider, project,
+// agent, API key, or value of an attribute expression.
+type BudgetSplit struct {
 	Type       string  `json:"type"`
-	Allocation string  `json:"allocation"`
-	ID         *string `json:"id,omitempty"`
-}
-
-// BudgetConsumer selects the traffic a budget counts; consumers combine with AND.
-type BudgetConsumer struct {
-	Type       string  `json:"type"`
-	Allocation string  `json:"allocation"`
-	ID         *string `json:"id,omitempty"`
 	Expression *string `json:"expression,omitempty"`
-	// Project is a shared agent's project (agent names are unique only per project).
-	Project *string `json:"project,omitempty"`
+}
+
+// BudgetFilter selects the usage a budget counts; filters combine with AND, and none
+// counts all LLM usage.
+type BudgetFilter struct {
+	Type string  `json:"type"`
+	ID   *string `json:"id,omitempty"`
+	// Project is an agent filter's project (agent names are unique only per project).
+	Project    *string `json:"project,omitempty"`
+	Expression *string `json:"expression,omitempty"`
 }
 
 // BudgetExemption is traffic a budget neither counts nor blocks.
@@ -140,13 +147,14 @@ type BudgetDocument struct {
 // BudgetDocumentMetadata names a stored budget and its owning project.
 type BudgetDocumentMetadata struct {
 	Name        string            `json:"name"`
+	Labels      []string          `json:"labels,omitempty"`
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 // NewBudgetDocument is the stored kind of a budget with that name, project ("" for an
 // organization budget) and spec.
 func NewBudgetDocument(name, project string, spec BudgetConfig) BudgetDocument {
-	doc := BudgetDocument{APIVersion: BudgetAPIVersion, Kind: KindBudget, Metadata: BudgetDocumentMetadata{Name: name}, Spec: spec}
+	doc := BudgetDocument{APIVersion: BudgetAPIVersion, Kind: KindBudget, Metadata: BudgetDocumentMetadata{Name: name, Labels: spec.Labels}, Spec: spec}
 	if project != "" {
 		doc.Metadata.Annotations = map[string]string{AnnotationBudgetProjectID: project}
 	}
@@ -175,6 +183,9 @@ func (budgetKindSerializer) Scan(ctx context.Context, field *schema.Field, dst r
 		return fmt.Errorf("budget configuration: unsupported type %T", dbValue)
 	}
 	var probe struct {
+		Metadata struct {
+			Labels []string `json:"labels"`
+		} `json:"metadata"`
 		Spec json.RawMessage `json:"spec"`
 	}
 	if err := json.Unmarshal(raw, &probe); err != nil {
@@ -187,6 +198,9 @@ func (budgetKindSerializer) Scan(ctx context.Context, field *schema.Field, dst r
 	}
 	if err := json.Unmarshal(body, &cfg); err != nil {
 		return fmt.Errorf("budget configuration: %w", err)
+	}
+	if len(probe.Metadata.Labels) > 0 {
+		cfg.Labels = probe.Metadata.Labels
 	}
 	return field.Set(ctx, dst, cfg)
 }

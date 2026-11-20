@@ -39,11 +39,10 @@ import (
 func projectBudgetRequest(name string) budgetRequest {
 	return budgetRequest{
 		Name: name, ProjectId: strPtr("api-platform"), DisplayName: strPtr(name),
-		Limit: spec.BudgetLimit{Amount: "100", Period: "month", Action: "block"},
-		Consumers: []spec.BudgetConsumer{
-			{Type: "project", Allocation: strPtr("shared"), Id: strPtr("api-platform")},
-			{Type: "agent", Allocation: strPtr("separate")},
+		Limit: spec.BudgetLimit{
+			Amount: "100", Period: "month", Action: "block", SplitBy: &spec.BudgetSplit{Type: "agent"},
 		},
+		Filters: []spec.BudgetFilter{{Type: "project", Id: strPtr("api-platform")}},
 	}
 }
 
@@ -56,12 +55,11 @@ func TestBudgetService_AProjectBudgetCountsOnlyItsProject(t *testing.T) {
 	b := env.created[0]
 	require.NotNil(t, b.ProjectID)
 	assert.Equal(t, budgetTestProjectID, b.ProjectID.String(), "the owning project is stored by ID")
-	require.Len(t, b.Configuration.Consumers, 2, "the consumers as sent: nothing is added")
-	project := b.Configuration.Consumers[0]
+	require.Len(t, b.Configuration.Filters, 1, "the filters as sent: nothing is added")
+	project := b.Configuration.Filters[0]
 	assert.Equal(t, "project", project.Type)
-	assert.Equal(t, "shared", project.Allocation)
 	assert.Equal(t, "api-platform", *project.ID)
-	assert.Equal(t, "agent", b.Configuration.Consumers[1].Type)
+	assert.Equal(t, "agent", b.Configuration.Limit.SplitBy.Type)
 
 	require.NotNil(t, kindProject(resp))
 	assert.Equal(t, "api-platform", *kindProject(resp))
@@ -69,8 +67,8 @@ func TestBudgetService_AProjectBudgetCountsOnlyItsProject(t *testing.T) {
 	kind := BuildBudgetKind(b.Name, budgetTestOrgName, b.Configuration, true)
 	out, err := json.Marshal(kind)
 	require.NoError(t, err)
-	assert.Contains(t, string(out), `{"type":"project","allocation":"shared","id":"api-platform"}`,
-		"gateways get the project as a consumer")
+	assert.Contains(t, string(out), `"filters":[{"type":"project","id":"api-platform"}]`,
+		"gateways get the project as a filter")
 }
 
 func TestBudgetService_AnOrganizationBudgetHasNoProject(t *testing.T) {
@@ -84,32 +82,32 @@ func TestBudgetService_AnOrganizationBudgetHasNoProject(t *testing.T) {
 	assert.NotContains(t, string(out), "projectId")
 }
 
-func TestBudgetService_AProjectBudgetMayNameItsOwnProjectConsumer(t *testing.T) {
+func TestBudgetService_AProjectBudgetMayNameItsOwnProjectFilter(t *testing.T) {
 	env := newBudgetTestEnv(t)
 	req := projectBudgetRequest("api-platform-total")
-	req.Consumers = []spec.BudgetConsumer{{Type: "project", Id: strPtr("api-platform")}}
+	req.Limit.SplitBy = nil
 	_, err := env.create(context.Background(), budgetTestOrg, "alice", req)
 	require.NoError(t, err)
-	require.Len(t, env.created[0].Configuration.Consumers, 1, "not added twice")
+	require.Len(t, env.created[0].Configuration.Filters, 1, "not added twice")
 }
 
-func TestBudgetService_AProjectBudgetGetsItsProjectConsumer(t *testing.T) {
+func TestBudgetService_AProjectBudgetGetsItsProjectFilter(t *testing.T) {
 	env := newBudgetTestEnv(t)
 	ctx := context.Background()
 	sent := projectBudgetRequest("api-platform-agents")
-	sent.Consumers = sent.Consumers[1:] // only the agent consumer
+	sent.Filters = []spec.BudgetFilter{{Type: "llmProvider", Id: strPtr("openai")}}
 	resp, err := env.create(ctx, budgetTestOrg, "alice", sent)
 	require.NoError(t, err)
 
-	stored := env.created[0].Configuration.Consumers
+	stored := env.created[0].Configuration.Filters
 	require.Len(t, stored, 2)
-	assert.Equal(t, "project", stored[0].Type, "added first")
-	assert.Equal(t, "shared", stored[0].Allocation)
-	assert.Equal(t, "api-platform", *stored[0].ID)
-	require.Len(t, resp.Spec.Consumers, 2, "the response lists it")
-	assert.Equal(t, "project", resp.Spec.Consumers[0].Type)
+	assert.Equal(t, "llmProvider", stored[0].Type, "as sent")
+	assert.Equal(t, "project", stored[1].Type, "added last")
+	assert.Equal(t, "api-platform", *stored[1].ID)
+	require.Len(t, resp.Spec.Filters, 2, "the response lists it")
+	assert.Equal(t, "project", resp.Spec.Filters[1].Type)
 
-	// The body first sent, without the project consumer, can be sent again as an update.
+	// The body first sent, without the project filter, can be sent again as an update.
 	sent.Limit.Amount = "150"
 	updated, err := env.svc.Update(ctx, budgetTestOrg, sent.Name, asKind(sent))
 	require.NoError(t, err)
@@ -125,12 +123,20 @@ func TestBudgetService_OwnerRefusals(t *testing.T) {
 	}{
 		{"an empty project annotation", func(r *budgetRequest) { r.ProjectId = strPtr(" ") }, utils.ErrCodeValidation, "metadata.annotations"},
 		{"unknown project", func(r *budgetRequest) { r.ProjectId = strPtr("nowhere") }, utils.ErrCodeReferenceNotFound, "metadata.annotations"},
-		{"another project's consumer", func(r *budgetRequest) {
-			r.Consumers = []spec.BudgetConsumer{{Type: "project", Id: strPtr("support")}}
-		}, utils.ErrCodeValidation, "consumers[0]"},
-		{"each project", func(r *budgetRequest) {
-			r.Consumers = []spec.BudgetConsumer{{Type: "project", Allocation: strPtr("separate")}}
-		}, utils.ErrCodeValidation, "consumers[0]"},
+		{"another project's filter", func(r *budgetRequest) {
+			r.Filters = []spec.BudgetFilter{{Type: "project", Id: strPtr("support")}}
+		}, utils.ErrCodeValidation, "filters[0].id"},
+		{"another project's agent", func(r *budgetRequest) {
+			r.Limit.SplitBy = nil
+			r.Filters = []spec.BudgetFilter{{Type: "agent", Project: strPtr("support"), Id: strPtr("triage-bot")}}
+		}, utils.ErrCodeValidation, "filters[0].project"},
+		{"an id-less project filter", func(r *budgetRequest) {
+			r.Filters = []spec.BudgetFilter{{Type: "project"}}
+		}, utils.ErrCodeValidation, "filters[0].id"},
+		{"split by project", func(r *budgetRequest) {
+			r.Filters = nil
+			r.Limit.SplitBy = &spec.BudgetSplit{Type: "project"}
+		}, utils.ErrCodeValidation, "limit.splitBy.type"},
 		{"exempting a project", func(r *budgetRequest) {
 			r.Exemptions = []spec.BudgetExemption{{Type: "project", Id: strPtr("api-platform")}}
 		}, utils.ErrCodeValidation, "exemptions[0].type"},
@@ -187,16 +193,16 @@ func TestBudgetService_ListsAProjectsBudgets(t *testing.T) {
 	_, err := env.create(context.Background(), budgetTestOrg, "alice", projectBudgetRequest("api-platform-agents"))
 	require.NoError(t, err)
 
-	all, err := env.svc.List(context.Background(), budgetTestOrg, "", nil, 20, 0)
+	all, err := env.svc.List(context.Background(), budgetTestOrg, "", nil, nil, "", "", 20, 0)
 	require.NoError(t, err)
 	assert.Equal(t, int32(2), all.Total, "the organization sees every budget")
 
-	mine, err := env.svc.List(context.Background(), budgetTestOrg, "api-platform", nil, 20, 0)
+	mine, err := env.svc.List(context.Background(), budgetTestOrg, "api-platform", nil, nil, "", "", 20, 0)
 	require.NoError(t, err)
 	require.Equal(t, int32(1), mine.Total)
 	assert.Equal(t, "api-platform-agents", mine.Budgets[0].Metadata.Name)
 
-	none, err := env.svc.List(context.Background(), budgetTestOrg, "support", nil, 20, 0)
+	none, err := env.svc.List(context.Background(), budgetTestOrg, "support", nil, nil, "", "", 20, 0)
 	require.NoError(t, err)
 	assert.Zero(t, none.Total)
 }
@@ -214,7 +220,7 @@ func TestBudgetService_UpdateKeepsAProjectBudgetsExemptionsInItsProject(t *testi
 	require.NoError(t, err)
 	require.NotNil(t, kindProject(resp))
 	assert.Equal(t, "api-platform", *kindProject(resp))
-	assert.Len(t, resp.Spec.Consumers, 2, "the implied project consumer is kept, not added again")
+	assert.Len(t, resp.Spec.Filters, 1, "the project filter is kept, not added again")
 
 	update.Exemptions = []spec.BudgetExemption{{Type: "agent", Project: strPtr("support"), Id: strPtr("triage-bot")}}
 	_, err = env.update(context.Background(), budgetTestOrg, "api-platform-agents", update)
@@ -240,13 +246,13 @@ func TestGatewayResourceSync_TheProjectAnnotationMakesAProjectBudget(t *testing.
 			return &models.ProjectResponse{UUID: budgetTestProjectID, Name: name}, nil
 		},
 	}
-	annotated := func(id, name, project string, consumers ...map[string]any) models.GatewayResourceItem {
+	annotated := func(id, name, project string, filters ...map[string]any) models.GatewayResourceItem {
 		doc, _ := json.Marshal(map[string]any{
 			"apiVersion": "gateway.api-platform.wso2.com/v1", "kind": "Budget",
 			"metadata": map[string]any{
 				"name": name, "annotations": map[string]string{AnnotationProjectID: project},
 			},
-			"spec": map[string]any{"consumers": consumers},
+			"spec": map[string]any{"filters": filters},
 		})
 		now := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
 		return models.GatewayResourceItem{DPID: id, Configuration: doc, CreatedAt: now, UpdatedAt: now}
@@ -256,7 +262,7 @@ func TestGatewayResourceSync_TheProjectAnnotationMakesAProjectBudget(t *testing.
 	resp, err := svc.Sync(context.Background(), resourceSyncGateway.String(), resourceSyncOrg, models.GatewayResourcesRequest{
 		Resources: []models.GatewayResourceItem{
 			annotated("dp-project", "api-platform-daily", "api-platform", map[string]any{"type": "project", "id": "api-platform"}),
-			annotated("dp-no-consumer", "unscoped-daily", "api-platform"),
+			annotated("dp-no-filter", "unscoped-daily", "api-platform"),
 			annotated("dp-unknown", "nowhere-daily", "nowhere"),
 			annotated("dp-other", "other-daily", "api-platform", map[string]any{"type": "project", "id": "support"}),
 			budgetItem("dp-org", "Budget", "org-daily"),
@@ -264,7 +270,7 @@ func TestGatewayResourceSync_TheProjectAnnotationMakesAProjectBudget(t *testing.
 	})
 	require.NoError(t, err)
 	assert.Equal(t, models.GatewayResourceStatusSynced, resp.Resources["dp-project"].Status)
-	assert.Equal(t, GatewayResourceErrInvalid, resp.Resources["dp-no-consumer"].Error, "a project budget lists its project consumer")
+	assert.Equal(t, GatewayResourceErrInvalid, resp.Resources["dp-no-filter"].Error, "a project budget lists its project filter")
 	assert.Equal(t, GatewayResourceErrReferenceNotFound, resp.Resources["dp-unknown"].Error)
 	assert.Equal(t, GatewayResourceErrInvalid, resp.Resources["dp-other"].Error, "a project budget counts only its project")
 	assert.Equal(t, models.GatewayResourceStatusSynced, resp.Resources["dp-org"].Status)
@@ -275,8 +281,8 @@ func TestGatewayResourceSync_TheProjectAnnotationMakesAProjectBudget(t *testing.
 	require.NotNil(t, project.ProjectID)
 	assert.Equal(t, budgetTestProjectID, project.ProjectID.String())
 	assert.Equal(t, "api-platform", project.ProjectName, "the stored kind keeps its project annotation")
-	require.Len(t, project.Configuration.Consumers, 1)
-	assert.Equal(t, "api-platform", *project.Configuration.Consumers[0].ID)
+	require.Len(t, project.Configuration.Filters, 1)
+	assert.Equal(t, "api-platform", *project.Configuration.Filters[0].ID)
 	assert.Nil(t, byName["org-daily"].ProjectID, "no annotation: an organization budget")
 }
 
@@ -322,11 +328,12 @@ func TestBudgetService_UpdateRefusesChangesToFixedFields(t *testing.T) {
 		{"rename", "metadata.name", func(k *spec.Budget) { k.Metadata.Name = "renamed" }},
 		{"move to the organization", "metadata.annotations", func(k *spec.Budget) { k.Metadata.Annotations = nil }},
 		{"period", "spec.limit.period", func(k *spec.Budget) { k.Spec.Limit.Period = "week" }},
-		{"resource", "spec.resource", func(k *spec.Budget) {
-			k.Spec.Resource = &spec.BudgetResource{Type: "llmProvider", Id: strPtr("anthropic")}
+		{"splitBy", "spec.limit.splitBy", func(k *spec.Budget) {
+			k.Spec.Limit.SplitBy = &spec.BudgetSplit{Type: "apiKey"}
 		}},
-		{"consumers", "spec.consumers", func(k *spec.Budget) {
-			k.Spec.Consumers = []spec.BudgetConsumer{{Type: "attribute", Expression: strPtr(budgetGroupExpr)}}
+		{"no splitBy", "spec.limit.splitBy", func(k *spec.Budget) { k.Spec.Limit.SplitBy = nil }},
+		{"filters", "spec.filters", func(k *spec.Budget) {
+			k.Spec.Filters = append(k.Spec.Filters, spec.BudgetFilter{Type: "attribute", Expression: strPtr(budgetGroupExpr)})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -353,7 +360,7 @@ func TestBudgetService_TheReturnedKindCanBeSentBack(t *testing.T) {
 	kind := *created
 	kind.Spec.Limit.Amount = "150.00"
 	updated, err := env.svc.Update(context.Background(), budgetTestOrg, "api-platform-agents", kind)
-	require.NoError(t, err, "the implied project consumer and the defaults round-trip")
+	require.NoError(t, err, "the project filter and the defaults round-trip")
 	assert.Equal(t, "150.00", updated.Spec.Limit.Amount)
 }
 
@@ -476,31 +483,37 @@ func TestGatewayResourceSync_ABudgetNamingAnotherOrganizationFails(t *testing.T)
 	assert.ElementsMatch(t, []string{"own-daily", "none-daily"}, saved)
 }
 
-func TestBudgetService_ANamedAgentGetsItsProjectConsumer(t *testing.T) {
+func TestBudgetService_AnAgentFilterGetsNoProjectFilter(t *testing.T) {
 	env := newBudgetTestEnv(t)
 	ctx := context.Background()
 	sent := budgetRequest{
 		Name: "hotel-booking-monthly", DisplayName: strPtr("Hotel booking"),
-		Limit: spec.BudgetLimit{Amount: "50", Period: "month", Action: "block"},
-		Consumers: []spec.BudgetConsumer{
-			{Type: "agent", Allocation: strPtr("shared"), Project: strPtr("api-platform"), Id: strPtr("hotel-booking")},
-		},
+		Limit:   spec.BudgetLimit{Amount: "50", Period: "month", Action: "block"},
+		Filters: []spec.BudgetFilter{{Type: "agent", Project: strPtr("api-platform"), Id: strPtr("hotel-booking")}},
 	}
 	resp, err := env.create(ctx, budgetTestOrg, "alice", sent)
 	require.NoError(t, err)
 
-	stored := env.created[0].Configuration.Consumers
-	require.Len(t, stored, 2)
-	assert.Equal(t, "agent", stored[0].Type, "as sent")
-	assert.Equal(t, "project", stored[1].Type, "added last")
-	assert.Equal(t, "shared", stored[1].Allocation)
-	assert.Equal(t, "api-platform", *stored[1].ID)
+	stored := env.created[0].Configuration.Filters
+	require.Len(t, stored, 1, "the agent carries its project: nothing is added")
+	assert.Equal(t, "api-platform", *stored[0].Project)
 	assert.Nil(t, env.created[0].ProjectID, "still an organization budget")
-	require.Len(t, resp.Spec.Consumers, 2, "the response lists it")
+	require.Len(t, resp.Spec.Filters, 1)
 
-	// The body first sent, without the project consumer, can be sent again as an update.
 	sent.Limit.Amount = "60"
 	updated, err := env.svc.Update(ctx, budgetTestOrg, sent.Name, asKind(sent))
 	require.NoError(t, err)
 	assert.Equal(t, "60", updated.Spec.Limit.Amount)
+}
+
+func TestBudgetService_AProjectBudgetMayCountAnyOfItsAgents(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	req := projectBudgetRequest("api-platform-any-agent")
+	req.Filters = append(req.Filters, spec.BudgetFilter{Type: "agent"})
+	req.Limit.SplitBy = nil // one limit for all of them
+	_, err := env.create(context.Background(), budgetTestOrg, "alice", req)
+	require.NoError(t, err, "an id-less agent filter is any agent of the project")
+	stored := env.created[0].Configuration.Filters
+	require.Len(t, stored, 2)
+	assert.Nil(t, stored[1].ID)
 }

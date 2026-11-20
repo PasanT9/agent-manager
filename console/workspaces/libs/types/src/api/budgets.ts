@@ -29,9 +29,22 @@ export const BUDGET_PROJECT_ANNOTATION = "gateway.api-platform.wso2.com/project-
 export type BudgetPeriod = "day" | "week" | "month";
 export type BudgetAction = "block" | "allow";
 export type BudgetStatus = "active" | "inactive";
-export type BudgetAllocation = "shared" | "separate";
-export type BudgetConsumerType = "project" | "agent" | "apiKey" | "attribute";
+/** What a filter or split is about: one LLM provider, project, agent or API key, or a CEL
+ * expression on the request (team, user, custom attribute). */
+export type BudgetFilterType =
+  | "llmProvider"
+  | "project"
+  | "agent"
+  | "apiKey"
+  | "attribute";
 export type BudgetExemptionType = "project" | "agent" | "attribute";
+
+/** A separate limit for each value of one dimension. Omitted: one shared limit. */
+export interface BudgetSplit {
+  type: BudgetFilterType;
+  /** Attribute only: a CEL expression whose value tells the values apart. */
+  expression?: string;
+}
 
 export interface BudgetLimit {
   /** Decimal string, at most two decimals. */
@@ -41,22 +54,17 @@ export interface BudgetLimit {
   action: BudgetAction;
   /** Block only: refuses once spend reaches this share of the amount (1-100). */
   blockAt?: number;
+  splitBy?: BudgetSplit;
 }
 
-export interface BudgetResource {
-  type: "llmProvider";
-  allocation?: BudgetAllocation;
-  /** Provider handle; only with shared allocation. */
+/** Which usage a budget counts; all of a budget's filters must match. */
+export interface BudgetFilter {
+  type: BudgetFilterType;
+  /** LLM provider, project, agent or API key. */
   id?: string;
-}
-
-export interface BudgetConsumer {
-  type: BudgetConsumerType;
-  allocation?: BudgetAllocation;
-  id?: string;
-  /** A shared agent only: the agent's project (agent names are unique per project). */
+  /** Agent only: the agent's project (agent names are unique per project). */
   project?: string;
-  /** Attribute only: a CEL expression. */
+  /** Attribute only: a CEL expression (bool). */
   expression?: string;
 }
 
@@ -79,14 +87,15 @@ export interface BudgetSpec {
   description?: string;
   status?: BudgetStatus;
   limit: BudgetLimit;
-  resource?: BudgetResource;
-  consumers?: BudgetConsumer[];
+  filters?: BudgetFilter[];
   exemptions?: BudgetExemption[];
   warnings?: BudgetWarnings;
 }
 
 export interface BudgetMetadata {
   name: string;
+  /** One-word labels to organize and find budgets (at most 10, no spaces). */
+  labels?: string[];
   annotations?: Record<string, string>;
 }
 
@@ -134,6 +143,9 @@ export interface ListBudgetsQuery extends ListQuery {
   /** Only the budgets this project owns. */
   projectId?: string;
   filter?: string;
+  /** Budgets whose name, display name or a label contains this text, ignoring case. */
+  search?: string;
+  status?: "active" | "inactive" | "limitReached";
 }
 
 export interface BudgetPathParams extends OrgPathParams {

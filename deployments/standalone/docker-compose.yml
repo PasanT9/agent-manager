@@ -307,8 +307,8 @@ services:
       GATEWAY_VERSION: v2026.09.24
       INSTRUMENTATION_URL: http://${GATEWAY_HOST}:${GATEWAY_PORT}/otel
       DOCS_URL: https://wso2.com/agent-platform/docs/${DOCS_VERSION:-next}
-      # Cost Management "Open in Moesif"; empty shows "Detailed analytics unavailable".
-      MOESIF_DASHBOARD_URL: ${MOESIF_DASHBOARD_URL:-}
+      # Cost Management "Advanced analytics" link (any analytics tool); empty shows a plain note.
+      ANALYTICS_DASHBOARD_URL: ${ANALYTICS_DASHBOARD_URL:-}
       FILE_MOUNT_MAX_FILE_BYTES: "1000000"
       FEATURE_FLAG_ENABLE_PROFILE_MANAGEMENT: "true"
       FEATURE_FLAG_ENABLE_USER_MANAGEMENT: "true"

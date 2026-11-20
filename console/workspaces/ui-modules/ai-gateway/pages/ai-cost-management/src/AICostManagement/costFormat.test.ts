@@ -147,7 +147,7 @@ describe("costFormat", () => {
 describe("zeroCostNote", () => {
   it("names the groups left out of a chart", () => {
     expect(zeroCostNote(["gpt-4o-nousage", "my-private-model"])).toBe(
-      'Not shown: gpt-4o-nousage, my-private-model, which cost $0 (counted in "Requests charged $0").',
+      "Not shown (charged $0): gpt-4o-nousage, my-private-model.",
     );
   });
 });

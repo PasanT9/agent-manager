@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -121,15 +122,23 @@ func (c *budgetController) ImportBudgets(w http.ResponseWriter, r *http.Request)
 // ListBudgets handles GET /orgs/{orgName}/budgets.
 func (c *budgetController) ListBudgets(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	limit, ok := budgetQueryInt(w, query.Get("limit"), "limit")
+	limit, ok := budgetQueryInt(w, query.Get("limit"), "limit", 1)
 	if !ok {
 		return
 	}
-	offset, ok := budgetQueryInt(w, query.Get("offset"), "offset")
+	offset, ok := budgetQueryInt(w, query.Get("offset"), "offset", 0)
 	if !ok {
 		return
 	}
-	resp, err := c.budgets.List(r.Context(), middleware.OUIDFromRequest(r), query.Get("projectId"), query["filter"], limit, offset)
+	labels := query["label"]
+	// A budget has at most 10 labels, so more than that can never match.
+	if len(labels) > maxBudgetLabelFilters {
+		utils.WriteErrorResponseWithReason(w, http.StatusBadRequest,
+			fmt.Sprintf("label can be given at most %d times.", maxBudgetLabelFilters), "", utils.ErrCodeValidation)
+		return
+	}
+	resp, err := c.budgets.List(r.Context(), middleware.OUIDFromRequest(r), query.Get("projectId"), query["filter"],
+		labels, query.Get("search"), query.Get("status"), limit, offset)
 	if err != nil {
 		writeBudgetError(w, r, err, "Failed to list budgets")
 		return
@@ -138,13 +147,21 @@ func (c *budgetController) ListBudgets(w http.ResponseWriter, r *http.Request) {
 }
 
 // budgetQueryInt reads an optional integer query parameter; 0 when absent.
-func budgetQueryInt(w http.ResponseWriter, raw, name string) (int32, bool) {
+// maxBudgetLabelFilters is the most label filters a list takes (a budget has at most 10).
+const maxBudgetLabelFilters = 10
+
+func budgetQueryInt(w http.ResponseWriter, raw, name string, min int64) (int32, bool) {
 	if raw == "" {
-		return 0, true
+		return 0, true // not given: the service's default
 	}
 	v, err := strconv.ParseInt(raw, 10, 32)
 	if err != nil {
 		utils.WriteErrorResponseWithReason(w, http.StatusBadRequest, name+" must be a whole number.", err.Error(), utils.ErrCodeValidation)
+		return 0, false
+	}
+	// Checked here: the service reads 0 as "not given".
+	if v < min {
+		utils.WriteErrorResponseWithReason(w, http.StatusBadRequest, fmt.Sprintf("%s must be at least %d.", name, min), "", utils.ErrCodeValidation)
 		return 0, false
 	}
 	return int32(v), true
@@ -164,11 +181,11 @@ func (c *budgetController) GetBudget(w http.ResponseWriter, r *http.Request) {
 // allowance's spend this period, highest first.
 func (c *budgetController) GetBudgetUsage(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	limit, ok := budgetQueryInt(w, query.Get("limit"), "limit")
+	limit, ok := budgetQueryInt(w, query.Get("limit"), "limit", 1)
 	if !ok {
 		return
 	}
-	offset, ok := budgetQueryInt(w, query.Get("offset"), "offset")
+	offset, ok := budgetQueryInt(w, query.Get("offset"), "offset", 0)
 	if !ok {
 		return
 	}

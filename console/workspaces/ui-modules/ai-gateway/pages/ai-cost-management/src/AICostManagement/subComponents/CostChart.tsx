@@ -61,6 +61,8 @@ interface CostChartProps {
   /** Largest first; "Other", if any, last. */
   series: CostSeries[];
   height?: number;
+  /** Widest a month's bar may be, in px (narrow charts beside tiles use less). */
+  maxBarSize?: number;
 }
 
 /** Gap left between stacked segments, in px. */
@@ -118,6 +120,22 @@ function rankShape(rank: number, colorOfKey: (key: string) => string) {
 }
 
 /** Compact dollar ticks: $0, $500, $3.5k, $14k, $1.2M. */
+/**
+ * Evenly spaced axis ticks from $0: a round step (1, 2, 2.5 or 5 × a power of ten) giving
+ * about four intervals, up to the first tick at or above the highest bar ($4.33 → 0, 2, 4,
+ * 6). No raw number becomes a tick; with no cost yet the axis is $0 to $1.
+ */
+function axisTicks(max: number): number[] {
+  if (!(max > 0)) return [0, 0.25, 0.5, 0.75, 1];
+  const raw = max / 4;
+  const scale = 10 ** Math.floor(Math.log10(raw));
+  const m = raw / scale;
+  const step =
+    (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * scale;
+  const count = Math.ceil(max / step - 1e-9);
+  return Array.from({ length: count + 1 }, (_, i) => +(i * step).toFixed(6));
+}
+
 function axisUsd(value: number): string {
   if (value >= 1_000_000) return `$${+(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `$${+(value / 1_000).toFixed(1)}k`;
@@ -213,7 +231,12 @@ function CostTooltip({
 }
 
 /** One stacked bar per month, coloured by group; no animation. */
-export function CostChart({ rows, series, height = 360 }: CostChartProps) {
+export function CostChart({
+  rows,
+  series,
+  height = 360,
+  maxBarSize = 220,
+}: CostChartProps) {
   const theme = useTheme();
   const mode = theme.palette.mode === "dark" ? "dark" : "light";
   const ranked = series.filter((s) => !s.other);
@@ -240,6 +263,14 @@ export function CostChart({ rows, series, height = 360 }: CostChartProps) {
     return stacked;
   });
   const tick = { fill: theme.palette.text.secondary, fontSize: 12 };
+  const ticks = axisTicks(
+    Math.max(
+      0,
+      ...rows.map((row) =>
+        series.reduce((sum, s) => sum + Number(row[s.key] ?? 0), 0),
+      ),
+    ),
+  );
 
   return (
     <Stack spacing={2}>
@@ -286,7 +317,7 @@ export function CostChart({ rows, series, height = 360 }: CostChartProps) {
         isAnimationActive={false}
         margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
         barCategoryGap="16%"
-        maxBarSize={220}
+        maxBarSize={maxBarSize}
       >
         <CartesianGrid vertical={false} stroke={theme.palette.divider} />
         <XAxis
@@ -302,8 +333,8 @@ export function CostChart({ rows, series, height = 360 }: CostChartProps) {
           tick={tick}
           tickFormatter={axisUsd}
           width={56}
-          // With no cost yet the axis still shows $0 to $1, as an empty chart.
-          domain={[0, (dataMax: number) => (dataMax > 0 ? dataMax : 1)]}
+          ticks={ticks}
+          domain={[0, ticks[ticks.length - 1]]}
         />
         <ChartTooltip
           cursor={{ fill: theme.palette.action.hover }}

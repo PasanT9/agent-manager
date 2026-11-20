@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Button,
   Chip,
@@ -26,6 +26,7 @@ import {
   Menu,
   MenuItem,
   SearchBar,
+  TablePagination,
   Stack,
   TextField,
   Typography,
@@ -41,16 +42,14 @@ import { useFeatureManagement } from "@agent-management-platform/feature-managem
 import { useListBudgets } from "@agent-management-platform/api-client";
 import {
   isListEmpty,
+  LabelChips,
   ResourceListShell,
 } from "@agent-management-platform/shared-component";
 import { useConfirmDeleteBudget } from "./useConfirmDeleteBudget";
-import {
-  BUDGET_PROJECT_ANNOTATION,
-  type Budget,
-} from "@agent-management-platform/types";
+import { wordLabels } from "../budgetForm";
+import { type Budget } from "@agent-management-platform/types";
 import { amount, formatUsd } from "../costFormat";
 import { PERIOD_LABELS } from "./budgetLabels";
-import { useEntityNames } from "../useEntityNames";
 import { ImportBudgetsDialog } from "./ImportBudgetsDialog";
 
 /** Delete shows on hover or focus, as in the console's other lists; touch shows it always. */
@@ -64,51 +63,31 @@ const ROW_HOVER_SX = {
 
 interface BudgetsTabProps {
   orgName?: string;
-  /** Set on a project's page: only the budgets that project owns. */
+  /** Set on a project's page: only the budgets that count that project's usage. */
   projectName?: string;
+  /** Set on an agent's page (with its project): the budgets that count its usage. */
+  agentName?: string;
   /** Opens a budget's detail page. */
   onOpen: (budgetName: string) => void;
-  /** Opens the create page. */
+  /** Opens the create page (on a project's or agent's page: with it filled in). */
   onCreate: () => void;
 }
 
-/** The kind a budget counts separately (each agent, each API key, ...), if any. */
+/** What a budget's limit is split by (each agent, each API key, ...), if anything. */
 export function separateKind(b: Budget): string | undefined {
-  const kinds: string[] = [];
-  if (b.spec.resource?.allocation === "separate") kinds.push("LLM provider");
-  for (const c of b.spec.consumers ?? []) {
-    if (c.allocation !== "separate") continue;
-    kinds.push(
-      c.type === "apiKey"
-        ? "API key"
-        : c.type === "attribute"
-          ? "value"
-          : c.type,
-    );
-  }
-  if (!kinds.length) return undefined;
-  return kinds.length === 1 ? kinds[0] : `${kinds.join(" and ")} combination`;
+  const t = b.spec.limit.splitBy?.type;
+  if (!t) return undefined;
+  return t === "llmProvider"
+    ? "LLM provider"
+    : t === "apiKey"
+      ? "API key"
+      : t === "attribute"
+        ? "value"
+        : t;
 }
 
-/** Whether the project is one of the budget's consumers, itself or through an agent. */
-export function consumes(b: Budget, project: string): boolean {
-  return (b.spec.consumers ?? []).some(
-    (c) =>
-      (c.type === "project" && c.id === project) ||
-      (c.type === "agent" && c.project === project),
-  );
-}
-
-/** Spend at or past the point the budget acts: its block point, or the amount. */
-export function atOrOverLimit(b: Budget): boolean {
-  const spent = amount(b.status?.currentPeriod?.spent);
-  const limit = amount(b.spec.limit.amount);
-  const point =
-    b.spec.limit.action === "block"
-      ? (limit * (b.spec.limit.blockAt ?? 100)) / 100
-      : limit;
-  return limit > 0 && !separateKind(b) && spent >= point;
-}
+/** Page sizes, as the console's other lists. */
+const ROWS_PER_PAGE_OPTIONS = [5, 10, 25];
 
 type StatusFilter = "all" | "active" | "inactive" | "over";
 const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
@@ -151,9 +130,6 @@ function Usage({ budget }: { budget: Budget }) {
           : share !== undefined
             ? `${share}% of the limit`
             : ""}
-        {period.unpricedRequests > 0
-          ? ` · ${period.unpricedRequests} unpriced`
-          : ""}
       </Typography>
     </Stack>
   );
@@ -163,66 +139,64 @@ function Usage({ budget }: { budget: Budget }) {
 export function BudgetsTab({
   orgName,
   projectName,
+  agentName,
   onOpen,
   onCreate,
 }: BudgetsTabProps) {
   // Budgets are managed at organization level; a project sees, read-only, the budgets
-  // it is a consumer of.
+  // that count its usage.
   const { hasAccess } = useFeatureManagement();
-  const canWrite = hasAccess("budget_create") && !projectName;
+  const canCreate = hasAccess("budget_create");
+  // Import and row actions are for the organization's list only.
+  const canWrite = canCreate && !projectName;
   const canDelete = hasAccess("budget_delete") && !projectName;
   const { confirmDelete } = useConfirmDeleteBudget(orgName);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(ROWS_PER_PAGE_OPTIONS[1]);
+  // The server searches; ask it once typing pauses, from the first page.
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setQuery(search.trim());
+      setPage(0);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+  // Search, status and paging are the API's: the list shows one page of the result.
   const { data, isLoading, error } = useListBudgets(
     { orgName },
     {
-      filter: projectName ? `project:${projectName}` : undefined,
-      limit: 100,
+      filter: !projectName
+        ? undefined
+        : agentName
+          ? `agent:${projectName}/${agentName}`
+          : `project:${projectName}`,
+      search: query || undefined,
+      status:
+        statusFilter === "all"
+          ? undefined
+          : statusFilter === "over"
+            ? "limitReached"
+            : statusFilter,
+      limit: rowsPerPage,
+      offset: page * rowsPerPage,
     },
   );
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [importing, setImporting] = useState(false);
-  const names = useEntityNames(orgName ?? "");
-  const ownerOf = (b: Budget) => {
-    const project = b.metadata.annotations?.[BUDGET_PROJECT_ANNOTATION];
-    return project ? (names.project?.[project] ?? project) : "Organization";
-  };
-  // Ordered by the name people see, not the handle.
-  const budgets = useMemo(
-    () =>
-      [...(data?.budgets ?? [])]
-        .filter((b) => !projectName || consumes(b, projectName))
-        .sort((a, b) =>
-          (a.spec.displayName ?? a.metadata.name).localeCompare(
-            b.spec.displayName ?? b.metadata.name,
-            undefined,
-            { sensitivity: "base" },
-          ),
-        ),
-    [data, projectName],
-  );
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return budgets.filter((b) => {
-      const inactive = b.spec.status === "inactive";
-      if (statusFilter === "active" && inactive) return false;
-      if (statusFilter === "inactive" && !inactive) return false;
-      if (statusFilter === "over" && (inactive || !atOrOverLimit(b)))
-        return false;
-      return (
-        !q ||
-        b.metadata.name.toLowerCase().includes(q) ||
-        (b.spec.displayName ?? "").toLowerCase().includes(q)
-      );
-    });
-  }, [budgets, search, statusFilter]);
-  const isFiltered = !!search.trim() || statusFilter !== "all";
+  const budgets = data?.budgets ?? [];
+  const total = data?.total ?? 0;
+  const isFiltered = !!query || statusFilter !== "all";
   const statusSelect = (
     <TextField
       select
       size="small"
       value={statusFilter}
-      onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+      onChange={(e) => {
+        setStatusFilter(e.target.value as StatusFilter);
+        setPage(0);
+      }}
       sx={{ minWidth: 200, flexShrink: 0 }}
       slotProps={{ htmlInput: { "aria-label": "Filter by status" } }}
     >
@@ -249,7 +223,7 @@ export function BudgetsTab({
             alignItems={{ xs: "stretch", md: "center" }}
           >
             <SearchBar
-              placeholder="Search budgets"
+              placeholder="Search by name or label"
               size="small"
               fullWidth
               value={search}
@@ -264,32 +238,53 @@ export function BudgetsTab({
                 onImport={() => setImporting(true)}
               />
             )}
+            {/* A project's or agent's page: a new organization budget for it. */}
+            {canCreate && !canWrite && (
+              <Button
+                variant="contained"
+                startIcon={<Plus size={16} />}
+                onClick={onCreate}
+                sx={{ flexShrink: 0, whiteSpace: "nowrap" }}
+              >
+                Add budget
+              </Button>
+            )}
           </Stack>
         }
         error={
           error
-            ? new Error("Couldn't load budgets. Reload the page to try again.")
+            ? new Error("Couldn't load budgets. Reload to try again.")
             : undefined
         }
         isLoading={isLoading}
-        isEmpty={isListEmpty({ isLoading, count: budgets.length, isFiltered })}
-        isSearchEmpty={
-          !isLoading && budgets.length > 0 && filtered.length === 0
-        }
+        isEmpty={isListEmpty({ isLoading, count: total, isFiltered })}
+        isSearchEmpty={!isLoading && isFiltered && total === 0}
         emptyState={{
           illustration: <Wallet size={64} />,
-          title: projectName
-            ? "No budgets apply to this project"
-            : "No budgets yet",
-          description: projectName
-            ? "Budgets that name this project or its agents appear here."
-            : "Budgets cap what LLM traffic may spend per day, week or month, and warn before they run out.",
+          title: agentName
+            ? "No budgets apply to this agent"
+            : projectName
+              ? "No budgets apply to this project"
+              : "No budgets yet",
+          description: agentName
+            ? "Budgets for this agent show here."
+            : projectName
+              ? "Budgets for this project show here."
+              : "Cap LLM spend per day, week or month.",
           // The toolbar, with its Create button, is not shown while the list is empty.
           action: canWrite ? (
             <CreateBudgetMenu
               onCreate={onCreate}
               onImport={() => setImporting(true)}
             />
+          ) : canCreate ? (
+            <Button
+              variant="contained"
+              startIcon={<Plus size={16} />}
+              onClick={onCreate}
+            >
+              Add budget
+            </Button>
           ) : undefined,
         }}
         searchEmptyState={{
@@ -298,110 +293,132 @@ export function BudgetsTab({
           description: "Try other search keywords or another filter.",
         }}
       >
-        <ListingTable>
-          <ListingTable.Head>
-            <ListingTable.Row>
-              <ListingTable.Cell>Budget</ListingTable.Cell>
-              {!projectName && <ListingTable.Cell>Owner</ListingTable.Cell>}
-              <ListingTable.Cell>Amount (USD)</ListingTable.Cell>
-              <ListingTable.Cell>Period</ListingTable.Cell>
-              <ListingTable.Cell>At the limit</ListingTable.Cell>
-              <ListingTable.Cell>This period</ListingTable.Cell>
-              <ListingTable.Cell>Warnings</ListingTable.Cell>
-              <ListingTable.Cell>Status</ListingTable.Cell>
-              {canDelete && <ListingTable.Cell />}
-            </ListingTable.Row>
-          </ListingTable.Head>
-          <ListingTable.Body>
-            {filtered.map((b) => {
-              const { limit, warnings, status, displayName } = b.spec;
-              const inactive = status === "inactive";
-              return (
-                <ListingTable.Row
-                  key={b.metadata.name}
-                  hover
-                  onClick={() => onOpen(b.metadata.name)}
-                  // Inactive budgets count and block nothing: shown, but in the background.
-                  sx={{
-                    cursor: "pointer",
-                    opacity: inactive ? 0.6 : 1,
-                    ...ROW_HOVER_SX,
-                  }}
-                >
-                  <ListingTable.Cell>
-                    <Stack spacing={0}>
-                      <Typography variant="body2" fontWeight={600}>
-                        {displayName ?? b.metadata.name}
-                      </Typography>
-                      {displayName && displayName !== b.metadata.name && (
-                        <Typography variant="caption" color="text.secondary">
-                          {b.metadata.name}
+        {/* The table in its own card, apart from the search and filters above. */}
+        <ListingTable.Container>
+          <ListingTable>
+            <ListingTable.Head>
+              <ListingTable.Row>
+                <ListingTable.Cell>Budget</ListingTable.Cell>
+                <ListingTable.Cell>Amount (USD)</ListingTable.Cell>
+                <ListingTable.Cell>Period</ListingTable.Cell>
+                <ListingTable.Cell>At the limit</ListingTable.Cell>
+                <ListingTable.Cell>This period</ListingTable.Cell>
+                <ListingTable.Cell>Warnings</ListingTable.Cell>
+                <ListingTable.Cell>Status</ListingTable.Cell>
+                <ListingTable.Cell>Labels</ListingTable.Cell>
+                {canDelete && <ListingTable.Cell />}
+              </ListingTable.Row>
+            </ListingTable.Head>
+            <ListingTable.Body>
+              {budgets.map((b) => {
+                const { limit, warnings, status, displayName } = b.spec;
+                const inactive = status === "inactive";
+                return (
+                  <ListingTable.Row
+                    key={b.metadata.name}
+                    hover
+                    onClick={() => onOpen(b.metadata.name)}
+                    // Inactive budgets count and block nothing: shown, but in the background.
+                    sx={{
+                      cursor: "pointer",
+                      opacity: inactive ? 0.6 : 1,
+                      ...ROW_HOVER_SX,
+                    }}
+                  >
+                    <ListingTable.Cell>
+                      <Stack spacing={0}>
+                        <Typography variant="body2" fontWeight={600}>
+                          {displayName ?? b.metadata.name}
                         </Typography>
-                      )}
-                    </Stack>
-                  </ListingTable.Cell>
-                  {!projectName && (
-                    <ListingTable.Cell>{ownerOf(b)}</ListingTable.Cell>
-                  )}
-                  <ListingTable.Cell>
-                    {formatUsd(amount(limit.amount))}
-                  </ListingTable.Cell>
-                  <ListingTable.Cell>
-                    {PERIOD_LABELS[limit.period]}
-                  </ListingTable.Cell>
-                  <ListingTable.Cell>
-                    <Chip
-                      size="small"
-                      variant="outlined"
-                      color={limit.action === "block" ? "warning" : "default"}
-                      label={limit.action === "block" ? "Block" : "Allow"}
-                    />
-                  </ListingTable.Cell>
-                  <ListingTable.Cell>
-                    <Usage budget={b} />
-                  </ListingTable.Cell>
-                  <ListingTable.Cell>
-                    {warnings?.thresholds.length
-                      ? warnings.thresholds.map((t) => `${t}%`).join(", ")
-                      : "None"}
-                  </ListingTable.Cell>
-                  <ListingTable.Cell>
-                    <Chip
-                      size="small"
-                      color={inactive ? "default" : "success"}
-                      variant="outlined"
-                      label={inactive ? "Inactive" : "Active"}
-                    />
-                  </ListingTable.Cell>
-                  {canDelete && (
-                    <ListingTable.Cell align="right" sx={{ width: 110 }}>
-                      {/* Gateway-made budgets are deleted on their gateway. */}
-                      {b.status?.origin !== "gateway_api" && (
-                        <Stack className="budget-actions" direction="row">
-                          <Button
-                            variant="outlined"
-                            color="error"
-                            size="small"
-                            startIcon={<Trash2 size={14} />}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              confirmDelete(
-                                b.metadata.name,
-                                displayName ?? b.metadata.name,
-                              );
-                            }}
-                          >
-                            Delete
-                          </Button>
-                        </Stack>
+                        {displayName && displayName !== b.metadata.name && (
+                          <Typography variant="caption" color="text.secondary">
+                            {b.metadata.name}
+                          </Typography>
+                        )}
+                      </Stack>
+                    </ListingTable.Cell>
+                    <ListingTable.Cell>
+                      {formatUsd(amount(limit.amount))}
+                    </ListingTable.Cell>
+                    <ListingTable.Cell>
+                      {PERIOD_LABELS[limit.period]}
+                    </ListingTable.Cell>
+                    <ListingTable.Cell>
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        color={limit.action === "block" ? "warning" : "default"}
+                        label={limit.action === "block" ? "Block" : "Allow"}
+                      />
+                    </ListingTable.Cell>
+                    <ListingTable.Cell>
+                      <Usage budget={b} />
+                    </ListingTable.Cell>
+                    <ListingTable.Cell>
+                      {warnings?.thresholds.length
+                        ? warnings.thresholds.map((t) => `${t}%`).join(", ")
+                        : "None"}
+                    </ListingTable.Cell>
+                    <ListingTable.Cell>
+                      <Chip
+                        size="small"
+                        color={inactive ? "default" : "success"}
+                        variant="outlined"
+                        label={inactive ? "Inactive" : "Active"}
+                      />
+                    </ListingTable.Cell>
+                    <ListingTable.Cell sx={{ maxWidth: 220 }}>
+                      {b.metadata.labels?.length ? (
+                        <LabelChips labels={wordLabels(b.metadata.labels)} />
+                      ) : (
+                        "None"
                       )}
                     </ListingTable.Cell>
-                  )}
-                </ListingTable.Row>
-              );
-            })}
-          </ListingTable.Body>
-        </ListingTable>
+                    {canDelete && (
+                      <ListingTable.Cell align="right" sx={{ width: 110 }}>
+                        {/* Gateway-made budgets are deleted on their gateway. */}
+                        {b.status?.origin !== "gateway_api" && (
+                          <Stack className="budget-actions" direction="row">
+                            <Button
+                              variant="outlined"
+                              color="error"
+                              size="small"
+                              startIcon={<Trash2 size={14} />}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                confirmDelete(
+                                  b.metadata.name,
+                                  displayName ?? b.metadata.name,
+                                );
+                              }}
+                            >
+                              Delete
+                            </Button>
+                          </Stack>
+                        )}
+                      </ListingTable.Cell>
+                    )}
+                  </ListingTable.Row>
+                );
+              })}
+            </ListingTable.Body>
+          </ListingTable>
+          {/* Always shown with results, so a short search still shows its count and page size. */}
+          {total > 0 && (
+            <TablePagination
+              rowsPerPageOptions={ROWS_PER_PAGE_OPTIONS}
+              component="div"
+              count={total}
+              rowsPerPage={rowsPerPage}
+              page={page}
+              onPageChange={(_, next) => setPage(next)}
+              onRowsPerPageChange={(e) => {
+                setRowsPerPage(parseInt(e.target.value, 10));
+                setPage(0);
+              }}
+            />
+          )}
+        </ListingTable.Container>
       </ResourceListShell>
       <ImportBudgetsDialog
         open={importing}

@@ -19,7 +19,7 @@ var _ MappedNullable = &BudgetLimit{}
 
 // BudgetLimit struct for BudgetLimit
 type BudgetLimit struct {
-	// Above zero, up to 2 decimals; never rounded
+	// Above zero; at most 12 whole digits and 2 decimals, no leading zeros; never rounded
 	Amount   string  `json:"amount"`
 	Currency *string `json:"currency,omitempty"`
 	// UTC calendar periods; a week starts on Monday
@@ -27,7 +27,8 @@ type BudgetLimit struct {
 	// block: refuses when used up; allow: only counts
 	Action string `json:"action"`
 	// Block only: refuses once spend reaches this share of the amount
-	BlockAt *int32 `json:"blockAt,omitempty"`
+	BlockAt *int32       `json:"blockAt,omitempty"`
+	SplitBy *BudgetSplit `json:"splitBy,omitempty"`
 }
 
 // NewBudgetLimit instantiates a new BudgetLimit object
@@ -194,6 +195,38 @@ func (o *BudgetLimit) SetBlockAt(v int32) {
 	o.BlockAt = &v
 }
 
+// GetSplitBy returns the SplitBy field value if set, zero value otherwise.
+func (o *BudgetLimit) GetSplitBy() BudgetSplit {
+	if o == nil || IsNil(o.SplitBy) {
+		var ret BudgetSplit
+		return ret
+	}
+	return *o.SplitBy
+}
+
+// GetSplitByOk returns a tuple with the SplitBy field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *BudgetLimit) GetSplitByOk() (*BudgetSplit, bool) {
+	if o == nil || IsNil(o.SplitBy) {
+		return nil, false
+	}
+	return o.SplitBy, true
+}
+
+// HasSplitBy returns a boolean if a field has been set.
+func (o *BudgetLimit) HasSplitBy() bool {
+	if o != nil && !IsNil(o.SplitBy) {
+		return true
+	}
+
+	return false
+}
+
+// SetSplitBy gets a reference to the given BudgetSplit and assigns it to the SplitBy field.
+func (o *BudgetLimit) SetSplitBy(v BudgetSplit) {
+	o.SplitBy = &v
+}
+
 func (o BudgetLimit) MarshalJSON() ([]byte, error) {
 	toSerialize, err := o.ToMap()
 	if err != nil {
@@ -212,6 +245,9 @@ func (o BudgetLimit) ToMap() (map[string]interface{}, error) {
 	toSerialize["action"] = o.Action
 	if !IsNil(o.BlockAt) {
 		toSerialize["blockAt"] = o.BlockAt
+	}
+	if !IsNil(o.SplitBy) {
+		toSerialize["splitBy"] = o.SplitBy
 	}
 	return toSerialize, nil
 }

@@ -255,8 +255,8 @@ export function QuickBudgetDialog({
             </Box>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
               {form.action === "block"
-                ? "Reject requests when accumulated spending reaches the configured threshold."
-                : "Allow requests to continue and send warnings only."}
+                ? "Refuse requests at the limit."
+                : "Only warns."}
             </Typography>
           </Field>
           <Divider />
@@ -289,9 +289,7 @@ export function QuickBudgetDialog({
           ) : (
             submitted &&
             Object.values(errors).some(Boolean) && (
-              <Alert severity="error">
-                Fix the highlighted fields to create the budget.
-              </Alert>
+              <Alert severity="error">Fix the highlighted fields.</Alert>
             )
           )}
           <Link

@@ -16,19 +16,14 @@
  * under the License.
  */
 
-// Cost sections contributed to other pages' overviews (see plugin.ts), and the
-// one the LLM provider page shows. Each opens the Dashboard picked to its entity.
+// The cost section the LLM provider page shows; it opens the Dashboard picked to
+// that provider.
 import React, { useState, type ReactNode } from "react";
-import { Box, Button, Card, CardContent, Typography } from "@wso2/oxygen-ui";
+import { Box, Button, Stack, Typography } from "@wso2/oxygen-ui";
 import { ChevronRight, Plus } from "@wso2/oxygen-ui-icons-react";
 import { useFeatureManagement } from "@agent-management-platform/feature-management";
 import { generatePath, Link } from "react-router-dom";
 import { absoluteRouteMap } from "@agent-management-platform/types";
-import {
-  type AgentOverviewPanelProps,
-  type ProjectOverviewPanelProps,
-} from "@agent-management-platform/shared-component";
-import { useEntityNames } from "../AICostManagement/useEntityNames";
 import { EntityCostChart, EntityCostTiles } from "./EntityCostPanel";
 import {
   QuickBudgetDialog,
@@ -124,92 +119,6 @@ function dashboardHref(base: string, groupBy?: string, pick?: string): string {
   return `${base}?${q.toString()}`;
 }
 
-/** A project's cost, a section of its overview below its agents. */
-export const ProjectCostSection: React.FC<ProjectOverviewPanelProps> = ({
-  orgId,
-  projectId,
-}) => {
-  const names = useEntityNames(orgId);
-  const projectName = names.project?.[projectId] ?? projectId;
-  const href = generatePath(orgNav.projects.children.aiCostManagement.path, {
-    orgId,
-    projectId,
-  });
-  return (
-    <Card variant="outlined" sx={{ width: "100%" }}>
-      <CardContent>
-        <CostSectionHeader
-          add={
-            // An organization budget scoped to this project.
-            <AddBudget
-              orgName={orgId}
-              start={{ project: projectId }}
-              kind="Project"
-              label={projectName}
-              {...budgetRoutes(orgId)}
-            />
-          }
-        />
-        <EntityCostTiles orgName={orgId} filter={`project:${projectId}`} fill />
-        <Box sx={{ mt: 1.5 }}>
-          <EntityCostChart
-            orgName={orgId}
-            filter={`project:${projectId}`}
-            groupBy="agent"
-            names={names}
-          />
-        </Box>
-        <ViewCostDetails href={href} />
-      </CardContent>
-    </Card>
-  );
-};
-
-/** An agent's cost, as a section of its overview. */
-export const AgentCostSection: React.FC<AgentOverviewPanelProps> = ({
-  orgId,
-  projectId,
-  agentId,
-}) => {
-  const base = generatePath(orgNav.projects.children.aiCostManagement.path, {
-    orgId,
-    projectId,
-  });
-  const agentName =
-    useEntityNames(orgId).agent?.[`${projectId}/${agentId}`] ?? agentId;
-  return (
-    <Box sx={{ width: "100%" }}>
-      <CostSectionHeader
-        add={
-          // An organization budget scoped to this agent (and its project).
-          <AddBudget
-            orgName={orgId}
-            start={{ agent: `${projectId}/${agentId}` }}
-            kind="Agent"
-            label={agentName}
-            {...budgetRoutes(orgId)}
-          />
-        }
-      />
-      <EntityCostTiles
-        orgName={orgId}
-        filter={`agent:${projectId}/${agentId}`}
-        fill
-      />
-      <Box sx={{ mt: 1.5 }}>
-        <EntityCostChart
-          orgName={orgId}
-          filter={`agent:${projectId}/${agentId}`}
-          groupBy="model"
-        />
-      </Box>
-      <ViewCostDetails
-        href={dashboardHref(base, "agent", `${projectId}/${agentId}`)}
-      />
-    </Box>
-  );
-};
-
 /**
  * An LLM provider's cost, a section of its Overview tab, headed as the tab's other
  * sections (Invoke URL & API Key).
@@ -235,18 +144,31 @@ export const LLMProviderCostSection: React.FC<{
           />
         }
       />
-      <EntityCostTiles
-        orgName={orgId}
-        filter={`llmProvider:${providerId}`}
-        fill
-      />
-      <Box sx={{ mt: 1.5 }}>
-        <EntityCostChart
-          orgName={orgId}
-          filter={`llmProvider:${providerId}`}
-          groupBy="model"
-        />
-      </Box>
+      {/* The totals stacked on the left and a short chart beside them, the same height. */}
+      <Stack
+        direction={{ xs: "column", md: "row" }}
+        spacing={1.5}
+        alignItems="stretch"
+      >
+        {/* Wider tiles, a narrower chart with slim bars. */}
+        <Box sx={{ width: { xs: "100%", md: "40%" }, flexShrink: 0 }}>
+          <EntityCostTiles
+            orgName={orgId}
+            filter={`llmProvider:${providerId}`}
+            stacked
+          />
+        </Box>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <EntityCostChart
+            orgName={orgId}
+            filter={`llmProvider:${providerId}`}
+            groupBy="model"
+            height={130}
+            maxBarSize={56}
+            fill
+          />
+        </Box>
+      </Stack>
       <ViewCostDetails href={dashboardHref(base, "llmProvider", providerId)} />
     </Box>
   );

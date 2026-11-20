@@ -104,7 +104,7 @@ func (d *EventDestination) UsableBy(scope, project string) bool {
 
 // AvailableToBudget reports whether a budget may send warnings to the destination:
 // org-wide destinations always, a projects destination only when it lists the budget's
-// project (the project its project consumer names).
+// project (the project its project filter, or its agent filter, names).
 func (d *EventDestination) AvailableToBudget(project string) bool {
 	switch d.Availability {
 	case DestinationAvailableAll, DestinationAvailableOrg:

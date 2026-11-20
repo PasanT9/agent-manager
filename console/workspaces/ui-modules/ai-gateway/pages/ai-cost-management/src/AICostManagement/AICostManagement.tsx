@@ -16,8 +16,7 @@
  * under the License.
  */
 
-import React from "react";
-import { ListingTable } from "@wso2/oxygen-ui";
+import React, { useState } from "react";
 import {
   generatePath,
   Navigate,
@@ -35,33 +34,62 @@ import { CostOverview } from "./subComponents/CostOverview";
 import { BudgetsTab } from "./subComponents/BudgetsTab";
 import { BudgetDetail } from "./subComponents/BudgetDetail";
 import { BudgetWizard } from "./subComponents/BudgetForm";
+import { startQuery } from "./budgetForm";
 import { UnpricedRequests } from "./subComponents/UnpricedRequests";
+import { QuickBudgetDialog } from "../panels/QuickBudgetDialog";
 
 type View = "overview" | "budgets";
 
-/** The organization's Cost Management, or a project's when the URL has one. */
+/** The organization's Cost Management, or a project's or an agent's when the URL has
+ * one. Budgets are created and edited at organization level only. */
 function useScope() {
-  const { orgId, projectId } = useParams<{
+  const { orgId, projectId, agentId } = useParams<{
     orgId: string;
     projectId?: string;
+    agentId?: string;
   }>();
-  const route = projectId
-    ? absoluteRouteMap.children.org.children.projects.children.aiCostManagement
-    : absoluteRouteMap.children.org.children.aiCostManagement;
-  const params = { orgId, projectId };
+  const org = absoluteRouteMap.children.org.children;
+  const route =
+    projectId && agentId
+      ? org.projects.children.agents.children.aiCostManagement
+      : projectId
+        ? org.projects.children.aiCostManagement
+        : org.aiCostManagement;
+  const params = { orgId, projectId, agentId };
   const budgets = route.children.budgets;
+  const orgBudgets = org.aiCostManagement.children.budgets;
   return {
     orgId,
     projectId,
+    agentId,
     overview: generatePath(route.path, params),
     unpriced: generatePath(route.children.unpricedRequests.path, params),
     budgets: generatePath(budgets.path, params),
-    budgetCreate: generatePath(budgets.children.create.path, params),
+    // On a project's or agent's page, a new organization budget for it.
+    // On a project's or agent's page, a new organization budget for it.
+    start:
+      projectId && agentId
+        ? { agent: `${projectId}/${agentId}` }
+        : projectId
+          ? { project: projectId }
+          : undefined,
+    createBase: generatePath(orgBudgets.children.create.path, { orgId }),
+    orgBudgetView: (budgetName: string) =>
+      generatePath(orgBudgets.children.view.path, { orgId, budgetName }),
+    budgetCreate:
+      generatePath(orgBudgets.children.create.path, { orgId }) +
+      startQuery(
+        projectId && agentId
+          ? { agent: `${projectId}/${agentId}` }
+          : projectId
+            ? { project: projectId }
+            : {},
+      ),
     budgetView: (budgetName: string) =>
       generatePath(budgets.children.view.path, { ...params, budgetName }),
     budgetEdit: (budgetName: string) =>
-      generatePath(budgets.children.view.children.edit.path, {
-        ...params,
+      generatePath(orgBudgets.children.view.children.edit.path, {
+        orgId,
         budgetName,
       }),
   };
@@ -76,53 +104,90 @@ function describe(
   view: View,
   projectId?: string,
   projectName?: string,
+  agentName?: string,
 ): React.ReactNode {
   const project = projectName ?? projectId;
   if (view === "overview") {
-    return projectId ? (
+    return agentName ? (
       <span>
-        What LLM traffic in project <strong>{project}</strong> cost per month.
+        Monthly LLM cost of agent <strong>{agentName}</strong>.
+      </span>
+    ) : projectId ? (
+      <span>
+        Monthly LLM cost of project <strong>{project}</strong>.
       </span>
     ) : (
-      "What LLM traffic across the organization cost per month."
+      "Monthly LLM cost of the organization."
     );
   }
-  return projectId ? (
+  return agentName ? (
     <span>
-      Budgets that apply to project <strong>{project}</strong>. Budgets are
-      managed by the organization.
+      Budgets for agent <strong>{agentName}</strong>.
+    </span>
+  ) : projectId ? (
+    <span>
+      Budgets for project <strong>{project}</strong>.
     </span>
   ) : (
-    "Budgets that cap what LLM traffic may spend, with what they spent this period."
+    "Spend limits for LLM traffic."
   );
 }
 
 function CostManagementPage({ view }: { view: View }) {
   const navigate = useNavigate();
-  const { orgId, projectId, budgetView, budgetCreate, unpriced } = useScope();
-  const projectName = useEntityNames(orgId ?? "").project?.[projectId ?? ""];
+  const {
+    orgId,
+    projectId,
+    agentId,
+    budgetView,
+    budgetCreate,
+    unpriced,
+    start,
+    createBase,
+    orgBudgetView,
+  } = useScope();
+  // On a project's or agent's page "Add budget" opens the quick form with it filled in;
+  // its "Advanced options" opens the full form.
+  const [quickOpen, setQuickOpen] = useState(false);
+  const names = useEntityNames(orgId ?? "");
+  const projectName = names.project?.[projectId ?? ""];
+  const agentName = agentId
+    ? (names.agent?.[`${projectId}/${agentId}`] ?? agentId)
+    : undefined;
   return (
     <PageLayout
       title={TITLES[view]}
-      description={describe(view, projectId, projectName)}
+      description={describe(view, projectId, projectName, agentName)}
       disableIcon
     >
-      <ListingTable.Container>
-        {view === "overview" ? (
-          <CostOverview
-            orgName={orgId}
-            projectName={projectId}
-            unpricedHref={unpriced}
-          />
-        ) : (
-          <BudgetsTab
-            orgName={orgId}
-            projectName={projectId}
-            onOpen={(name) => navigate(budgetView(name))}
-            onCreate={() => navigate(budgetCreate)}
-          />
-        )}
-      </ListingTable.Container>
+      {view === "overview" ? (
+        <CostOverview
+          orgName={orgId}
+          projectName={projectId}
+          agentName={agentId}
+          unpricedHref={unpriced}
+        />
+      ) : (
+        <BudgetsTab
+          orgName={orgId}
+          projectName={projectId}
+          agentName={agentId}
+          onOpen={(name) => navigate(budgetView(name))}
+          onCreate={() => (start ? setQuickOpen(true) : navigate(budgetCreate))}
+        />
+      )}
+      {quickOpen && start && orgId && (
+        <QuickBudgetDialog
+          open
+          onClose={() => setQuickOpen(false)}
+          orgName={orgId}
+          start={start}
+          kind={agentId ? "Agent" : "Project"}
+          label={agentName ?? projectName ?? projectId ?? ""}
+          createHref={createBase}
+          viewHref={orgBudgetView}
+        />
+      )}
     </PageLayout>
   );
 }
@@ -141,13 +206,14 @@ function Guard({
 }
 
 function UnpricedRequestsPage() {
-  const { orgId, projectId, overview } = useScope();
+  const { orgId, projectId, agentId, overview } = useScope();
   const [searchParams] = useSearchParams();
   const query = searchParams.toString();
   return (
     <UnpricedRequests
       orgName={orgId}
       projectName={projectId}
+      agentName={agentId}
       backHref={query ? `${overview}?${query}` : overview}
     />
   );

@@ -817,9 +817,9 @@ func TestEventDispatcher_BudgetWarningDeliveryEligibility(t *testing.T) {
 	project := "payments"
 	active := func(channel string) *models.BudgetConfig {
 		return &models.BudgetConfig{
-			Status:    budgetStatusActive,
-			Consumers: []models.BudgetConsumer{{Type: budgetTypeProject, Allocation: "shared", ID: &project}},
-			Warnings:  &models.BudgetWarnings{Thresholds: []int32{80}, Channels: []string{channel}},
+			Status:   budgetStatusActive,
+			Filters:  []models.BudgetFilter{{Type: budgetTypeProject, ID: &project}},
+			Warnings: &models.BudgetWarnings{Thresholds: []int32{80}, Channels: []string{channel}},
 		}
 	}
 	for _, tc := range []struct {

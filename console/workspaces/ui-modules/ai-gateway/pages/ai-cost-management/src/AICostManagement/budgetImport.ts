@@ -27,9 +27,9 @@ export const IMPORT_MAX_BYTES = 1024 * 1024;
 
 /** Every column the import reads, in order, with two example rows to edit. */
 export const IMPORT_TEMPLATE = [
-  "name,projectId,displayName,description,amount,period,action,blockAt,llmProvider,llmProviderAllocation,project,projectAllocation,agent,agentAllocation,apiKey,apiKeyAllocation,attributes,exemptions,thresholds,channels",
-  "org-monthly-ceiling,,Organization monthly ceiling,All LLM spend,5000.00,month,block,95,,,,,,,,,,,80;100,finance-webhook",
-  "api-platform-each-agent,api-platform,Each API Platform agent,,50.00,week,block,,openai,,api-platform,,,separate,,,,,100,finance-webhook",
+  "name,projectId,displayName,description,amount,period,action,blockAt,splitBy,splitByExpression,llmProvider,project,agent,apiKey,attributes,exemptions,thresholds,channels",
+  "org-monthly-ceiling,,Organization monthly ceiling,All LLM spend,5000.00,month,block,95,,,,,,,,,80;100,finance-webhook",
+  "online-shop-each-agent,online-shop,Each Online Shop agent,,50.00,week,block,,agent,,mock-openai,online-shop,,,,,100,finance-webhook",
   "",
 ].join("\n");
 
@@ -64,8 +64,7 @@ export function rowError(e: BudgetImportRowError): {
   if (e.code === "BUDGET_ALREADY_EXISTS") {
     return {
       column: e.column,
-      message:
-        "A budget with this name already exists. Set Existing budget handling to skip or update it.",
+      message: "Name taken. Choose skip or update for existing budgets.",
     };
   }
   return { column: e.column, message: e.message };
@@ -83,20 +82,20 @@ export function validationResult(
     return {
       severity: "error",
       title: "Validation failed.",
-      text: `${summary.error} of ${rows} ${rows === 1 ? "row" : "rows"} ${summary.error === 1 ? "contains" : "contain"} errors. No budgets have been imported.`,
+      text: `${summary.error} of ${rows} ${rows === 1 ? "row has" : "rows have"} errors. Nothing was imported.`,
     };
   }
   if (summary.created + summary.updated === 0) {
     return {
       severity: "info",
       title: "Nothing to import.",
-      text: "Every budget in the file already exists and will be skipped.",
+      text: "All budgets already exist; they'll be skipped.",
     };
   }
   return {
     severity: "success",
     title: "Validation passed.",
-    text: `${rows} of ${rows} ${rows === 1 ? "row is" : "rows are"} valid and ready to import.`,
+    text: `${rows === 1 ? "The row is" : `All ${rows} rows are`} ready to import.`,
   };
 }
 

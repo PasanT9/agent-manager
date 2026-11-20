@@ -25,7 +25,6 @@ import {
   Skeleton,
   Link,
   Stack,
-  Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
 import {
@@ -59,6 +58,8 @@ interface CostOverviewProps {
   orgName?: string;
   /** Set on a project's page: only its cost, grouped by what is below a project. */
   projectName?: string;
+  /** Set on an agent's page (with its project): only that agent's cost. */
+  agentName?: string;
   /** The Requests charged $0 page; the Dashboard selection goes with it. */
   unpricedHref?: string;
 }
@@ -107,43 +108,31 @@ function Tile({
 }
 
 /**
- * "Open in Moesif" when the deployment names the organization's Moesif dashboard;
- * otherwise "Detailed analytics unavailable", linking to the documentation (ACV 3.4).
+ * "Advanced analytics", opening the deployment's analytics dashboard (Moesif or any
+ * other tool) in a new tab; a plain note when the deployment names none.
  */
 function AnalyticsLink() {
-  const moesif = globalConfig?.moesifDashboardUrl?.trim();
-  if (moesif) {
+  const url = globalConfig?.analyticsDashboardUrl?.trim();
+  if (!url) {
     return (
-      <Button
-        size="small"
-        variant="text"
-        href={moesif}
-        target="_blank"
-        rel="noopener noreferrer"
-        endIcon={<ExternalLink size={14} />}
-      >
-        Open in Moesif
-      </Button>
+      <Typography variant="body2" color="text.secondary">
+        Advanced analytics isn&apos;t set up
+      </Typography>
     );
   }
-  const docs = globalConfig?.docsUrl?.trim();
+  // Leaves the AI Control Plane, as the console's other external links do.
   return (
-    <Tooltip title="No analytics integration is configured for this deployment.">
-      <Typography variant="body2" color="text.secondary">
-        {docs ? (
-          <Link
-            href={docs}
-            target="_blank"
-            rel="noopener noreferrer"
-            color="inherit"
-          >
-            Detailed analytics unavailable
-          </Link>
-        ) : (
-          "Detailed analytics unavailable"
-        )}
-      </Typography>
-    </Tooltip>
+    <Button
+      variant="outlined"
+      size="small"
+      component="a"
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      endIcon={<ExternalLink size={14} />}
+    >
+      Advanced analytics
+    </Button>
   );
 }
 
@@ -151,9 +140,10 @@ function AnalyticsLink() {
 export function CostOverview({
   orgName,
   projectName,
+  agentName,
   unpricedHref,
 }: CostOverviewProps) {
-  const selection = useCostSelection(orgName, projectName);
+  const selection = useCostSelection(orgName, projectName, agentName);
   const {
     projectScoped,
     groupBy,
@@ -232,7 +222,7 @@ export function CostOverview({
         icon={ServerCrash}
         tone="error"
         title="Couldn't load cost"
-        description="The cost report failed to load. Reload the page to try again."
+        description="Couldn't load costs. Reload to try again."
       />
     );
   }
@@ -316,7 +306,7 @@ export function CostOverview({
               compact
               icon={ChartColumnStacked}
               title="No AI traffic yet"
-              description="Cost appears here once LLM requests go through a gateway with AI cost tracking on."
+              description="Costs appear once requests flow through a gateway."
             />
           ) : (
             <CostChart rows={chartRows} series={series} />
@@ -335,7 +325,7 @@ export function CostOverview({
             color="text.secondary"
             sx={{ display: "block", mt: zeroCost.length ? 0.25 : 1 }}
           >
-            UTC calendar months · Kept for 3 months, including the current one
+            UTC months · last 3 months
           </Typography>
         </CardContent>
       </Card>

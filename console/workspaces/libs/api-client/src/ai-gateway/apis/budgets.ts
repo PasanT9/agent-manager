@@ -51,6 +51,8 @@ export async function listBudgets(
   const searchParams: Record<string, string> = {};
   if (query?.projectId) searchParams.projectId = query.projectId;
   if (query?.filter) searchParams.filter = query.filter;
+  if (query?.search) searchParams.search = query.search;
+  if (query?.status) searchParams.status = query.status;
   if (query?.limit !== undefined) searchParams.limit = String(query.limit);
   if (query?.offset !== undefined) searchParams.offset = String(query.offset);
 

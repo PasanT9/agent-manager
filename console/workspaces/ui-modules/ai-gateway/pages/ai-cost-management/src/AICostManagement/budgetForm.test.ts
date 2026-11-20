@@ -17,19 +17,19 @@
  */
 
 import {
-  allocationFormula,
+  ANY,
   budgetFromForm,
   EMPTY_FORM,
   AMOUNT_PATTERN,
-  consumerBreaksExemptions,
   exemptionKinds,
   duplicateNameError,
   formFieldOf,
+  formFor,
   formFromBudget,
   isBudgetNotFound,
   handleFor,
-  newConsumer,
   newExemption,
+  newFilter,
   validateBudgetForm,
   type BudgetFormState,
 } from "./budgetForm";
@@ -51,33 +51,134 @@ describe("budgetForm", () => {
     expect(handleFor("x".repeat(80), []).length).toBeLessThanOrEqual(50);
   });
 
-  it("sends only the agent; the server's project consumer reads back as its own row", () => {
-    const agent = {
-      ...newConsumer("agent"),
-      id: "checkout",
-      project: "payments",
-    };
-    const budget = budgetFromForm(form({ consumers: [agent] }), {
-      name: "payments",
-    });
-    expect(budget.spec.consumers).toEqual([
+  it("sends filters and the split, and reads them back", () => {
+    const budget = budgetFromForm(
+      form({
+        filters: [
+          { ...newFilter("llmProvider"), id: "mock-openai" },
+          { ...newFilter("agent"), id: "checkout", project: "payments" },
+          {
+            ...newFilter("team"),
+            expression: "'R&D' in request.Auth.Claims[\"groups\"]",
+          },
+        ],
+        splitBy: "user",
+        splitExpression: 'request.Auth.Claims["email"]',
+      }),
+      { name: "payments" },
+    );
+    expect(budget.spec.filters).toEqual([
+      { type: "llmProvider", id: "mock-openai" },
+      { type: "agent", project: "payments", id: "checkout" },
       {
-        type: "agent",
-        allocation: "shared",
-        id: "checkout",
-        project: "payments",
+        type: "attribute",
+        expression: "'R&D' in request.Auth.Claims[\"groups\"]",
       },
     ]);
-    // As stored: the server adds the agent's project first.
-    budget.spec.consumers = [
-      { type: "project", allocation: "shared", id: "payments" },
-      ...(budget.spec.consumers ?? []),
-    ];
+    expect(budget.spec.limit.splitBy).toEqual({
+      type: "attribute",
+      expression: 'request.Auth.Claims["email"]',
+    });
     const back = formFromBudget(budget);
-    expect(back.consumers.map((c) => [c.type, c.id, c.project])).toEqual([
-      ["project", "payments", ""],
+    expect(back.filters.map((f) => [f.type, f.id, f.project])).toEqual([
+      ["llmProvider", "mock-openai", ""],
       ["agent", "checkout", "payments"],
+      ["team", "", ""],
+      ["user", "", ""],
     ]);
+    expect(back.splitBy).toBe("user");
+  });
+
+  it("sends one-word labels as metadata.labels, drops blanks, and checks each word", () => {
+    const created = budgetFromForm(form({ labels: ["finance", " ", "prod"] }), {
+      name: "labelled",
+    });
+    expect(created.metadata.labels).toEqual(["finance", "prod"]);
+    expect(formFromBudget(created).labels).toEqual(["finance", "prod"]);
+    const edited = budgetFromForm(form({ labels: [] }), {
+      name: "labelled",
+      existing: created,
+    });
+    expect(edited.metadata.labels).toBeUndefined();
+    expect(edited.metadata.name).toBe("labelled");
+    const errs = validateBudgetForm(
+      form({ amount: "1", displayName: "a", labels: ["ok", "-bad", "ok"] }),
+    );
+    expect(errs.labels).toMatch(/one word/);
+    expect(
+      validateBudgetForm(
+        form({ amount: "1", displayName: "a", labels: ["ok", "ok"] }),
+      ).labels,
+    ).toMatch(/once/);
+  });
+
+  it("splits by an Applies to filter set to All", () => {
+    const split = form({
+      filters: [newFilter("llmProvider"), newFilter("agent")],
+      splitBy: "llmProvider",
+    });
+    const budget = budgetFromForm(split, { name: "per-provider" });
+    expect(budget.spec.filters).toEqual([{ type: "agent" }]);
+    expect(budget.spec.limit.splitBy).toEqual({ type: "llmProvider" });
+    expect(
+      validateBudgetForm({ ...split, amount: "1", displayName: "a" }),
+    ).toEqual({});
+    expect(formFromBudget(budget).filters.map((f) => [f.type, f.id])).toEqual([
+      ["llmProvider", ANY],
+      ["agent", ANY],
+    ]);
+    const one = form({
+      filters: [{ ...newFilter("llmProvider"), id: "openai" }],
+      splitBy: "llmProvider",
+      amount: "1",
+      displayName: "a",
+    });
+    expect(validateBudgetForm(one).splitBy).toMatch(/filter to All/);
+    expect(
+      validateBudgetForm({ ...one, filters: [], splitBy: "agent" }).splitBy,
+    ).toMatch(/Applies to/);
+  });
+
+  it("sends All agents and API keys without an id, and All LLM providers as no filter", () => {
+    const budget = budgetFromForm(
+      form({
+        filters: [
+          newFilter("llmProvider"),
+          newFilter("agent"),
+          newFilter("apiKey"),
+        ],
+      }),
+      { name: "any" },
+    );
+    expect(budget.spec.filters).toEqual([
+      { type: "agent" },
+      { type: "apiKey" },
+    ]);
+    expect(formFromBudget(budget).filters.map((f) => f.id)).toEqual(["*", "*"]);
+  });
+
+  it("sends one shared limit with no split and no filters", () => {
+    const budget = budgetFromForm(form({}), { name: "all" });
+    expect(budget.spec.filters).toEqual([]);
+    expect(budget.spec.limit.splitBy).toBeUndefined();
+    expect(
+      budgetFromForm(form({ splitBy: "agent" }), { name: "a" }).spec.limit
+        .splitBy,
+    ).toEqual({ type: "agent" });
+  });
+
+  it("starts a budget from an entity's page with that entity as a filter", () => {
+    expect(
+      formFor({ agent: "online-shop/returns-bot" }).filters.map((f) => [
+        f.type,
+        f.id,
+        f.project,
+      ]),
+    ).toEqual([["agent", "returns-bot", "online-shop"]]);
+    expect(formFor({ provider: "mock-openai" }).filters[0]).toMatchObject({
+      type: "llmProvider",
+      id: "mock-openai",
+    });
   });
 
   it("owns a new budget by the project of the page, and keeps metadata on edit", () => {
@@ -92,7 +193,7 @@ describe("budgetForm", () => {
       name: "ignored",
       existing: created,
     });
-    expect(edited.metadata).toBe(created.metadata);
+    expect(edited.metadata).toEqual(created.metadata);
     expect(edited.spec.limit.amount).toBe("1500.00");
   });
 
@@ -114,102 +215,34 @@ describe("budgetForm", () => {
     });
   });
 
-  it("sends the resource as one provider, every provider, or each provider separately", () => {
-    const all = budgetFromForm(form({}), { name: "a" }).spec.resource;
-    expect(all).toEqual({ type: "llmProvider", allocation: "shared" });
-    const one = budgetFromForm(
-      form({ resourceType: "provider", providerId: "openai" }),
-      {
-        name: "a",
-      },
-    ).spec.resource;
-    expect(one).toEqual({
-      type: "llmProvider",
-      allocation: "shared",
-      id: "openai",
-    });
-    const each = budgetFromForm(
-      form({ resourceType: "provider", resourceAllocation: "separate" }),
-      { name: "a" },
-    ).spec.resource;
-    expect(each).toEqual({ type: "llmProvider", allocation: "separate" });
-    expect(
-      formFromBudget(
-        budgetFromForm(
-          form({ resourceType: "provider", resourceAllocation: "separate" }),
-          { name: "a" },
-        ),
-      ).resourceType,
-    ).toBe("provider");
-  });
-
-  it("preserves an omitted all-providers resource when editing", () => {
-    const existing = budgetFromForm(form({}), { name: "a" });
-    delete existing.spec.resource;
-    const edited = budgetFromForm(
-      form({
-        exemptions: [
-          { type: "project", id: "internal", project: "", expression: "" },
-        ],
-      }),
-      {
-        name: "a",
-        existing,
-      },
-    );
-    expect(edited.spec.resource).toBeUndefined();
-    expect(edited.spec.exemptions).toEqual([
-      { type: "project", id: "internal" },
-    ]);
-  });
-
-  it("preserves an explicit all-providers resource when editing", () => {
-    const existing = budgetFromForm(form({}), { name: "a" });
-    const edited = budgetFromForm(form({ description: "Updated" }), {
-      name: "a",
-      existing,
-    });
-    expect(edited.spec.resource).toEqual({
-      type: "llmProvider",
-      allocation: "shared",
-    });
-  });
-
-  it("sends Team and User as attributes, and reads them back by their claim", () => {
-    const team = newConsumer("team", "separate");
-    expect(team.expression).toBe('request.Auth.Claims["groups"]');
-    const budget = budgetFromForm(form({ consumers: [team] }), { name: "a" });
-    expect(budget.spec.consumers?.[0]).toEqual({
-      type: "attribute",
-      allocation: "separate",
-      expression: 'request.Auth.Claims["groups"]',
-    });
-    expect(formFromBudget(budget).consumers[0].type).toBe("team");
-  });
-
-  it("offers only exemption kinds narrower than the consumers", () => {
-    expect(exemptionKinds([])).toEqual([
+  it("offers only exemption kinds narrower than what the budget counts", () => {
+    expect(exemptionKinds({ filters: [], splitBy: "" })).toEqual([
       "project",
       "agent",
       "team",
       "user",
       "attribute",
     ]);
-    expect(exemptionKinds([newConsumer("project")])).toEqual([
-      "agent",
-      "team",
-      "user",
-      "attribute",
-    ]);
-    expect(exemptionKinds([newConsumer("team")])).toEqual([
-      "user",
-      "attribute",
-    ]);
-    // A per-user budget may exempt one user.
-    expect(exemptionKinds([newConsumer("user", "separate")])).toEqual([
+    expect(
+      exemptionKinds({ filters: [newFilter("project")], splitBy: "" }),
+    ).toEqual(["agent", "team", "user", "attribute"]);
+    expect(
+      exemptionKinds({ filters: [newFilter("llmProvider")], splitBy: "agent" }),
+    ).toEqual(["team", "user", "attribute", "agent"]);
+    expect(exemptionKinds({ filters: [], splitBy: "user" })).toEqual([
       "attribute",
       "user",
     ]);
+  });
+
+  it("flags an exemption that is not narrower", () => {
+    const errors = validateBudgetForm(
+      form({
+        filters: [{ ...newFilter("agent"), id: "a", project: "p" }],
+        exemptions: [{ ...newExemption("agent"), id: "b", project: "p" }],
+      }),
+    );
+    expect(errors["exemptions.0"]).toMatch(/narrower/);
   });
 
   it("accepts thresholds up to 1000% and at most 10 of them", () => {
@@ -242,23 +275,21 @@ describe("budgetForm", () => {
     }
   });
 
-  it("keeps a per-agent budget's project as its own condition", () => {
-    const back = formFromBudget({
-      apiVersion: "gateway.api-platform.wso2.com/v1",
-      kind: "Budget",
-      metadata: { name: "each-agent" },
-      spec: {
-        limit: { amount: "10.00", period: "month", action: "block" },
-        consumers: [
-          { type: "project", allocation: "shared", id: "online-shop" },
-          { type: "agent", allocation: "separate" },
-        ],
-      },
-    });
-    expect(back.consumers.map((c) => [c.type, c.id, c.project])).toEqual([
-      ["project", "online-shop", ""],
-      ["agent", "", ""],
-    ]);
+  it("takes only amounts a gateway accepts", () => {
+    for (const ok of ["1", "100", "0100", "0.5", "0.05", "999999999999.99"]) {
+      expect(AMOUNT_PATTERN.test(ok), ok).toBe(true);
+    }
+    for (const bad of [
+      "0",
+      "0.00",
+      "1000000000000",
+      "10.005",
+      "-5",
+      "1e3",
+      "",
+    ]) {
+      expect(AMOUNT_PATTERN.test(bad), bad).toBe(false);
+    }
   });
 
   it("refuses a name another budget uses, but not the budget's own", () => {
@@ -284,13 +315,21 @@ describe("budgetForm", () => {
     expect(isBudgetNotFound(new TypeError("Failed to fetch"))).toBe(false);
   });
 
+  it("tells a missing budget from a failure", () => {
+    expect(isBudgetNotFound({ code: "BUDGET_NOT_FOUND", message: "x" })).toBe(
+      true,
+    );
+    expect(isBudgetNotFound(new TypeError("Failed to fetch"))).toBe(false);
+  });
+
   it("maps the server's field names onto the form's fields", () => {
     expect(formFieldOf("spec.limit.amount")).toBe("amount");
     expect(formFieldOf("warnings.channels")).toBe("channels");
     expect(formFieldOf("warnings.thresholds[0]")).toBe("thresholds");
     expect(formFieldOf("spec.exemptions[1].expression")).toBe("exemptions.1");
-    expect(formFieldOf("spec.consumers[2].id")).toBe("consumers");
-    expect(formFieldOf("spec.resource.id")).toBe("providerId");
+    expect(formFieldOf("spec.filters[2].id")).toBe("filters.2");
+    expect(formFieldOf("spec.filters")).toBe("filters");
+    expect(formFieldOf("spec.limit.splitBy.expression")).toBe("splitBy");
     expect(formFieldOf("metadata.annotations")).toBe("form");
     expect(formFieldOf(undefined)).toBe("form");
   });
@@ -303,8 +342,9 @@ describe("budgetForm", () => {
         amount: "10.005",
         blockAt: "0",
         thresholds: [80],
-        consumers: [newConsumer("project")],
-        resourceType: "provider",
+        filters: [{ ...newFilter("llmProvider"), id: "" }, newFilter("team")],
+        splitBy: "attribute",
+        splitExpression: " ",
       }),
     );
     expect(Object.keys(errors).sort()).toEqual(
@@ -312,85 +352,11 @@ describe("budgetForm", () => {
         "amount",
         "blockAt",
         "channels",
-        "consumers.0",
         "displayName",
-        "providerId",
+        "filters.0",
+        "filters.1",
+        "splitBy",
       ].sort(),
     );
-  });
-});
-
-describe("allocationFormula", () => {
-  it("shows one shared limit", () => {
-    expect(allocationFormula(100, "month", [])).toEqual({
-      formula: "$100.00 per month",
-    });
-  });
-  it("multiplies by today's counts", () => {
-    expect(
-      allocationFormula(10, "month", [
-        { noun: "provider", plural: "providers", count: 2 },
-        { noun: "agent", plural: "agents", count: 3 },
-      ]),
-    ).toEqual({
-      formula: "$10.00 × 2 providers × 3 agents = $60.00 per month",
-    });
-  });
-  it("uses letters for counts that can't be known", () => {
-    expect(
-      allocationFormula(10, "month", [
-        { noun: "provider", plural: "providers", count: 2 },
-        { noun: "user", plural: "users" },
-      ]),
-    ).toEqual({
-      formula: "$10.00 × 2 providers × N users = $20.00 × N per month",
-      legend: "N = number of users",
-    });
-  });
-  it("stands in for an amount not entered yet", () => {
-    expect(
-      allocationFormula(0, "day", [{ noun: "API key", plural: "API keys" }])
-        .formula,
-    ).toBe("Amount × N API keys = Amount × N per day");
-  });
-});
-
-describe("exemptions stay narrower than consumers", () => {
-  const agentExempt = {
-    ...newExemption("agent"),
-    id: "returns-bot",
-    project: "shop",
-  };
-  it("blocks adding a consumer the exemption is not narrower than", () => {
-    const f = {
-      consumers: [newConsumer("project")],
-      exemptions: [agentExempt],
-    };
-    expect(consumerBreaksExemptions(f, "agent")).toBe(true);
-    expect(consumerBreaksExemptions(f, "apiKey")).toBe(true);
-    expect(consumerBreaksExemptions(f, "attribute")).toBe(true);
-    expect(
-      consumerBreaksExemptions(
-        { consumers: [], exemptions: [agentExempt] },
-        "project",
-      ),
-    ).toBe(false);
-  });
-  it("flags an exemption the consumers no longer allow", () => {
-    const errors = validateBudgetForm(
-      form({
-        consumers: [{ ...newConsumer("agent"), id: "a", project: "p" }],
-        exemptions: [agentExempt],
-      }),
-    );
-    expect(errors["exemptions.0"]).toMatch(/narrower/);
-    expect(
-      validateBudgetForm(
-        form({
-          consumers: [newConsumer("project", "separate")],
-          exemptions: [agentExempt],
-        }),
-      )["exemptions.0"],
-    ).toBeUndefined();
   });
 });

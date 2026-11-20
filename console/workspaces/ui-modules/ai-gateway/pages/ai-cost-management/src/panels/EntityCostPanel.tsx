@@ -24,6 +24,7 @@ import {
   Chip,
   Grid,
   Skeleton,
+  Stack,
   Typography,
   useTheme,
 } from "@wso2/oxygen-ui";
@@ -205,10 +206,10 @@ export function useEntityCost(orgName: string, filter: string) {
 export function EntityCostTiles({
   orgName,
   filter,
-  fill,
+  stacked,
 }: EntityCostPanelProps & {
-  /** Share the full width (a page section) instead of lining up with overview tiles. */
-  fill?: boolean;
+  /** One under another, beside a chart. */
+  stacked?: boolean;
 }) {
   const c = useEntityCost(orgName, filter);
   if (c.error) {
@@ -218,37 +219,52 @@ export function EntityCostTiles({
       </Typography>
     );
   }
-  // Same widths as the Recent Traces tiles below, so the columns line up.
-  const size = fill ? { xs: 12, sm: 4 } : { xs: 12, sm: 6, lg: 3 };
+  const tiles = [
+    <MetricTile
+      key="current"
+      value={formatUsd(c.current)}
+      label={`This month (${c.thisMonth}) so far`}
+      loading={c.isLoading}
+    />,
+    <MetricTile
+      key="last"
+      value={formatUsd(c.last)}
+      label={`Last month (${c.lastMonth})`}
+      adornment={
+        c.change !== undefined && (
+          <ChangeChip change={c.change} against={c.beforeLast} />
+        )
+      }
+      loading={c.isLoading}
+    />,
+    <MetricTile
+      key="window"
+      value={formatUsd(c.window)}
+      label={`Last 3 months (${c.firstMonth}–${c.thisMonth})`}
+      adornment={<MonthsSparkline totals={c.totals} />}
+      loading={c.isLoading}
+    />,
+  ];
+  if (stacked) {
+    // One under another, sharing the column's height equally, so they line up with the
+    // chart beside them.
+    return (
+      <Stack spacing={1.5} sx={{ height: "100%" }}>
+        {tiles.map((tile) => (
+          <Box key={tile.key} sx={{ flex: 1, minHeight: 0 }}>
+            {tile}
+          </Box>
+        ))}
+      </Stack>
+    );
+  }
   return (
     <Grid container spacing={1.5}>
-      <Grid size={size}>
-        <MetricTile
-          value={formatUsd(c.current)}
-          label={`This month (${c.thisMonth}) so far`}
-          loading={c.isLoading}
-        />
-      </Grid>
-      <Grid size={size}>
-        <MetricTile
-          value={formatUsd(c.last)}
-          label={`Last month (${c.lastMonth})`}
-          adornment={
-            c.change !== undefined && (
-              <ChangeChip change={c.change} against={c.beforeLast} />
-            )
-          }
-          loading={c.isLoading}
-        />
-      </Grid>
-      <Grid size={size}>
-        <MetricTile
-          value={formatUsd(c.window)}
-          label={`Last 3 months (${c.firstMonth}–${c.thisMonth})`}
-          adornment={<MonthsSparkline totals={c.totals} />}
-          loading={c.isLoading}
-        />
-      </Grid>
+      {tiles.map((tile) => (
+        <Grid key={tile.key} size={{ xs: 12, sm: 4 }}>
+          {tile}
+        </Grid>
+      ))}
     </Grid>
   );
 }
@@ -267,6 +283,8 @@ export function EntityCostChart({
   height = 260,
   names,
   bare,
+  fill,
+  maxBarSize,
 }: EntityCostPanelProps & {
   groupBy: CostGroupBy;
   height?: number;
@@ -274,6 +292,10 @@ export function EntityCostChart({
   names?: CostNames;
   /** Inside another card (a side column): no card of its own. */
   bare?: boolean;
+  /** The card fills its parent's height (beside the stacked tiles). */
+  fill?: boolean;
+  /** Widest a month's bar may be, in px. */
+  maxBarSize?: number;
 }) {
   const { data, isLoading, error } = useCosts(
     { orgName },
@@ -325,7 +347,12 @@ export function EntityCostChart({
   // With no cost the chart is still drawn, empty, over the three months.
   const chart = (
     <>
-      <CostChart rows={rows} series={series} height={height} />
+      <CostChart
+        rows={rows}
+        series={series}
+        height={height}
+        maxBarSize={maxBarSize}
+      />
       {zeroCost.length > 0 && (
         <Typography variant="caption" color="text.secondary">
           {zeroCostNote(zeroCost)}
@@ -342,7 +369,10 @@ export function EntityCostChart({
     );
   }
   return (
-    <Card variant="outlined" sx={NESTED_CARD_SX}>
+    <Card
+      variant="outlined"
+      sx={{ ...NESTED_CARD_SX, ...(fill ? { height: "100%" } : {}) }}
+    >
       <CardContent>
         {title}
         {chart}

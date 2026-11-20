@@ -40,10 +40,5 @@ export { AICostManagement };
 
 export default AICostManagement;
 
-// Cost sections for other pages: the overviews take them through plugin.ts
-// panels; the LLM provider page (same module) renders LLMProviderCostSection.
-export {
-  AgentCostSection,
-  LLMProviderCostSection,
-  ProjectCostSection,
-} from "./panels/OverviewCostPanels";
+// The LLM provider page renders LLMProviderCostSection.
+export { LLMProviderCostSection } from "./panels/OverviewCostPanels";

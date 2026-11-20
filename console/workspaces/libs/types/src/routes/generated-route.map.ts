@@ -377,6 +377,28 @@ export const generatedRouteMap =  {
               "path": "/org/:orgId/project/:projectId/agents/:agentId",
               "wildPath": "/org/:orgId/project/:projectId/agents/:agentId/*",
               "children": {
+                "aiCostManagement": {
+                  "path": "/org/:orgId/project/:projectId/agents/:agentId/cost-management",
+                  "wildPath": "/org/:orgId/project/:projectId/agents/:agentId/cost-management/*",
+                  "children": {
+                    "unpricedRequests": {
+                      "path": "/org/:orgId/project/:projectId/agents/:agentId/cost-management/unpriced-requests",
+                      "wildPath": "/org/:orgId/project/:projectId/agents/:agentId/cost-management/unpriced-requests/*",
+                      "children": {}
+                    },
+                    "budgets": {
+                      "path": "/org/:orgId/project/:projectId/agents/:agentId/cost-management/budgets",
+                      "wildPath": "/org/:orgId/project/:projectId/agents/:agentId/cost-management/budgets/*",
+                      "children": {
+                        "view": {
+                          "path": "/org/:orgId/project/:projectId/agents/:agentId/cost-management/budgets/view/:budgetName",
+                          "wildPath": "/org/:orgId/project/:projectId/agents/:agentId/cost-management/budgets/view/:budgetName/*",
+                          "children": {}
+                        }
+                      }
+                    }
+                  }
+                },
                 "edit": {
                   "path": "/org/:orgId/project/:projectId/agents/:agentId/edit",
                   "wildPath": "/org/:orgId/project/:projectId/agents/:agentId/edit/*",

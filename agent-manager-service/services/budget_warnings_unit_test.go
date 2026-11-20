@@ -65,10 +65,11 @@ func newWarningsEnv(t *testing.T) *warningsEnv {
 		Origin: models.BudgetOriginControlPlane,
 		Configuration: models.BudgetConfig{
 			DisplayName: "API Platform, per agent", Status: budgetStatusActive,
-			Limit: models.BudgetLimit{Amount: "100.00", Currency: "USD", Period: "month", Action: "block"},
-			Consumers: []models.BudgetConsumer{
-				{Type: budgetTypeProject, Allocation: "shared", ID: &project},
-				{Type: budgetTypeAgent, Allocation: "separate"},
+			Limit: models.BudgetLimit{
+				Amount: "100.00", Currency: "USD", Period: "month", Action: "block", SplitBy: &models.BudgetSplit{Type: budgetTypeAgent},
+			},
+			Filters: []models.BudgetFilter{
+				{Type: budgetTypeProject, ID: &project},
 			},
 			Warnings: &models.BudgetWarnings{Thresholds: []int32{80, 100}, Channels: names},
 		},

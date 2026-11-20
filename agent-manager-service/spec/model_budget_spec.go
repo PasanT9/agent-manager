@@ -23,11 +23,10 @@ type BudgetSpec struct {
 	DisplayName *string `json:"displayName,omitempty"`
 	Description *string `json:"description,omitempty"`
 	// An inactive budget is stored and listed but not enforced
-	Status   *string         `json:"status,omitempty"`
-	Limit    BudgetLimit     `json:"limit"`
-	Resource *BudgetResource `json:"resource,omitempty"`
-	// Combined with AND
-	Consumers []BudgetConsumer `json:"consumers,omitempty"`
+	Status *string     `json:"status,omitempty"`
+	Limit  BudgetLimit `json:"limit"`
+	// Which LLM usage the budget counts; all must match (AND). Omitted or empty: all LLM usage. Each type except attribute at most once. Fixed after creation.
+	Filters []BudgetFilter `json:"filters,omitempty"`
 	// Traffic not counted or blocked by this budget
 	Exemptions []BudgetExemption `json:"exemptions,omitempty"`
 	Warnings   *BudgetWarnings   `json:"warnings,omitempty"`
@@ -175,68 +174,36 @@ func (o *BudgetSpec) SetLimit(v BudgetLimit) {
 	o.Limit = v
 }
 
-// GetResource returns the Resource field value if set, zero value otherwise.
-func (o *BudgetSpec) GetResource() BudgetResource {
-	if o == nil || IsNil(o.Resource) {
-		var ret BudgetResource
+// GetFilters returns the Filters field value if set, zero value otherwise.
+func (o *BudgetSpec) GetFilters() []BudgetFilter {
+	if o == nil || IsNil(o.Filters) {
+		var ret []BudgetFilter
 		return ret
 	}
-	return *o.Resource
+	return o.Filters
 }
 
-// GetResourceOk returns a tuple with the Resource field value if set, nil otherwise
+// GetFiltersOk returns a tuple with the Filters field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *BudgetSpec) GetResourceOk() (*BudgetResource, bool) {
-	if o == nil || IsNil(o.Resource) {
+func (o *BudgetSpec) GetFiltersOk() ([]BudgetFilter, bool) {
+	if o == nil || IsNil(o.Filters) {
 		return nil, false
 	}
-	return o.Resource, true
+	return o.Filters, true
 }
 
-// HasResource returns a boolean if a field has been set.
-func (o *BudgetSpec) HasResource() bool {
-	if o != nil && !IsNil(o.Resource) {
+// HasFilters returns a boolean if a field has been set.
+func (o *BudgetSpec) HasFilters() bool {
+	if o != nil && !IsNil(o.Filters) {
 		return true
 	}
 
 	return false
 }
 
-// SetResource gets a reference to the given BudgetResource and assigns it to the Resource field.
-func (o *BudgetSpec) SetResource(v BudgetResource) {
-	o.Resource = &v
-}
-
-// GetConsumers returns the Consumers field value if set, zero value otherwise.
-func (o *BudgetSpec) GetConsumers() []BudgetConsumer {
-	if o == nil || IsNil(o.Consumers) {
-		var ret []BudgetConsumer
-		return ret
-	}
-	return o.Consumers
-}
-
-// GetConsumersOk returns a tuple with the Consumers field value if set, nil otherwise
-// and a boolean to check if the value has been set.
-func (o *BudgetSpec) GetConsumersOk() ([]BudgetConsumer, bool) {
-	if o == nil || IsNil(o.Consumers) {
-		return nil, false
-	}
-	return o.Consumers, true
-}
-
-// HasConsumers returns a boolean if a field has been set.
-func (o *BudgetSpec) HasConsumers() bool {
-	if o != nil && !IsNil(o.Consumers) {
-		return true
-	}
-
-	return false
-}
-
-// SetConsumers gets a reference to the given []BudgetConsumer and assigns it to the Consumers field.
-func (o *BudgetSpec) SetConsumers(v []BudgetConsumer) {
-	o.Consumers = v
+// SetFilters gets a reference to the given []BudgetFilter and assigns it to the Filters field.
+func (o *BudgetSpec) SetFilters(v []BudgetFilter) {
+	o.Filters = v
 }
 
 // GetExemptions returns the Exemptions field value if set, zero value otherwise.
@@ -323,11 +290,8 @@ func (o BudgetSpec) ToMap() (map[string]interface{}, error) {
 		toSerialize["status"] = o.Status
 	}
 	toSerialize["limit"] = o.Limit
-	if !IsNil(o.Resource) {
-		toSerialize["resource"] = o.Resource
-	}
-	if !IsNil(o.Consumers) {
-		toSerialize["consumers"] = o.Consumers
+	if !IsNil(o.Filters) {
+		toSerialize["filters"] = o.Filters
 	}
 	if !IsNil(o.Exemptions) {
 		toSerialize["exemptions"] = o.Exemptions

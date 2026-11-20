@@ -301,6 +301,7 @@ func gatewayBudgetOrg(raw json.RawMessage) string {
 func gatewayBudgetConfig(name string, raw json.RawMessage) (models.BudgetConfig, string, error) {
 	var doc struct {
 		Metadata struct {
+			Labels      []string          `json:"labels"`
 			Annotations map[string]string `json:"annotations"`
 		} `json:"metadata"`
 		Spec models.BudgetConfig `json:"spec"`
@@ -310,6 +311,9 @@ func gatewayBudgetConfig(name string, raw json.RawMessage) (models.BudgetConfig,
 	}
 	project := strings.TrimSpace(doc.Metadata.Annotations[AnnotationProjectID])
 	cfg := doc.Spec
+	if len(doc.Metadata.Labels) > 0 {
+		cfg.Labels = doc.Metadata.Labels
+	}
 	if cfg.DisplayName == "" {
 		cfg.DisplayName = name
 	}
@@ -319,16 +323,8 @@ func gatewayBudgetConfig(name string, raw json.RawMessage) (models.BudgetConfig,
 	if cfg.Limit.Currency == "" {
 		cfg.Limit.Currency = budgetCurrencyUSD
 	}
-	if cfg.Resource != nil && cfg.Resource.Allocation == "" {
-		cfg.Resource.Allocation = budgetAllocationShared
-	}
-	for i := range cfg.Consumers {
-		if cfg.Consumers[i].Allocation == "" {
-			cfg.Consumers[i].Allocation = budgetAllocationShared
-		}
-	}
-	if cfg.Consumers == nil {
-		cfg.Consumers = []models.BudgetConsumer{}
+	if cfg.Filters == nil {
+		cfg.Filters = []models.BudgetFilter{}
 	}
 	if cfg.Exemptions == nil {
 		cfg.Exemptions = []models.BudgetExemption{}

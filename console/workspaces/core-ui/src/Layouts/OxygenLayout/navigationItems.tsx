@@ -73,6 +73,7 @@ const NAV_LAYOUT: Record<PluginLevel, NavSlot[]> = {
     { key: "security", title: "Security", icon: <Lock /> },
     { key: "observability", title: "Observability", icon: <Activity /> },
     { key: "evaluation", title: "Evaluation", icon: <EvaluationOutline /> },
+    { key: "cost-management", title: "Cost Management", icon: <Wallet size={20} /> },
     { key: "footer" },
   ],
 };

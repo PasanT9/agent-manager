@@ -20,7 +20,6 @@ import {
   Alert,
   Card,
   CardContent,
-  Chip,
   Grid,
   ListingTable,
   Skeleton,
@@ -31,12 +30,14 @@ import { CircleDollarSign } from "@wso2/oxygen-ui-icons-react";
 import { useCosts } from "@agent-management-platform/api-client";
 import { PageLayout, StateNotice } from "@agent-management-platform/views";
 import { keptMonths, monthLabel } from "../costFormat";
-import { CostFilterBar, useCostSelection } from "./CostFilters";
+import { CostFilterBar, scopeFilter, useCostSelection } from "./CostFilters";
 
 interface UnpricedRequestsProps {
   orgName?: string;
   /** A project's Cost Management: only that project's requests. */
   projectName?: string;
+  /** An agent's Cost Management (with its project): only that agent's requests. */
+  agentName?: string;
   backHref: string;
 }
 
@@ -73,12 +74,13 @@ function Tile({
 export function UnpricedRequests({
   orgName,
   projectName,
+  agentName,
   backHref,
 }: UnpricedRequestsProps) {
   // The Dashboard's selection, changeable here too (it stays in the URL).
-  const selection = useCostSelection(orgName, projectName);
+  const selection = useCostSelection(orgName, projectName, agentName);
   const filter = [
-    ...(projectName ? [`project:${projectName}`] : []),
+    ...(scopeFilter(projectName, agentName) ?? []),
     ...(selection.pickFilter ? [selection.pickFilter] : []),
   ];
   const { data, isLoading, error } = useCosts(
@@ -106,7 +108,7 @@ export function UnpricedRequests({
   return (
     <PageLayout
       title="Requests charged $0"
-      description={`Requests that reached an LLM provider but have no cost. They count as $0 toward budgets. Last 3 months (${period}).`}
+      description={`Requests with no cost, counted as $0. Last 3 months (${period}).`}
       backHref={backHref}
       backLabel="Back to dashboard"
       disableIcon
@@ -159,7 +161,7 @@ export function UnpricedRequests({
                 compact
                 icon={CircleDollarSign}
                 title="No requests charged $0"
-                description="Every request in the last 3 months had a price and token usage."
+                description="All requests in the last 3 months were priced."
               />
             ) : (
               <Stack spacing={1.5}>
@@ -172,48 +174,27 @@ export function UnpricedRequests({
                     affected first.
                   </Typography>
                 </Stack>
-                <ListingTable variant="card">
+                <ListingTable>
                   <ListingTable.Head>
                     <ListingTable.Row>
                       <ListingTable.Cell>Model</ListingTable.Cell>
-                      <ListingTable.Cell>Issues</ListingTable.Cell>
-                      <ListingTable.Cell align="right">
-                        Requests charged $0
-                      </ListingTable.Cell>
+                      <ListingTable.Cell>Missing price</ListingTable.Cell>
+                      <ListingTable.Cell>Usage unavailable</ListingTable.Cell>
+                      <ListingTable.Cell>Requests charged $0</ListingTable.Cell>
                     </ListingTable.Row>
                   </ListingTable.Head>
                   <ListingTable.Body>
                     {rows.map((r) => (
-                      <ListingTable.Row key={r.model} variant="card">
+                      <ListingTable.Row key={r.model}>
                         <ListingTable.Cell>
                           <Typography variant="body2" fontWeight={600}>
                             {r.model}
                           </Typography>
                         </ListingTable.Cell>
+                        <ListingTable.Cell>{r.missing}</ListingTable.Cell>
+                        <ListingTable.Cell>{r.unavailable}</ListingTable.Cell>
                         <ListingTable.Cell>
-                          <Stack direction="row" spacing={1} flexWrap="wrap">
-                            {r.missing > 0 && (
-                              <Chip
-                                size="small"
-                                color="warning"
-                                variant="outlined"
-                                label={`Missing price · ${r.missing}`}
-                              />
-                            )}
-                            {r.unavailable > 0 && (
-                              <Chip
-                                size="small"
-                                color="warning"
-                                variant="outlined"
-                                label={`Usage unavailable · ${r.unavailable}`}
-                              />
-                            )}
-                          </Stack>
-                        </ListingTable.Cell>
-                        <ListingTable.Cell align="right">
-                          <Typography variant="body2" fontWeight={600}>
-                            {r.missing + r.unavailable}
-                          </Typography>
+                          {r.missing + r.unavailable}
                         </ListingTable.Cell>
                       </ListingTable.Row>
                     ))}

@@ -85,7 +85,7 @@ func budgetConfigForTest(displayName string) models.BudgetConfig {
 	return models.BudgetConfig{
 		DisplayName: displayName, Status: "active",
 		Limit:      models.BudgetLimit{Amount: "5000", Currency: "USD", Period: "month", Action: "block", BlockAt: budgetI32(100)},
-		Consumers:  []models.BudgetConsumer{{Type: "attribute", Allocation: "shared", Expression: strPtr(budgetGroupExpr)}},
+		Filters:    []models.BudgetFilter{{Type: "attribute", Expression: strPtr(budgetGroupExpr)}},
 		Exemptions: []models.BudgetExemption{},
 		Warnings:   &models.BudgetWarnings{Thresholds: []int32{80}, Channels: []string{"finance-email"}},
 	}
@@ -120,7 +120,7 @@ func TestBudgetGateways_SendsToTheEgressGatewaysOfTheBudget(t *testing.T) {
 	assert.Equal(t, "org-monthly", envelope.Payload.Budget.Metadata.Name)
 	assert.Empty(t, envelope.Payload.Budget.Spec.DisplayName, "gateways never get displayName")
 	assert.Nil(t, envelope.Payload.Budget.Spec.Warnings, "gateways never get warnings")
-	assert.Equal(t, "llmProvider", envelope.Payload.Budget.Spec.Resource.Type)
+	assert.Equal(t, b.Configuration.Filters, envelope.Payload.Budget.Spec.Filters, "the same filters as the control plane")
 
 	hub.published = nil
 	g.SendBudget(context.Background(), b, false)

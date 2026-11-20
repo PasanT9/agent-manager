@@ -39,7 +39,15 @@ export const COST_DIMENSIONS: CostDimension[] = [
 ];
 
 /** The dimensions a page can group by: a project's page has only those below a project. */
-export function dimensionsFor(projectScoped: boolean): CostDimension[] {
+export function dimensionsFor(
+  projectScoped: boolean,
+  agentScoped = false,
+): CostDimension[] {
+  if (agentScoped)
+    return COST_DIMENSIONS.filter(
+      (d) =>
+        d.key !== "organization" && d.key !== "project" && d.key !== "agent",
+    );
   return projectScoped
     ? COST_DIMENSIONS.filter(
         (d) => d.key !== "organization" && d.key !== "project",
@@ -177,5 +185,5 @@ export function zeroCostNote(labels: string[]): string {
     labels.length > 3
       ? `${labels.slice(0, 3).join(", ")} and ${labels.length - 3} more`
       : labels.join(", ");
-  return `Not shown: ${shown}, which cost $0 (counted in "Requests charged $0").`;
+  return `Not shown (charged $0): ${shown}.`;
 }

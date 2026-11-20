@@ -21,8 +21,10 @@ var _ MappedNullable = &BudgetMetadata{}
 type BudgetMetadata struct {
 	// Handle, unique in the organization; cannot change
 	Name string `json:"name"`
-	// gateway.api-platform.wso2.com/org-id is the handle of the organization that owns the budget: it must be the organization in the path, and is added when left out, so every returned budget has it. gateway.api-platform.wso2.com/project-id is the handle of the project that owns the budget; without it, the organization owns it. A project budget counts only that project: when no project consumer is listed, {type: project, allocation: shared, id} is added as the first consumer, as on gateways. Cannot change. Other annotations are ignored.
+	// gateway.api-platform.wso2.com/org-id is the handle of the organization that owns the budget: it must be the organization in the path, and is added when left out, so every returned budget has it. gateway.api-platform.wso2.com/project-id is the handle of the project that owns the budget; without it, the organization owns it. A project budget counts only that project: when no project filter is listed, {type: project, id} is added as the last filter, as on gateways; its limit.splitBy cannot be project. Cannot change. Other annotations are ignored.
 	Annotations *map[string]string `json:"annotations,omitempty"`
+	// One-word labels to organize and find budgets: each 1-63 characters of letters, digits, '.', '_' or '-', starting and ending with a letter or digit (no spaces); no repeats. Can change. Not sent to gateways.
+	Labels []string `json:"labels,omitempty"`
 }
 
 // NewBudgetMetadata instantiates a new BudgetMetadata object
@@ -99,6 +101,38 @@ func (o *BudgetMetadata) SetAnnotations(v map[string]string) {
 	o.Annotations = &v
 }
 
+// GetLabels returns the Labels field value if set, zero value otherwise.
+func (o *BudgetMetadata) GetLabels() []string {
+	if o == nil || IsNil(o.Labels) {
+		var ret []string
+		return ret
+	}
+	return o.Labels
+}
+
+// GetLabelsOk returns a tuple with the Labels field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *BudgetMetadata) GetLabelsOk() ([]string, bool) {
+	if o == nil || IsNil(o.Labels) {
+		return nil, false
+	}
+	return o.Labels, true
+}
+
+// HasLabels returns a boolean if a field has been set.
+func (o *BudgetMetadata) HasLabels() bool {
+	if o != nil && !IsNil(o.Labels) {
+		return true
+	}
+
+	return false
+}
+
+// SetLabels gets a reference to the given []string and assigns it to the Labels field.
+func (o *BudgetMetadata) SetLabels(v []string) {
+	o.Labels = v
+}
+
 func (o BudgetMetadata) MarshalJSON() ([]byte, error) {
 	toSerialize, err := o.ToMap()
 	if err != nil {
@@ -112,6 +146,9 @@ func (o BudgetMetadata) ToMap() (map[string]interface{}, error) {
 	toSerialize["name"] = o.Name
 	if !IsNil(o.Annotations) {
 		toSerialize["annotations"] = o.Annotations
+	}
+	if !IsNil(o.Labels) {
+		toSerialize["labels"] = o.Labels
 	}
 	return toSerialize, nil
 }

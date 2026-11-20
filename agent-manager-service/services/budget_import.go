@@ -49,51 +49,51 @@ const MaxBudgetImportBytes = 1 << 20
 // maxBudgetImportRows is the most budgets one import creates: they are saved in one transaction.
 const maxBudgetImportRows = 500
 
-// CSV columns. Lists use ';'; attributes and exemptions are JSON arrays of the payload's objects.
+// CSV columns. Lists use ';'; attributes is a JSON array of CEL expressions and exemptions
+// a JSON array of the payload's objects.
 const (
-	csvName               = "name"
-	csvOrgID              = "orgId"
-	csvProjectID          = "projectId"
-	csvDisplayName        = "displayName"
-	csvDescription        = "description"
-	csvAmount             = "amount"
-	csvCurrency           = "currency"
-	csvPeriod             = "period"
-	csvAction             = "action"
-	csvBlockAt            = "blockAt"
-	csvProvider           = "llmProvider"
-	csvProviderAllocation = "llmProviderAllocation"
-	csvProject            = "project"
-	csvProjectAllocation  = "projectAllocation"
-	csvAgent              = "agent"
-	csvAgentAllocation    = "agentAllocation"
-	csvAPIKey             = "apiKey"
-	csvAPIKeyAllocation   = "apiKeyAllocation"
-	csvAttributes         = "attributes"
-	csvExemptions         = "exemptions"
-	csvThresholds         = "thresholds"
-	csvChannels           = "channels"
+	csvName              = "name"
+	csvProjectID         = "projectId"
+	csvDisplayName       = "displayName"
+	csvDescription       = "description"
+	csvAmount            = "amount"
+	csvPeriod            = "period"
+	csvAction            = "action"
+	csvBlockAt           = "blockAt"
+	csvSplitBy           = "splitBy"
+	csvSplitByExpression = "splitByExpression"
+	csvProvider          = "llmProvider"
+	csvProject           = "project"
+	csvAgent             = "agent"
+	csvAPIKey            = "apiKey"
+	csvAttributes        = "attributes"
+	csvExemptions        = "exemptions"
+	csvThresholds        = "thresholds"
+	csvChannels          = "channels"
 )
+
+// csvAnyValue in the project, agent or apiKey column is the id-less filter (any value).
+const csvAnyValue = "*"
 
 var (
 	budgetImportColumns = []string{
-		csvName, csvOrgID, csvProjectID, csvDisplayName, csvDescription,
-		csvAmount, csvCurrency, csvPeriod, csvAction, csvBlockAt,
-		csvProvider, csvProviderAllocation,
-		csvProject, csvProjectAllocation, csvAgent, csvAgentAllocation, csvAPIKey, csvAPIKeyAllocation,
+		csvName, csvProjectID, csvDisplayName, csvDescription,
+		csvAmount, csvPeriod, csvAction, csvBlockAt, csvSplitBy, csvSplitByExpression,
+		csvProvider, csvProject, csvAgent, csvAPIKey,
 		csvAttributes, csvExemptions, csvThresholds, csvChannels,
 	}
 	budgetImportRequired = []string{csvName, csvAmount, csvPeriod, csvAction}
 
-	// budgetConsumerColumns are the value and allocation columns of the named consumers,
-	// in the order they become consumers.
-	budgetConsumerColumns = []struct{ typ, value, allocation string }{
-		{budgetTypeProject, csvProject, csvProjectAllocation},
-		{budgetTypeAgent, csvAgent, csvAgentAllocation},
-		{budgetTypeAPIKey, csvAPIKey, csvAPIKeyAllocation},
+	// budgetFilterColumns are the columns of the filters named by id, in the order they
+	// become filters; attribute filters follow them.
+	budgetFilterColumns = []struct{ typ, column string }{
+		{budgetTypeLLMProvider, csvProvider},
+		{budgetTypeProject, csvProject},
+		{budgetTypeAgent, csvAgent},
+		{budgetTypeAPIKey, csvAPIKey},
 	}
 
-	budgetFieldIndex = regexp.MustCompile(`^consumers\[(\d+)\]`)
+	budgetFieldIndex = regexp.MustCompile(`^filters\[(\d+)\]`)
 	utf8BOM          = []byte{0xEF, 0xBB, 0xBF}
 )
 
@@ -148,11 +148,6 @@ func (s *budgetService) Import(ctx context.Context, ouID, createdBy string, file
 	if err != nil {
 		return nil, err
 	}
-	// An empty orgId cell means the organization the file is imported into.
-	orgName, err := s.orgHandle(ctx, ouID)
-	if err != nil {
-		return nil, err
-	}
 
 	rows := make([]*importRow, 0, len(records))
 	firstRow := map[string]int32{}
@@ -163,7 +158,7 @@ func (s *budgetService) Import(ctx context.Context, ouID, createdBy string, file
 		}
 		row := &importRow{row: int32(i + 2), name: cells[csvName]}
 		rows = append(rows, row)
-		row.req = budgetRequestFromCSV(cells, orgName, row)
+		row.req = budgetRequestFromCSV(cells, row)
 		checkCSVColumns(cells, row)
 		if row.name != "" {
 			if first, seen := firstRow[row.name]; seen {
@@ -284,8 +279,8 @@ func readBudgetCSV(file io.Reader) ([]string, [][]string, error) {
 }
 
 // budgetRequestFromCSV maps a row onto the payload of POST /budgets. Cells that cannot be
-// read (a number, JSON) fail their column on row.
-func budgetRequestFromCSV(cells map[string]string, orgName string, row *importRow) budgetRequest {
+// read (a number, JSON, an agent) fail their column on row.
+func budgetRequestFromCSV(cells map[string]string, row *importRow) budgetRequest {
 	optional := func(column string) *string {
 		if v := cells[column]; v != "" {
 			return &v
@@ -295,13 +290,7 @@ func budgetRequestFromCSV(cells map[string]string, orgName string, row *importRo
 	req := budgetRequest{
 		Name: cells[csvName], ProjectId: optional(csvProjectID),
 		DisplayName: optional(csvDisplayName), Description: optional(csvDescription),
-		Limit: spec.BudgetLimit{
-			Amount: cells[csvAmount], Currency: optional(csvCurrency), Period: cells[csvPeriod], Action: cells[csvAction],
-		},
-	}
-	if v := strings.TrimSpace(cells[csvOrgID]); v != "" && v != orgName {
-		// The organization is the one imported into, as for a Budget kind.
-		row.fail(csvOrgID, utils.ErrCodeValidation, fmt.Sprintf("orgId must be this organization, %s.", orgName))
+		Limit: spec.BudgetLimit{Amount: cells[csvAmount], Period: cells[csvPeriod], Action: cells[csvAction]},
 	}
 	if v := cells[csvBlockAt]; v != "" {
 		n, err := strconv.ParseInt(v, 10, 32)
@@ -311,37 +300,39 @@ func budgetRequestFromCSV(cells map[string]string, orgName string, row *importRo
 		blockAt := int32(n)
 		req.Limit.BlockAt = &blockAt
 	}
-	if cells[csvProvider] != "" || cells[csvProviderAllocation] != "" {
-		req.Resource = &spec.BudgetResource{Type: budgetTypeLLMProvider, Id: optional(csvProvider), Allocation: optional(csvProviderAllocation)}
+	if cells[csvSplitBy] != "" || cells[csvSplitByExpression] != "" {
+		req.Limit.SplitBy = &spec.BudgetSplit{Type: cells[csvSplitBy], Expression: optional(csvSplitByExpression)}
 	}
-	req.Consumers = []spec.BudgetConsumer{}
-	for _, c := range budgetConsumerColumns {
-		if cells[c.value] != "" || cells[c.allocation] != "" {
-			consumer := spec.BudgetConsumer{Type: c.typ, Id: optional(c.value), Allocation: optional(c.allocation)}
-			if c.typ == budgetTypeAgent && consumer.Id != nil {
-				// A named agent's project: the project column, else the owning project.
-				consumer.Project = optional(csvProject)
-				if consumer.Project == nil {
-					consumer.Project = optional(csvProjectID)
-				}
-			}
-			req.Consumers = append(req.Consumers, consumer)
+	req.Filters = []spec.BudgetFilter{}
+	for _, c := range budgetFilterColumns {
+		v := cells[c.column]
+		if v == "" {
+			continue
 		}
+		filter := spec.BudgetFilter{Type: c.typ, Id: &v}
+		if v == csvAnyValue && c.typ != budgetTypeLLMProvider {
+			// '*' is the id-less filter: any project, agent or API key.
+			filter.Id = nil
+		} else if c.typ == budgetTypeAgent {
+			// An agent is <project>/<agent>: agent names are unique only per project.
+			project, agent, ok := strings.Cut(v, "/")
+			project, agent = strings.TrimSpace(project), strings.TrimSpace(agent)
+			if !ok || project == "" || agent == "" || strings.Contains(agent, "/") {
+				row.fail(csvAgent, utils.ErrCodeValidation, "agent must be <project>/<agent>, e.g. online-shop/returns-bot.")
+				continue
+			}
+			filter.Id, filter.Project = &agent, &project
+		}
+		req.Filters = append(req.Filters, filter)
 	}
 	if v := cells[csvAttributes]; v != "" {
-		var attributes []spec.BudgetConsumer
-		if err := decodeCSVJSON(v, &attributes); err != nil {
-			row.fail(csvAttributes, utils.ErrCodeValidation, "attributes must be a JSON array of attribute consumers: "+err.Error())
+		var expressions []string
+		if err := decodeCSVJSON(v, &expressions); err != nil {
+			row.fail(csvAttributes, utils.ErrCodeValidation, "attributes must be a JSON array of CEL expressions (strings): "+err.Error())
 		}
-		for _, a := range attributes {
-			if a.Type == "" {
-				a.Type = budgetTypeAttribute
-			}
-			if a.Type != budgetTypeAttribute {
-				row.fail(csvAttributes, utils.ErrCodeValidation, "attributes takes attribute consumers only; use the project, agent and apiKey columns.")
-				break
-			}
-			req.Consumers = append(req.Consumers, a)
+		for _, e := range expressions {
+			expression := e
+			req.Filters = append(req.Filters, spec.BudgetFilter{Type: budgetTypeAttribute, Expression: &expression})
 		}
 	}
 	req.Exemptions = []spec.BudgetExemption{}
@@ -391,12 +382,12 @@ func budgetCSVColumn(field string, req budgetRequest) string {
 		return field
 	case field == "metadata.annotations":
 		return csvProjectID
+	case field == "limit.splitBy.expression":
+		return csvSplitByExpression
+	case strings.HasPrefix(field, "limit.splitBy"):
+		return csvSplitBy
 	case strings.HasPrefix(field, "limit."):
 		return strings.TrimPrefix(field, "limit.")
-	case field == "resource.allocation":
-		return csvProviderAllocation
-	case strings.HasPrefix(field, "resource"):
-		return csvProvider
 	case strings.HasPrefix(field, "exemptions"):
 		return csvExemptions
 	case strings.HasPrefix(field, "warnings.channels"):
@@ -406,18 +397,17 @@ func budgetCSVColumn(field string, req budgetRequest) string {
 	}
 	if m := budgetFieldIndex.FindStringSubmatch(field); m != nil {
 		i, _ := strconv.Atoi(m[1])
-		if i < len(req.Consumers) {
-			typ := req.Consumers[i].Type
-			if typ == budgetTypeAttribute {
-				return csvAttributes
-			}
-			for _, c := range budgetConsumerColumns {
-				if c.typ == typ {
-					if strings.HasSuffix(field, ".allocation") {
-						return c.allocation
-					}
-					return c.value
-				}
+		if i >= len(req.Filters) {
+			// The project filter added for the owning project.
+			return csvProjectID
+		}
+		typ := req.Filters[i].Type
+		if typ == budgetTypeAttribute {
+			return csvAttributes
+		}
+		for _, c := range budgetFilterColumns {
+			if c.typ == typ {
+				return c.column
 			}
 		}
 	}
@@ -491,12 +481,10 @@ func importUpdateRefusal(existing, incoming *models.Budget) (column, message str
 		return csvProjectID, fixed("owning project")
 	case was.Limit.Period != now.Limit.Period:
 		return csvPeriod, fixed("period")
-	case was.Limit.Currency != now.Limit.Currency:
-		return csvCurrency, fixed("currency")
-	case !reflect.DeepEqual(was.Resource, now.Resource):
-		return csvProvider, fixed("provider")
-	case !reflect.DeepEqual(was.Consumers, now.Consumers):
-		return "", fixed("set of consumers")
+	case !reflect.DeepEqual(was.Limit.SplitBy, now.Limit.SplitBy):
+		return csvSplitBy, fixed("splitBy")
+	case !reflect.DeepEqual(was.Filters, now.Filters):
+		return "", fixed("set of filters")
 	}
 	return "", ""
 }
@@ -592,10 +580,7 @@ func checkCSVColumns(cells map[string]string, row *importRow) {
 	if required(csvAction) {
 		oneOf(csvAction, cells[csvAction], "block", "allow")
 	}
-	oneOf(csvCurrency, cells[csvCurrency], budgetCurrencyUSD)
-	for _, column := range []string{csvProviderAllocation, csvProjectAllocation, csvAgentAllocation, csvAPIKeyAllocation} {
-		oneOf(column, cells[column], budgetAllocationShared, budgetAllocationSeparate)
-	}
+	oneOf(csvSplitBy, cells[csvSplitBy], budgetFilterTypes...)
 	if v := cells[csvBlockAt]; v != "" {
 		if n, err := strconv.Atoi(v); err == nil && (n < 1 || n > 100) {
 			row.fail(csvBlockAt, utils.ErrCodeValidation, "blockAt must be a whole percentage, 1-100.")

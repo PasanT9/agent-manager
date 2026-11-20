@@ -51,6 +51,7 @@ import {
   Wallet,
   Zap,
   SearchX,
+  Tag,
 } from "@wso2/oxygen-ui-icons-react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
 import {
@@ -59,6 +60,7 @@ import {
   useUpdateBudget,
 } from "@agent-management-platform/api-client";
 import { useFeatureManagement } from "@agent-management-platform/feature-management";
+import { LabelChips } from "@agent-management-platform/shared-component";
 import {
   PageLayout,
   PageMetaItem,
@@ -67,11 +69,11 @@ import {
 import {
   BUDGET_PROJECT_ANNOTATION,
   type Budget,
-  type BudgetConsumer,
+  type BudgetFilterType,
   type BudgetPeriod,
 } from "@agent-management-platform/types";
 import { amount, type CostNames } from "../costFormat";
-import { isBudgetNotFound } from "../budgetForm";
+import { isBudgetNotFound, wordLabels } from "../budgetForm";
 import { useConfirmDeleteBudget } from "./useConfirmDeleteBudget";
 import { PERIOD_LABELS, inSentence } from "./budgetLabels";
 import { separateKind } from "./BudgetsTab";
@@ -97,12 +99,10 @@ function unpricedLink(
   budget: Budget | undefined,
   projectView: boolean,
 ): string {
-  const shared = (budget?.spec.consumers ?? []).filter(
-    (c) => (c.allocation ?? "shared") === "shared" && c.id,
-  );
-  const agent = shared.find((c) => c.type === "agent" && c.project);
-  const project = shared.find((c) => c.type === "project");
-  const provider = budget?.spec.resource?.id;
+  const filters = budget?.spec.filters ?? [];
+  const agent = filters.find((f) => f.type === "agent" && f.project);
+  const project = filters.find((f) => f.type === "project");
+  const provider = filters.find((f) => f.type === "llmProvider")?.id;
   const [groupBy, pick] = agent
     ? ["agent", `${agent.project}/${agent.id}`]
     : project && !projectView // a project's page is that project already
@@ -114,7 +114,8 @@ function unpricedLink(
   return `${href}?${new URLSearchParams({ groupBy, pick }).toString()}`;
 }
 
-const KIND_LABEL: Record<BudgetConsumer["type"], string> = {
+const KIND_LABEL: Record<BudgetFilterType, string> = {
+  llmProvider: "LLM provider",
   project: "Project",
   agent: "Agent",
   apiKey: "API key",
@@ -192,8 +193,8 @@ function actionSentence(
   blockAt: number,
 ): string {
   return action === "block"
-    ? `Requests are blocked when spending reaches ${usd((limit * blockAt) / 100)} (${blockAt}%).`
-    : "Allow requests to continue and send warnings only.";
+    ? `Blocks at ${usd((limit * blockAt) / 100)} (${blockAt}%).`
+    : "Only warns.";
 }
 
 /** A labelled figure beside an accent icon, inside a card. */
@@ -420,7 +421,7 @@ const PERIOD_PER: Record<string, string> = {
  */
 function ThisPeriodEach({ budget }: { budget: Budget }) {
   const lim = budget.spec.limit;
-  const kind = separateKind(budget) ?? "consumer";
+  const kind = separateKind(budget) ?? "value";
   const period = budget.status?.currentPeriod;
   const span = period ? periodSpan(period.periodStart, lim.period) : null;
   const limit = amount(lim.amount);
@@ -455,8 +456,8 @@ function ThisPeriodEach({ budget }: { budget: Budget }) {
         </Typography>
         <Typography variant="body2" color="text.secondary">
           {blockAt !== undefined
-            ? `Its requests are blocked once it reaches ${usd((limit * blockAt) / 100)}.`
-            : "It is allowed to go over; only warnings are sent."}
+            ? `Blocked at ${usd((limit * blockAt) / 100)}.`
+            : "Only warns."}
         </Typography>
         <Divider sx={{ my: 2.5 }} />
         <Stack
@@ -469,7 +470,7 @@ function ThisPeriodEach({ budget }: { budget: Budget }) {
               icon={<Coins size={28} />}
               label="Spent in total"
               value={usd(amount(period?.spent))}
-              hint="Across every allowance"
+              hint="Across all entries below"
             />
           </Box>
           <Box sx={{ flex: 1 }}>
@@ -582,6 +583,7 @@ function ScopeRow({
         </Typography>
         <Typography
           variant="body1"
+          component="div"
           fontWeight={600}
           sx={{ wordBreak: "break-word" }}
         >
@@ -598,19 +600,16 @@ function ScopeRow({
   );
 }
 
-const allocationText = (a?: string) =>
-  a === "separate" ? "Separate budget for each" : "Shared budget";
-
-/** A consumer or exemption as the page names it: display names where known. */
+/** A filter or exemption as the page names it: display names where known. */
 function entityText(
   e: { type: string; id?: string; project?: string; expression?: string },
   names: CostNames,
 ): string {
   if (e.type === "attribute") return e.expression ?? "";
-  if (!e.id)
-    return `Every ${inSentence(KIND_LABEL[e.type as BudgetConsumer["type"]])}`;
-  if (e.type === "project") return names.project?.[e.id] ?? e.id;
-  if (e.type === "agent") {
+  if (e.type === "llmProvider")
+    return names.llmProvider?.[e.id ?? ""] ?? e.id ?? "";
+  if (e.type === "project") return names.project?.[e.id ?? ""] ?? e.id ?? "";
+  if (e.type === "agent" && e.id) {
     const agent = e.project
       ? (names.agent?.[`${e.project}/${e.id}`] ?? e.id)
       : e.id;
@@ -618,88 +617,120 @@ function entityText(
       ? `${names.project?.[e.project] ?? e.project} / ${agent}`
       : agent;
   }
+  if (!e.id)
+    return `Any ${inSentence(KIND_LABEL[e.type as keyof typeof KIND_LABEL] ?? e.type)}`;
   return e.id;
+}
+
+/** The filters one per line, joined by AND as in the form: "Agent  Any agent". */
+function FilterList({
+  filters,
+  names,
+}: {
+  filters: {
+    type: string;
+    id?: string;
+    project?: string;
+    expression?: string;
+  }[];
+  names: CostNames;
+}) {
+  // One chip per filter, type then value; every filter must match.
+  return (
+    <Stack
+      direction="row"
+      flexWrap="wrap"
+      useFlexGap
+      spacing={1}
+      sx={{ mt: 0.5 }}
+    >
+      {filters.map((f, i) => (
+        <Chip
+          key={i}
+          variant="outlined"
+          label={
+            <Box component="span" sx={{ display: "inline-flex", gap: 0.75 }}>
+              <Box
+                component="span"
+                sx={{ color: "text.secondary", fontWeight: 400 }}
+              >
+                {KIND_LABEL[f.type as keyof typeof KIND_LABEL] ?? f.type}
+              </Box>
+              <Box
+                component="span"
+                sx={{
+                  fontWeight: 600,
+                  ...(f.type === "attribute"
+                    ? {
+                        fontFamily: "monospace",
+                        whiteSpace: "normal",
+                        wordBreak: "break-all",
+                      }
+                    : {}),
+                }}
+              >
+                {entityText(f, names)}
+              </Box>
+            </Box>
+          }
+          sx={{
+            height: "auto",
+            py: 0.5,
+            "& .MuiChip-label": { whiteSpace: "normal" },
+          }}
+        />
+      ))}
+    </Stack>
+  );
 }
 
 function Scope({ budget, orgName }: { budget: Budget; orgName: string }) {
   const { spec, metadata } = budget;
   const names = useEntityNames(orgName);
   const owner = metadata.annotations?.[BUDGET_PROJECT_ANNOTATION];
-  const consumers = spec.consumers ?? [];
-  const exemptions = spec.exemptions ?? [];
+  const filters = spec.filters ?? [];
+  const split = spec.limit.splitBy;
   return (
     <Card variant="outlined" sx={{ height: "100%" }}>
       <CardContent sx={{ p: 3 }}>
         <CardHeading
           icon={<Target size={24} />}
-          title="Scope"
-          purpose="The resources and consumers subject to this budget."
+          title="Applies to"
+          purpose="What counts and how it's shared."
         />
         <Stack divider={<Divider flexItem />}>
           <ScopeRow
-            icon={<BrainCircuit size={20} />}
-            label="Resource"
-            value={
-              spec.resource?.id
-                ? (names.llmProvider?.[spec.resource.id] ?? spec.resource.id)
-                : "All LLM providers"
-            }
-            note={
-              spec.resource?.id
-                ? "LLM provider"
-                : "Every LLM provider in the organization"
-            }
-            badge={
-              spec.resource?.id
-                ? undefined
-                : allocationText(spec.resource?.allocation)
-            }
-          />
-          <ScopeRow
             icon={<Users size={20} />}
-            label="Consumers"
+            label="Filters"
             value={
-              consumers.length
-                ? consumers
-                    // A named agent's project is shown with the agent.
-                    .filter(
-                      (c) =>
-                        !(
-                          c.type === "project" &&
-                          consumers.some(
-                            (a) => a.type === "agent" && a.project === c.id,
-                          )
-                        ),
-                    )
-                    .map((c) => entityText(c, names))
-                    .join(", ")
-                : "Everyone"
+              filters.length ? (
+                <FilterList filters={filters} names={names} />
+              ) : (
+                "All LLM usage"
+              )
             }
             note={
-              consumers.length
-                ? consumers
-                    .map(
-                      (c) =>
-                        `${KIND_LABEL[c.type]} · ${inSentence(allocationText(c.allocation))}`,
-                    )
-                    .join(" — ")
+              filters.length
+                ? "Match all filters."
                 : owner
-                  ? `All traffic in project ${names.project?.[owner] ?? owner}`
-                  : "All traffic in the organization"
+                  ? `All usage in project ${names.project?.[owner] ?? owner}`
+                  : "Everything in the organization"
             }
           />
           <ScopeRow
-            icon={<Filter size={20} />}
-            label="Exemptions"
+            icon={<BrainCircuit size={20} />}
+            label="Limit"
             value={
-              exemptions.length
-                ? exemptions.map((e) => entityText(e, names)).join(", ")
-                : "None"
+              split
+                ? `Separate limit per ${inSentence(KIND_LABEL[split.type])}`
+                : "One shared limit"
             }
             note={
-              exemptions.length
-                ? "Not counted, though they match"
-                : "All matching traffic counts."
+              split
+                ? split.expression
+                  ? `Told apart by ${split.expression}`
+                  : `Each ${inSentence(KIND_LABEL[split.type])} gets its own ${usd(amount(spec.limit.amount))} limit`
+                : "All matching usage shares one limit"
             }
           />
         </Stack>
@@ -739,17 +770,38 @@ function AlertRow({
   );
 }
 
-function Alerts({ budget }: { budget: Budget }) {
+/** Exemptions, warning thresholds and channels: the wizard's third step. */
+function Alerts({ budget, orgName }: { budget: Budget; orgName: string }) {
   const { warnings } = budget.spec;
+  const exemptions = budget.spec.exemptions ?? [];
+  const names = useEntityNames(orgName);
   return (
     <Card variant="outlined" sx={{ height: "100%" }}>
       <CardContent sx={{ p: 3 }}>
         <CardHeading
           icon={<Bell size={24} />}
-          title="Alerts"
-          purpose="Warning thresholds and notification channels."
+          title="Exemptions and alerts"
+          purpose="Exclusions and warnings."
         />
         <Stack divider={<Divider flexItem />}>
+          <AlertRow icon={<Filter size={22} />} label="Exemptions">
+            {exemptions.length ? (
+              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                {exemptions.map((e, i) => (
+                  <Chip
+                    key={i}
+                    size="small"
+                    variant="outlined"
+                    label={`${KIND_LABEL[e.type as keyof typeof KIND_LABEL] ?? e.type}: ${entityText(e, names)}`}
+                  />
+                ))}
+              </Stack>
+            ) : (
+              <Typography variant="body1" fontWeight={500}>
+                None
+              </Typography>
+            )}
+          </AlertRow>
           <AlertRow icon={<Flag size={22} />} label="Warn at">
             {warnings?.thresholds.length ? (
               <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
@@ -782,7 +834,7 @@ function Alerts({ budget }: { budget: Budget }) {
   );
 }
 
-/** Spend per allowance, when the budget counts consumers separately. */
+/** Spend per allowance, when the budget's limit is split. */
 function Allowances({ budget, orgName }: { budget: Budget; orgName?: string }) {
   const limit = amount(budget.spec.limit.amount);
   const blockAt =
@@ -823,7 +875,7 @@ function Allowances({ budget, orgName }: { budget: Budget; orgName?: string }) {
         <CardHeading
           icon={<Layers size={24} />}
           title="Spend breakdown"
-          purpose="Each entry has its own limit for the current period."
+          purpose="Each has its own limit."
         />
         {usage.isLoading ? (
           <Skeleton variant="rounded" height={120} />
@@ -930,7 +982,7 @@ function allowanceRows(
   }[],
   names: CostNames,
 ): AllowanceRow[] {
-  const consumers = budget.spec.consumers ?? [];
+  const filters = budget.spec.filters ?? [];
   const exemptions = budget.spec.exemptions ?? [];
   const label = (a: Record<string, string>) => {
     if (a.agent) {
@@ -962,9 +1014,10 @@ function allowanceRows(
   };
   const owner = budget.metadata.annotations?.[BUDGET_PROJECT_ANNOTATION];
   const sharedProject =
-    consumers.find((c) => c.type === "project" && c.id)?.id ?? owner;
-  const separate = (type: string) =>
-    consumers.some((c) => c.type === type && c.allocation === "separate");
+    filters.find((f) => f.type === "project" && f.id)?.id ??
+    filters.find((f) => f.type === "agent" && f.project)?.project ??
+    owner;
+  const separate = (type: string) => budget.spec.limit.splitBy?.type === type;
   if (separate("agent")) {
     for (const key of Object.keys(names.agent ?? {})) {
       const [project, agent] = key.split("/");
@@ -1045,7 +1098,7 @@ export function BudgetDetail({
     confirmBudgetDelete(budgetName ?? "", name, () => navigate(backHref));
 
   const gatewayNote =
-    "Created on a gateway: only its name, description and warnings change here.";
+    "Gateway budget: only name, description and warnings change here.";
   // Each action shows only with its own access: update for Edit and Disable, delete for Delete.
   const actions = budget && (canUpdate || canDelete) && (
     <Stack direction="row" spacing={1}>
@@ -1125,11 +1178,18 @@ export function BudgetDetail({
         )
       }
       meta={
-        updatedAt && (
-          <PageMetaItem icon={<Clock size={12} />} label="Last updated">
-            {`Last updated ${formatRelativeTime(new Date(updatedAt))}`}
-          </PageMetaItem>
-        )
+        <>
+          {budget?.metadata.labels && budget.metadata.labels.length > 0 && (
+            <PageMetaItem icon={<Tag size={12} />} label="Labels">
+              <LabelChips labels={wordLabels(budget.metadata.labels)} />
+            </PageMetaItem>
+          )}
+          {updatedAt && (
+            <PageMetaItem icon={<Clock size={12} />} label="Last updated">
+              {`Last updated ${formatRelativeTime(new Date(updatedAt))}`}
+            </PageMetaItem>
+          )}
+        </>
       }
       actions={actions}
     >
@@ -1169,8 +1229,7 @@ export function BudgetDetail({
           {fromGateway && <Alert severity="info">{gatewayNote}</Alert>}
           {inactive && (
             <Alert severity="warning">
-              Disabled: its spend is kept, but nothing is counted or blocked
-              until it is enabled.
+              Disabled: not counting or blocking until it is enabled.
             </Alert>
           )}
           <Box
@@ -1204,9 +1263,9 @@ export function BudgetDetail({
                   {unpriced}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Requests charged $0 this period, not in the spend
+                  Charged $0 this period
                 </Typography>
-                {unpricedHref && canReadCost && (
+                {unpriced > 0 && unpricedHref && canReadCost && (
                   <Link
                     component={RouterLink}
                     to={unpricedLink(unpricedHref, budget, !!readOnly)}
@@ -1214,7 +1273,7 @@ export function BudgetDetail({
                     variant="body2"
                     sx={{ display: "inline-block", mt: 1 }}
                   >
-                    View requests charged $0
+                    View requests
                   </Link>
                 )}
               </SideCard>
@@ -1231,7 +1290,7 @@ export function BudgetDetail({
             }}
           >
             <Scope budget={budget} orgName={orgName ?? ""} />
-            <Alerts budget={budget} />
+            <Alerts budget={budget} orgName={orgName ?? ""} />
           </Box>
           <Allowances budget={budget} orgName={orgName} />
         </Stack>

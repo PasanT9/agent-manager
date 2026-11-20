@@ -17,7 +17,7 @@
  */
 
 import React, { useEffect } from "react";
-import { Button, Stack } from "@wso2/oxygen-ui";
+import { Box, Button, Stack } from "@wso2/oxygen-ui";
 import { Edit } from "@wso2/oxygen-ui-icons-react";
 import { PageLayout } from "@agent-management-platform/views";
 import { AgentList } from "@agent-management-platform/level-resource-listing";
@@ -125,14 +125,9 @@ export const ProjectOverview: React.FC = () => {
         gap={3}
         alignItems="flex-start"
       >
-        <Stack gap={3} sx={{ flex: 1, minWidth: 0, width: "100%" }}>
+        <Box sx={{ flex: 1, minWidth: 0, width: "100%" }}>
           <AgentList showCreateAction />
-          {/* Module sections below the agents (e.g. the project's cost). */}
-          <OverviewPanels<ProjectOverviewPanelProps>
-            mountPoint={PLUGIN_MOUNT_POINTS.projectOverviewMain}
-            props={{ orgId, projectId }}
-          />
-        </Stack>
+        </Box>
         <Stack gap={2} sx={{ width: { xs: "100%", lg: 380 }, flexShrink: 0 }}>
           <AgentTypeSummary />
           {/* Module sections (e.g. the deployment pipeline, from agent-runtime). */}

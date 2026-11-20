@@ -6174,7 +6174,7 @@ paths:
   /orgs/{orgName}/budgets:
     get:
       summary: List budgets
-      description: Lists the organization's budgets, active and inactive, ordered by name.
+      description: Lists the organization's budgets, active and inactive, ordered by display name.
       operationId: listBudgets
       tags:
         - Budgets
@@ -6195,8 +6195,10 @@ paths:
           in: query
           required: false
           description: >-
-            type:id, with type project, agent, apiKey or llmProvider: budgets whose
-            resource, consumers or exemptions name it. Repeat for AND.
+            type:id, with type project, agent, apiKey or llmProvider: budgets whose filters
+            or exemptions name it (project also matches an agent filter or exemption of that
+            project). agent:<project>/<agent> lists the budgets that count that agent: those
+            naming it, and those naming its project and no agent. Repeat for AND.
           style: form
           explode: true
           schema:
@@ -6204,6 +6206,36 @@ paths:
             maxItems: 10
             items:
               type: string
+        - name: search
+          in: query
+          required: false
+          description: >-
+            Budgets whose name, display name or a label contains this text, ignoring case.
+          schema:
+            type: string
+            maxLength: 100
+        - name: label
+          in: query
+          description: >-
+            A label word. Repeat the parameter to require several (a budget must have all of them).
+          required: false
+          style: form
+          explode: true
+          schema:
+            type: array
+            # A budget carries at most 10 labels, so more than that can never match.
+            maxItems: 10
+            items:
+              type: string
+        - name: status
+          in: query
+          required: false
+          description: >-
+            active or inactive; or limitReached, budgets with one shared limit whose spend this
+            period has reached the point they act at (blockAt for Block, the amount for Allow).
+          schema:
+            type: string
+            enum: [active, inactive, limitReached]
         - name: limit
           in: query
           required: false
@@ -6322,6 +6354,21 @@ paths:
         checked like a created budget; if any row fails, nothing is saved. With dryRun, every
         row is checked and nothing is saved. Needs budget:create; with onExisting=update, also
         budget:update (dry run included).
+
+        Columns (name, amount, period and action required):
+        name,projectId,displayName,description,amount,period,action,blockAt,splitBy,splitByExpression,llmProvider,project,agent,apiKey,attributes,exemptions,thresholds,channels
+
+        - splitBy: llmProvider, project, agent, apiKey or attribute; blank is one shared
+          limit. splitByExpression: the attribute's CEL expression.
+        - llmProvider, project, apiKey: a filter's id. agent: <project>/<agent>. '*' in
+          project, agent or apiKey is the filter without an id (any project, agent or API key).
+        - attributes: JSON array of CEL expressions (strings), each an attribute filter.
+        - exemptions: JSON array of exemptions. thresholds and channels: ';' lists.
+
+        Example rows:
+
+        org-monthly-ceiling,,Organization monthly ceiling,All LLM spend,5000.00,month,block,95,,,,,,,,,80;100,finance-webhook
+        online-shop-each-agent,online-shop,Each Online Shop agent,,50.00,week,block,,agent,,mock-openai,online-shop,,,,,100,finance-webhook
       operationId: importBudgets
       tags:
         - Budgets
@@ -6447,7 +6494,7 @@ paths:
       description: |
         Replaces the budget with the Budget kind sent (JSON or YAML); also disables and enables it
         (spec.status). metadata.name must be the path's budget. The project annotation, currency,
-        period, resource and consumers are fixed after creation and must be sent unchanged
+        period, limit.splitBy and filters are fixed after creation and must be sent unchanged
         (VALIDATION_ERROR otherwise): create a new budget instead. A budget created on a gateway
         takes only displayName, description and warnings, which gateways never get; its status,
         limit and exemptions must be sent unchanged (BUDGET_READ_ONLY otherwise).
@@ -17534,16 +17581,13 @@ components:
             amount: "100.00"
             period: month
             action: block
-          resource:
-            type: llmProvider
-            allocation: shared
-            id: openai
-          consumers:
+            splitBy:
+              type: agent
+          filters:
+            - type: llmProvider
+              id: openai
             - type: project
-              allocation: shared
               id: api-platform
-            - type: agent
-              allocation: separate
           warnings:
             thresholds: [80, 100]
             channels: [platform-slack]
@@ -17563,10 +17607,21 @@ components:
             it must be the organization in the path, and is added when left out, so every returned budget
             has it. gateway.api-platform.wso2.com/project-id is the handle of the project that owns the
             budget; without it, the organization owns it. A project budget counts only that project: when no
-            project consumer is listed, {type: project, allocation: shared, id} is added as the first
-            consumer, as on gateways. Cannot change. Other annotations are ignored.
+            project filter is listed, {type: project, id} is added as the last filter, as on gateways;
+            its limit.splitBy cannot be project. Cannot change. Other annotations are ignored.
           additionalProperties:
             type: string
+        labels:
+          type: array
+          maxItems: 10
+          description: >-
+            One-word labels to organize and find budgets: each 1-63 characters of letters,
+            digits, '.', '_' or '-', starting and ending with a letter or digit (no spaces);
+            no repeats. Can change. Not sent to gateways.
+          items:
+            type: string
+            maxLength: 63
+            pattern: "^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$"
     BudgetSpec:
       type: object
       required: [limit]
@@ -17586,14 +17641,14 @@ components:
           description: An inactive budget is stored and listed but not enforced
         limit:
           $ref: "#/components/schemas/BudgetLimit"
-        resource:
-          $ref: "#/components/schemas/BudgetResource"
-        consumers:
+        filters:
           type: array
           maxItems: 20
-          description: Combined with AND
+          description: >-
+            Which LLM usage the budget counts; all must match (AND). Omitted or empty: all LLM
+            usage. Each type except attribute at most once. Fixed after creation.
           items:
-            $ref: "#/components/schemas/BudgetConsumer"
+            $ref: "#/components/schemas/BudgetFilter"
         exemptions:
           type: array
           maxItems: 100
@@ -17613,7 +17668,9 @@ components:
           enum: [control_plane, gateway_api]
           description: "gateway_api: created on a gateway; only displayName, description and warnings change here"
         currentPeriod:
-          $ref: "#/components/schemas/BudgetCurrentPeriod"
+          allOf:
+            - $ref: "#/components/schemas/BudgetCurrentPeriod"
+          description: Spend this period; always returned, zero before any usage.
         createdBy:
           type: string
         createdAt:
@@ -17727,41 +17784,39 @@ components:
           maximum: 100
           default: 100
           description: "Block only: refuses once spend reaches this share of the amount"
-    BudgetResource:
+        splitBy:
+          $ref: "#/components/schemas/BudgetSplit"
+    BudgetSplit:
       type: object
-      description: The LLM providers the budget covers; omitted means all providers, shared
+      description: >-
+        Gives each value of this type its own limit of the full amount. Omitted: one shared
+        limit for all matching usage. Cannot be a filter's type, except attribute. Fixed after
+        creation.
       required: [type]
       properties:
         type:
           type: string
-          enum: [llmProvider]
-        allocation:
-          type: string
-          enum: [shared, separate]
-          default: shared
-        id:
-          type: string
-          description: Provider handle; only with shared
-    BudgetConsumer:
-      type: object
-      required: [type]
-      properties:
-        type:
-          type: string
-          enum: [project, agent, apiKey, attribute]
-        allocation:
-          type: string
-          enum: [shared, separate]
-          default: shared
-        id:
-          type: string
-          description: Handle, or API key name; required when shared, except for attribute
-        project:
-          type: string
-          description: The agent's project; required for a shared agent (agent names are unique only per project)
+          enum: [llmProvider, project, agent, apiKey, attribute]
         expression:
           type: string
-          description: "attribute only: CEL, bool when shared, string or list(string) when separate"
+          description: "attribute only, required: CEL returning a string or list(string)"
+          maxLength: 1024
+    BudgetFilter:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [llmProvider, project, agent, apiKey, attribute]
+        id:
+          type: string
+          description: "Handle, or API key name. Required for llmProvider; omitted for project, agent or apiKey = any (usage carrying one); not for attribute"
+        project:
+          type: string
+          description: "agent only: the agent's project (agent names are unique only per project); given with id, or both omitted (any agent)"
+        expression:
+          type: string
+          description: "attribute only, required: CEL returning bool"
           maxLength: 1024
     BudgetExemption:
       type: object

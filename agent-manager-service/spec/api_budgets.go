@@ -526,7 +526,23 @@ ImportBudgets Import budgets from CSV
 
 Creates many budgets from a CSV file, one budget per row (Interfaces 2.5). Each row is
 checked like a created budget; if any row fails, nothing is saved. With dryRun, every
-row is checked and nothing is saved.
+row is checked and nothing is saved. Needs budget:create; with onExisting=update, also
+budget:update (dry run included).
+
+Columns (name, amount, period and action required):
+name,projectId,displayName,description,amount,period,action,blockAt,splitBy,splitByExpression,llmProvider,project,agent,apiKey,attributes,exemptions,thresholds,channels
+
+  - splitBy: llmProvider, project, agent, apiKey or attribute; blank is one shared
+    limit. splitByExpression: the attribute's CEL expression.
+  - llmProvider, project, apiKey: a filter's id. agent: <project>/<agent>. '*' in
+    project, agent or apiKey is the filter without an id (any project, agent or API key).
+  - attributes: JSON array of CEL expressions (strings), each an attribute filter.
+  - exemptions: JSON array of exemptions. thresholds and channels: ';' lists.
+
+Example rows:
+
+org-monthly-ceiling,,Organization monthly ceiling,All LLM spend,5000.00,month,block,95,,,,,,,,,80;100,finance-webhook
+online-shop-each-agent,online-shop,Each Online Shop agent,,50.00,week,block,,agent,,mock-openai,online-shop,,,,,100,finance-webhook
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param orgName Organization name
@@ -857,6 +873,9 @@ type ApiListBudgetsRequest struct {
 	orgName    string
 	projectId  *string
 	filter     *[]string
+	search     *string
+	label      *[]string
+	status     *string
 	limit      *int32
 	offset     *int32
 }
@@ -867,9 +886,27 @@ func (r ApiListBudgetsRequest) ProjectId(projectId string) ApiListBudgetsRequest
 	return r
 }
 
-// type:id, with type project, agent, apiKey or llmProvider: budgets whose resource, consumers or exemptions name it. Repeat for AND.
+// type:id, with type project, agent, apiKey or llmProvider: budgets whose filters or exemptions name it (project also matches an agent filter or exemption of that project). agent:&lt;project&gt;/&lt;agent&gt; lists the budgets that count that agent: those naming it, and those naming its project and no agent. Repeat for AND.
 func (r ApiListBudgetsRequest) Filter(filter []string) ApiListBudgetsRequest {
 	r.filter = &filter
+	return r
+}
+
+// Budgets whose name, display name or a label contains this text, ignoring case.
+func (r ApiListBudgetsRequest) Search(search string) ApiListBudgetsRequest {
+	r.search = &search
+	return r
+}
+
+// A label word. Repeat the parameter to require several (a budget must have all of them).
+func (r ApiListBudgetsRequest) Label(label []string) ApiListBudgetsRequest {
+	r.label = &label
+	return r
+}
+
+// active or inactive; or limitReached, budgets with one shared limit whose spend this period has reached the point they act at (blockAt for Block, the amount for Allow).
+func (r ApiListBudgetsRequest) Status(status string) ApiListBudgetsRequest {
+	r.status = &status
 	return r
 }
 
@@ -890,7 +927,7 @@ func (r ApiListBudgetsRequest) Execute() (*BudgetListResponse, *http.Response, e
 /*
 ListBudgets List budgets
 
-Lists the organization's budgets, active and inactive, ordered by name.
+Lists the organization's budgets, active and inactive, ordered by display name.
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param orgName Organization name
@@ -940,6 +977,23 @@ func (a *BudgetsAPIService) ListBudgetsExecute(r ApiListBudgetsRequest) (*Budget
 		} else {
 			parameterAddToHeaderOrQuery(localVarQueryParams, "filter", t, "multi")
 		}
+	}
+	if r.search != nil {
+		parameterAddToHeaderOrQuery(localVarQueryParams, "search", r.search, "")
+	}
+	if r.label != nil {
+		t := *r.label
+		if reflect.TypeOf(t).Kind() == reflect.Slice {
+			s := reflect.ValueOf(t)
+			for i := 0; i < s.Len(); i++ {
+				parameterAddToHeaderOrQuery(localVarQueryParams, "label", s.Index(i).Interface(), "multi")
+			}
+		} else {
+			parameterAddToHeaderOrQuery(localVarQueryParams, "label", t, "multi")
+		}
+	}
+	if r.status != nil {
+		parameterAddToHeaderOrQuery(localVarQueryParams, "status", r.status, "")
 	}
 	if r.limit != nil {
 		parameterAddToHeaderOrQuery(localVarQueryParams, "limit", r.limit, "")
@@ -1066,7 +1120,7 @@ UpdateBudget Update a budget
 
 Replaces the budget with the Budget kind sent (JSON or YAML); also disables and enables it
 (spec.status). metadata.name must be the path's budget. The project annotation, currency,
-period, resource and consumers are fixed after creation and must be sent unchanged
+period, limit.splitBy and filters are fixed after creation and must be sent unchanged
 (VALIDATION_ERROR otherwise): create a new budget instead. A budget created on a gateway
 takes only displayName, description and warnings, which gateways never get; its status,
 limit and exemptions must be sent unchanged (BUDGET_READ_ONLY otherwise).

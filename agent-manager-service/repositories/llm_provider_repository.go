@@ -46,8 +46,8 @@ type LLMProviderRepository interface {
 	DeleteTx(ctx context.Context, tx *gorm.DB, providerID, orgUUID string) error
 	Exists(providerID, orgUUID string) (bool, error)
 	HasAssociatedProxies(ctx context.Context, providerUUID uuid.UUID) (bool, error)
-	// BudgetsUsing returns the names of the organization's budgets that name the provider
-	// as their resource: deleting it is refused while any does.
+	// BudgetsUsing returns the names of the organization's budgets whose llmProvider filter
+	// names the provider: deleting it is refused while any does.
 	BudgetsUsing(ctx context.Context, ouID, handle string) ([]string, error)
 	MarkDeleting(providerUUID uuid.UUID) (bool, error)
 	ClearDeleting(providerUUID uuid.UUID) error
@@ -269,7 +269,12 @@ func (r *LLMProviderRepo) HasAssociatedProxies(ctx context.Context, providerUUID
 
 func (r *LLMProviderRepo) BudgetsUsing(ctx context.Context, ouID, handle string) ([]string, error) {
 	return BudgetsUsing(r.db.WithContext(ctx), ouID, func(c models.BudgetConfig) bool {
-		return c.Resource != nil && c.Resource.ID != nil && *c.Resource.ID == handle
+		for _, f := range c.Filters {
+			if f.Type == "llmProvider" && f.ID != nil && *f.ID == handle {
+				return true
+			}
+		}
+		return false
 	})
 }
 

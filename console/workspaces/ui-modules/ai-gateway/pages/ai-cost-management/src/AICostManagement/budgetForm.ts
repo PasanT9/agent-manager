@@ -17,35 +17,30 @@
  */
 
 // The budget form's state, and how it maps to and from the Budget kind. Kept free of
-// React so the rules (handle, consumers, validation) are tested on their own.
+// React so the rules (handle, filters, split, validation) are tested on their own.
 import {
   BUDGET_API_VERSION,
   BUDGET_PROJECT_ANNOTATION,
   type Budget,
   type BudgetAction,
-  type BudgetAllocation,
-  type BudgetConsumer,
   type BudgetExemption,
+  type BudgetFilter,
   type BudgetPeriod,
 } from "@agent-management-platform/types";
 import { isNetworkError } from "@agent-management-platform/api-client";
 
 /**
- * What a consumer or exemption is about. Team and User are custom attributes with a
+ * What a filter, split or exemption is about. Team and User are custom attributes with a
  * CEL expression on a token claim, offered by name as the design does (UX 3).
  */
 export type ScopeKind =
+  | "llmProvider"
   | "project"
   | "agent"
   | "apiKey"
   | "team"
   | "user"
   | "attribute";
-
-/** The API's consumer type for a kind. */
-export function apiType(kind: ScopeKind): BudgetConsumer["type"] {
-  return kind === "team" || kind === "user" ? "attribute" : kind;
-}
 
 /** The longest CEL expression the API takes: gateways run it on every request. */
 export const MAX_EXPRESSION_LENGTH = 1024;
@@ -54,21 +49,14 @@ export const MAX_EXPRESSION_LENGTH = 1024;
 export const isCelKind = (kind: ScopeKind) =>
   kind === "team" || kind === "user" || kind === "attribute";
 
-/**
- * The expression a Team or User row starts with: with separate allowances the claim
- * itself (one allowance per value); shared rows name the team or user themselves.
- */
-export function defaultExpression(
-  kind: ScopeKind,
-  allocation: BudgetAllocation,
-): string {
-  if (allocation !== "separate") return "";
+/** The expression telling values apart when the limit is split by Team or User. */
+export function identityExpression(kind: ScopeKind): string {
   if (kind === "team") return 'request.Auth.Claims["groups"]';
   if (kind === "user") return 'request.Auth.Claims["email"]';
   return "";
 }
 
-/** An example for a shared Team or User row, or a custom attribute. */
+/** An example for a Team, User or custom attribute filter. */
 export function expressionPlaceholder(kind: ScopeKind): string {
   if (kind === "team") return `e.g. 'R&D' in request.Auth.Claims["groups"]`;
   if (kind === "user")
@@ -83,20 +71,23 @@ function kindOfExpression(expression?: string): "team" | "user" | "attribute" {
   return "attribute";
 }
 
-/** A consumer as the form edits it; an agent carries its project. */
-export interface ConsumerRow {
+/** A filter's id meaning "all of them": a project, agent or API key filter without id
+ * (usage that has one, Kong's "is set"); for LLM providers, no provider filter at all. */
+export const ANY = "*";
+
+/** A filter as the form edits it: which usage the budget counts. */
+export interface FilterRow {
   type: ScopeKind;
-  allocation: BudgetAllocation;
-  /** Project, agent or API key; empty with separate allocation means "each one". */
+  /** LLM provider, project, agent or API key; ANY for any project, agent or API key. */
   id: string;
   /** Agent only. */
   project: string;
-  /** Attribute only: a CEL expression. */
+  /** Team, User, custom attribute: a CEL expression. */
   expression: string;
 }
 
 export interface ExemptionRow {
-  type: Exclude<ScopeKind, "apiKey">;
+  type: Exclude<ScopeKind, "apiKey" | "llmProvider">;
   id: string;
   /** Agent only. */
   project: string;
@@ -106,13 +97,14 @@ export interface ExemptionRow {
 export interface BudgetFormState {
   displayName: string;
   description: string;
-  /** "all": one allowance across every LLM provider; "provider": one provider, or each. */
-  resourceType: "all" | "provider";
-  /** The one LLM provider, with "provider" and a shared allowance. */
-  providerId: string;
-  /** With "provider": shared (one provider) or separate (each provider its own). */
-  resourceAllocation: BudgetAllocation;
-  consumers: ConsumerRow[];
+  /** metadata.labels: one-word labels, as typed (blank rows are dropped when sent). */
+  labels: string[];
+  /** Which usage counts; all must match. Empty: all LLM usage in the organization. */
+  filters: FilterRow[];
+  /** A separate limit per value of this kind; "" is one shared limit. */
+  splitBy: ScopeKind | "";
+  /** Team, User, custom attribute split: the expression telling values apart. */
+  splitExpression: string;
   exemptions: ExemptionRow[];
   amount: string;
   period: BudgetPeriod;
@@ -126,10 +118,10 @@ export interface BudgetFormState {
 export const EMPTY_FORM: BudgetFormState = {
   displayName: "",
   description: "",
-  resourceType: "all",
-  providerId: "",
-  resourceAllocation: "shared",
-  consumers: [],
+  labels: [],
+  filters: [],
+  splitBy: "",
+  splitExpression: "",
   exemptions: [],
   amount: "",
   period: "month",
@@ -139,15 +131,12 @@ export const EMPTY_FORM: BudgetFormState = {
   channels: [],
 };
 
-export const newConsumer = (
-  type: ScopeKind,
-  allocation: BudgetAllocation = "shared",
-): ConsumerRow => ({
+/** A new filter starts as "All": every LLM provider, project, agent or API key. */
+export const newFilter = (type: ScopeKind): FilterRow => ({
   type,
-  allocation,
-  id: "",
+  id: isCelKind(type) ? "" : ANY,
   project: "",
-  expression: defaultExpression(type, allocation),
+  expression: "",
 });
 
 export const newExemption = (type: ExemptionRow["type"]): ExemptionRow => ({
@@ -179,30 +168,34 @@ export function handleFor(name: string, taken: Iterable<string>): string {
   }
 }
 
-/** The form's state for an existing budget. The project consumer the server adds for a
- * named agent is shown as its own condition; agents stored without a project take it
- * from that consumer. */
+/** The form's state for an existing budget. */
 export function formFromBudget(budget: Budget): BudgetFormState {
   const { spec } = budget;
-  const consumers = spec.consumers ?? [];
-  const projectOf =
-    consumers.find((c) => c.type === "project" && c.id)?.id ?? "";
+  const split = spec.limit.splitBy;
+  const splitBy: ScopeKind | "" = split
+    ? split.type === "attribute"
+      ? kindOfExpression(split.expression)
+      : split.type
+    : "";
+  const filters: FilterRow[] = (spec.filters ?? []).map((f) => ({
+    type: f.type === "attribute" ? kindOfExpression(f.expression) : f.type,
+    id: f.id ?? (f.type === "attribute" ? "" : ANY),
+    project: f.project ?? "",
+    expression: f.expression ?? "",
+  }));
+  // The limit is split by one of the filters: a split with no filter of its type (all
+  // LLM providers, or a split alone) shows that filter as "All".
+  if (splitBy && !filters.some((f) => f.type === splitBy)) {
+    if (splitBy === "llmProvider") filters.unshift(newFilter(splitBy));
+    else filters.push(newFilter(splitBy));
+  }
   return {
     displayName: spec.displayName ?? budget.metadata.name,
     description: spec.description ?? "",
-    resourceType:
-      spec.resource?.id || spec.resource?.allocation === "separate"
-        ? "provider"
-        : "all",
-    providerId: spec.resource?.id ?? "",
-    resourceAllocation: spec.resource?.allocation ?? "shared",
-    consumers: consumers.map((c) => ({
-      type: c.type === "attribute" ? kindOfExpression(c.expression) : c.type,
-      allocation: c.allocation ?? "shared",
-      id: c.id ?? "",
-      project: c.type === "agent" && c.id ? (c.project ?? projectOf) : "",
-      expression: c.expression ?? "",
-    })),
+    labels: budget.metadata.labels ?? [],
+    filters,
+    splitBy,
+    splitExpression: split?.expression ?? "",
     exemptions: (spec.exemptions ?? []).map((e) => ({
       type: e.type === "attribute" ? kindOfExpression(e.expression) : e.type,
       id: e.id ?? "",
@@ -218,38 +211,22 @@ export function formFromBudget(budget: Budget): BudgetFormState {
   };
 }
 
-function consumersFor(rows: ConsumerRow[]): BudgetConsumer[] {
-  const out: BudgetConsumer[] = [];
-  const add = (c: BudgetConsumer) => {
-    if (
-      !out.some(
-        (o) =>
-          o.type === c.type && o.id === c.id && o.expression === c.expression,
-      )
-    ) {
-      out.push(c);
-    }
-  };
-  for (const r of rows) {
-    if (isCelKind(r.type)) {
-      add({
-        type: "attribute",
-        allocation: r.allocation,
-        expression: r.expression.trim(),
-      });
-      continue;
-    }
-    // An agent's name is unique only within its project, so a named agent carries it;
-    // the server adds the matching project consumer.
-    const named = r.type === "agent" && r.id && r.project;
-    add({
-      type: r.type,
-      allocation: r.allocation,
-      ...(r.id ? { id: r.id } : {}),
-      ...(named ? { project: r.project } : {}),
-    });
-  }
-  return out;
+function filtersFor(rows: FilterRow[]): BudgetFilter[] {
+  // All LLM providers is no provider filter: every request has one. A Team, User or
+  // custom attribute row without an expression counts every value: it is there to split
+  // the limit by.
+  return rows
+    .filter((r) => !(r.type === "llmProvider" && r.id === ANY))
+    .filter((r) => !(isCelKind(r.type) && !r.expression.trim()))
+    .map((r) =>
+      isCelKind(r.type)
+        ? { type: "attribute", expression: r.expression.trim() }
+        : r.id === ANY
+          ? { type: r.type as BudgetFilter["type"] }
+          : r.type === "agent"
+            ? { type: "agent", project: r.project, id: r.id }
+            : { type: r.type as BudgetFilter["type"], id: r.id },
+    );
 }
 
 function exemptionsFor(rows: ExemptionRow[]): BudgetExemption[] {
@@ -270,28 +247,26 @@ export function budgetFromForm(
   form: BudgetFormState,
   opts: { name: string; projectOwner?: string; existing?: Budget },
 ): Budget {
-  const metadata = opts.existing?.metadata ?? {
+  const words = form.labels.map((l) => l.trim()).filter(Boolean);
+  const labels = words.length ? words : undefined;
+  // Labels can change on an edit; the name and annotations stay.
+  const base = opts.existing?.metadata ?? {
     name: opts.name,
     annotations: opts.projectOwner
       ? { [BUDGET_PROJECT_ANNOTATION]: opts.projectOwner }
       : {},
   };
+  const metadata = {
+    name: base.name,
+    ...(labels ? { labels } : {}),
+    ...(base.annotations ? { annotations: base.annotations } : {}),
+  };
   const thresholds = [...new Set(form.thresholds)].sort((a, b) => a - b);
-  // Agent Manager stores an omitted resource as "all LLM providers, shared". Preserve
-  // that representation on update: sending the equivalent explicit object would make
-  // the API's immutable-resource check treat an otherwise valid edit as a change.
-  const resource =
-    form.resourceType === "provider" && form.resourceAllocation === "shared"
-      ? {
-          type: "llmProvider" as const,
-          allocation: "shared" as const,
-          id: form.providerId,
-        }
-      : form.resourceType === "provider"
-        ? { type: "llmProvider" as const, allocation: "separate" as const }
-        : opts.existing && !opts.existing.spec.resource
-          ? undefined
-          : { type: "llmProvider" as const, allocation: "shared" as const };
+  const splitBy = form.splitBy
+    ? isCelKind(form.splitBy)
+      ? { type: "attribute" as const, expression: form.splitExpression.trim() }
+      : { type: form.splitBy as BudgetFilter["type"] }
+    : undefined;
   return {
     apiVersion: BUDGET_API_VERSION,
     kind: "Budget",
@@ -310,9 +285,9 @@ export function budgetFromForm(
         period: form.period,
         action: form.action,
         ...(form.action === "block" ? { blockAt: Number(form.blockAt) } : {}),
+        ...(splitBy ? { splitBy } : {}),
       },
-      ...(resource ? { resource } : {}),
-      consumers: consumersFor(form.consumers),
+      filters: filtersFor(form.filters),
       exemptions: exemptionsFor(form.exemptions),
       ...(thresholds.length
         ? { warnings: { thresholds, channels: form.channels } }
@@ -322,14 +297,19 @@ export function budgetFromForm(
 }
 
 /**
- * Which kinds an exemption may be: narrower than the budget's consumers (a project
- * budget can exempt an agent, not another project), and any kind counted separately,
- * which may exempt one of its own values (one user of a per-user budget).
+ * Which kinds an exemption may be: narrower than what the budget counts (a project
+ * budget can exempt an agent, not another project), and the kind the limit is split by,
+ * which may exempt one of its own values (one user of a per-user budget). An LLM
+ * provider filter or split does not change it.
  */
 export function exemptionKinds(
-  consumers: ConsumerRow[],
+  form: Pick<BudgetFormState, "filters" | "splitBy">,
 ): ExemptionRow["type"][] {
-  const has = (k: ScopeKind) => consumers.some((c) => c.type === k);
+  const kinds = [
+    ...form.filters.map((f) => f.type),
+    ...(form.splitBy ? [form.splitBy] : []),
+  ];
+  const has = (k: ScopeKind) => kinds.includes(k);
   const narrower: ExemptionRow["type"][] =
     has("user") || has("attribute")
       ? ["attribute"]
@@ -342,20 +322,11 @@ export function exemptionKinds(
           : has("project")
             ? ["agent", "team", "user", "attribute"]
             : ["project", "agent", "team", "user", "attribute"];
-  const separate = consumers
-    .filter((c) => c.allocation === "separate" && c.type !== "apiKey")
-    .map((c) => c.type as ExemptionRow["type"]);
-  return [...new Set([...narrower, ...separate])];
-}
-
-/** Whether adding a consumer of this kind would leave an existing exemption wider
- * than the consumers (an agent exemption, then agents or API keys as consumers). */
-export function consumerBreaksExemptions(
-  form: Pick<BudgetFormState, "consumers" | "exemptions">,
-  kind: ScopeKind,
-): boolean {
-  const allowed = exemptionKinds([...form.consumers, newConsumer(kind)]);
-  return form.exemptions.some((e) => !allowed.includes(e.type));
+  const split =
+    form.splitBy && form.splitBy !== "apiKey" && form.splitBy !== "llmProvider"
+      ? [form.splitBy as ExemptionRow["type"]]
+      : [];
+  return [...new Set([...narrower, ...split])];
 }
 
 /** What a budget started from an entity's page is about. */
@@ -370,17 +341,16 @@ export interface BudgetStart {
 
 /** The form for a budget started from an entity's page (UX 2: the entity is filled in). */
 export function formFor(start: BudgetStart): BudgetFormState {
-  const form: BudgetFormState = { ...EMPTY_FORM, consumers: [] };
-  if (start.provider) {
-    form.resourceType = "provider";
-    form.resourceAllocation = "shared";
-    form.providerId = start.provider;
-  }
+  const filters: FilterRow[] = [];
+  if (start.provider)
+    filters.push({ ...newFilter("llmProvider"), id: start.provider });
+  if (start.project)
+    filters.push({ ...newFilter("project"), id: start.project });
   if (start.agent) {
     const [project = "", id = ""] = start.agent.split("/");
-    form.consumers = [{ ...newConsumer("agent"), id, project }];
+    filters.push({ ...newFilter("agent"), id, project });
   }
-  return form;
+  return { ...EMPTY_FORM, filters };
 }
 
 /** The start in a URL's query, as "Advanced options" passes it to the full form. */
@@ -394,6 +364,7 @@ export function startFromQuery(params: URLSearchParams): BudgetStart {
 
 export function startQuery(start: BudgetStart): string {
   const q = new URLSearchParams();
+  if (start.project) q.set("project", start.project);
   if (start.agent) q.set("agent", start.agent);
   if (start.provider) q.set("provider", start.provider);
   const text = q.toString();
@@ -409,22 +380,25 @@ export type BudgetFormErrors = Partial<Record<string, string>>;
 
 /**
  * The form field a server error names (`additionalData.field`), so its message shows
- * next to the field. Errors about the consumer or exemption lists as a whole, or a
- * field the form has no input for, come back as "consumers", "exemptions" or "form".
+ * next to the field. Errors about the filter or exemption lists as a whole, or a field
+ * the form has no input for, come back as "filters", "exemptions" or "form".
  */
 export function formFieldOf(serverField: string | undefined): string {
   const f = (serverField ?? "").replace(/^spec\./, "");
   const exemption = /^exemptions\[(\d+)\]/.exec(f);
   if (exemption) return `exemptions.${exemption[1]}`;
   if (f.startsWith("exemptions")) return "exemptions";
-  if (f.startsWith("consumers")) return "consumers";
-  if (f.startsWith("resource")) return "providerId";
+  const filter = /^filters\[(\d+)\]/.exec(f);
+  if (filter) return `filters.${filter[1]}`;
+  if (f.startsWith("filters")) return "filters";
+  if (f.startsWith("limit.splitBy")) return "splitBy";
   if (f.startsWith("warnings.thresholds")) return "thresholds";
   if (f.startsWith("warnings.channels")) return "channels";
   if (f === "limit.amount" || f === "limit.currency") return "amount";
   if (f === "limit.blockAt") return "blockAt";
   if (f === "displayName" || f === "metadata.name") return "displayName";
   if (f === "description") return "description";
+  if (f.startsWith("metadata.labels")) return "labels";
   return "form";
 }
 
@@ -436,8 +410,7 @@ export function serverFieldError(error: unknown): {
   if (isNetworkError(error)) {
     return {
       field: "form",
-      message:
-        "Couldn't save the budget: the server can't be reached. Your changes are kept; try again.",
+      message: "Couldn't reach the server. Try again.",
     };
   }
   const body = (
@@ -452,6 +425,24 @@ export function serverFieldError(error: unknown): {
   return { field: formFieldOf(body?.additionalData?.field), message };
 }
 
+/** "agent", "API key": what the limit is split by, in a sentence. */
+const SPLIT_NOUN: Record<ScopeKind, string> = {
+  llmProvider: "LLM provider",
+  project: "project",
+  agent: "agent",
+  apiKey: "API key",
+  team: "team",
+  user: "user",
+  attribute: "attribute value",
+};
+
+/** A label: one word of 1-63 letters, digits, '.', '_' or '-', starting and ending with a
+ * letter or digit (the server's rule). */
+export const LABEL_PATTERN = /^[a-zA-Z0-9]([a-zA-Z0-9._-]{0,61}[a-zA-Z0-9])?$/;
+
+/** The most labels a budget may have. */
+export const MAX_LABELS = 10;
+
 /** What is wrong with the form, by field; empty when it can be saved. Mirrors the
  * server's rules so most mistakes show before saving. */
 export function validateBudgetForm(form: BudgetFormState): BudgetFormErrors {
@@ -463,8 +454,7 @@ export function validateBudgetForm(form: BudgetFormState): BudgetFormErrors {
     !AMOUNT_PATTERN.test(form.amount.trim()) ||
     Number(form.amount) <= 0
   ) {
-    errors.amount =
-      "Enter an amount above 0, with at most 12 digits before the decimal point and 2 after.";
+    errors.amount = "Enter an amount above 0, up to 2 decimals.";
   }
   if (form.action === "block") {
     const blockAt = Number(form.blockAt);
@@ -472,36 +462,54 @@ export function validateBudgetForm(form: BudgetFormState): BudgetFormErrors {
       errors.blockAt = "Enter a whole percentage from 1 to 100.";
     }
   }
-  if (
-    form.resourceType === "provider" &&
-    form.resourceAllocation === "shared" &&
-    !form.providerId
-  ) {
-    errors.providerId = "Choose an LLM provider.";
-  }
-  form.consumers.forEach((c, i) => {
-    if (isCelKind(c.type) && !c.expression.trim()) {
-      errors[`consumers.${i}`] = "Enter the CEL expression.";
-    } else if (!isCelKind(c.type) && c.allocation === "shared" && !c.id) {
-      errors[`consumers.${i}`] = "Choose one, or count each one separately.";
+  form.filters.forEach((f, i) => {
+    // A Team, User or custom attribute row may be empty when the limit is split by it.
+    const missing = isCelKind(f.type)
+      ? !f.expression.trim() && form.splitBy !== f.type
+      : !f.id;
+    if (missing) {
+      errors[`filters.${i}`] = isCelKind(f.type)
+        ? "Enter an expression, or split by it."
+        : "Choose one.";
     }
   });
-  const allowedExemptions = exemptionKinds(form.consumers);
+  if (form.splitBy) {
+    const rows = form.filters.filter((f) => f.type === form.splitBy);
+    if (!rows.length) {
+      errors.splitBy = "Add this type under Applies to first.";
+    } else if (!isCelKind(form.splitBy) && rows.some((f) => f.id !== ANY)) {
+      errors.splitBy = `Set the ${SPLIT_NOUN[form.splitBy]} filter to All to split by it.`;
+    } else if (isCelKind(form.splitBy) && !form.splitExpression.trim()) {
+      errors.splitBy = "Enter an identity expression.";
+    }
+  }
+  const allowedExemptions = exemptionKinds(form);
   form.exemptions.forEach((e, i) => {
     if (!allowedExemptions.includes(e.type)) {
-      errors[`exemptions.${i}`] =
-        "Not allowed with these consumers: an exemption must be narrower than them. Change the type or remove it.";
+      errors[`exemptions.${i}`] = "Must be narrower than the budget's filters.";
     } else if (isCelKind(e.type) ? !e.expression.trim() : !e.id) {
       errors[`exemptions.${i}`] = isCelKind(e.type)
         ? "Enter the CEL expression."
         : "Choose one.";
     }
   });
+  // Labels: one word each (the server's rule), no repeats, at most 10.
+  const words = form.labels.map((l) => l.trim()).filter(Boolean);
+  if (words.length > MAX_LABELS) {
+    errors.labels = `Add at most ${MAX_LABELS} labels.`;
+  } else if (words.some((w) => !LABEL_PATTERN.test(w))) {
+    errors.labels = "Use one word: letters, digits, '.', '_' or '-'.";
+  } else if (new Set(words).size !== words.length) {
+    errors.labels = "Each label can be added once.";
+  }
   // The server's rules: 1-1000% (above 100 warns after the limit is passed), at most 10.
   if (form.thresholds.some((t) => !Number.isInteger(t) || t < 1 || t > 1000)) {
     errors.thresholds = "Enter whole percentages between 1 and 1000.";
   } else if (form.thresholds.length > 10) {
     errors.thresholds = "Add at most 10 warning thresholds.";
+  }
+  if (form.channels.length && !form.thresholds.length) {
+    errors.thresholds = "Add a threshold, or remove the channels.";
   }
   if (form.thresholds.length && !form.channels.length) {
     errors.channels = "Choose where warnings go (1 to 20 channels).";
@@ -541,72 +549,6 @@ export function isBudgetNotFound(error: unknown): boolean {
   return e?.status === 404 || e?.code === "BUDGET_NOT_FOUND";
 }
 
-/** One thing a budget gives each its own allowance: providers, agents, API keys, ... */
-export interface AllocationFactor {
-  /** Singular and plural, e.g. "agent" / "agents". */
-  noun: string;
-  plural: string;
-  /** How many there are today; undefined when it can't be known (API keys, users). */
-  count?: number;
-}
-
-const PERIOD_NOUN: Record<BudgetPeriod, string> = {
-  day: "day",
-  week: "week",
-  month: "month",
-};
-
-const money = (v: number) =>
-  v.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-
-/** Letters for counts that can't be known today: N users, M API keys, ... */
-const UNKNOWN_COUNTS = ["N", "M", "K", "L"];
-
-/**
- * How a budget's amount is allocated, as a formula: the amount times what gets its own
- * limit, today's counts as numbers and the rest as letters, e.g.
- * "$10.00 × 2 providers × N users = $20.00 × N per month", with "N = number of users".
- * Without an amount yet, "Amount" stands in.
- */
-export function allocationFormula(
-  amount: number,
-  period: BudgetPeriod,
-  factors: AllocationFactor[],
-): { formula: string; legend?: string } {
-  const per = PERIOD_NOUN[period];
-  const value = amount > 0 ? money(amount) : "Amount";
-  if (!factors.length) {
-    return { formula: `${value} per ${per}` };
-  }
-  let letter = 0;
-  const legend: string[] = [];
-  const letters: string[] = [];
-  const terms = factors.map((f) => {
-    if (f.count !== undefined) {
-      return `${f.count} ${f.count === 1 ? f.noun : f.plural}`;
-    }
-    const l = UNKNOWN_COUNTS[letter++] ?? "X";
-    letters.push(l);
-    legend.push(`${l} = number of ${f.plural}`);
-    return `${l} ${f.plural}`;
-  });
-  const known = factors.reduce((p, f) => p * (f.count ?? 1), 1);
-  const product =
-    amount > 0
-      ? money(amount * known)
-      : known === 1
-        ? value
-        : `${value} × ${known}`;
-  const total = letters.length
-    ? `${product} × ${letters.join(" × ")}`
-    : product;
-  return {
-    formula: `${value} × ${terms.join(" × ")} = ${total} per ${per}`,
-    ...(legend.length ? { legend: legend.join(", ") } : {}),
-  };
-}
+/** One-word labels as the shared label chips take them: each word a key, no value. */
+export const wordLabels = (labels: string[]): Record<string, string> =>
+  Object.fromEntries(labels.map((l) => [l, ""]));

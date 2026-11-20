@@ -33,28 +33,43 @@ import { dimensionsFor, groupKey, groupLabel } from "../costFormat";
 import { inSentence } from "./budgetLabels";
 import { useEntityNames } from "../useEntityNames";
 
+/** The cost API filter for a project's or an agent's own Cost Management. */
+export function scopeFilter(
+  projectName?: string,
+  agentName?: string,
+): string[] | undefined {
+  if (projectName && agentName) return [`agent:${projectName}/${agentName}`];
+  return projectName ? [`project:${projectName}`] : undefined;
+}
+
 /**
  * The Dashboard's selection (Group by and the picked values), kept in the URL so links
  * can open it pre-filtered and other pages (Requests charged $0) can share it. Reads the
  * cost grouped by the selected dimension: the chart's data, and the picker's options.
  */
-export function useCostSelection(orgName?: string, projectName?: string) {
+export function useCostSelection(
+  orgName?: string,
+  projectName?: string,
+  agentName?: string,
+) {
   const projectScoped = !!projectName;
-  const dimensions = dimensionsFor(projectScoped);
+  const dimensions = dimensionsFor(projectScoped, !!agentName);
   const [searchParams, setSearchParams] = useSearchParams();
   const requested = searchParams.get("groupBy") as CostGroupBy | null;
   const groupBy: CostGroupBy = dimensions.some((d) => d.key === requested)
     ? (requested as CostGroupBy)
-    : projectScoped
-      ? "agent"
-      : "project";
+    : agentName
+      ? "model"
+      : projectScoped
+        ? "agent"
+        : "project";
   const picked = searchParams.getAll("pick");
   const dimension = dimensions.find((d) => d.key === groupBy) ?? dimensions[0];
   // Display names for what cost data names by handle (UX: the names used elsewhere).
   const names = useEntityNames(orgName ?? "");
   const { data, isLoading, error } = useCosts(
     { orgName },
-    { groupBy, filter: projectName ? [`project:${projectName}`] : undefined },
+    { groupBy, filter: scopeFilter(projectName, agentName) },
   );
   const setFilters = (nextGroupBy: CostGroupBy, nextPicked: string[]) => {
     const params = new URLSearchParams(searchParams);
@@ -87,6 +102,7 @@ export function useCostSelection(orgName?: string, projectName?: string) {
       : undefined;
   return {
     projectName,
+    agentName,
     projectScoped,
     dimensions,
     dimension,
@@ -119,6 +135,7 @@ export function CostFilterBar({ selection }: { selection: CostSelection }) {
     projectScoped,
     scope,
     projectName,
+    agentName,
   } = selection;
   return (
     <>
@@ -177,7 +194,11 @@ export function CostFilterBar({ selection }: { selection: CostSelection }) {
       </Stack>
       <Typography variant="body2" color="text.secondary">
         Showing <strong>{scope}</strong>
-        {projectName ? ` in ${projectName}` : ""}
+        {agentName
+          ? ` for agent ${agentName}`
+          : projectName
+            ? ` in ${projectName}`
+            : ""}
       </Typography>
     </>
   );

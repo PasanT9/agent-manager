@@ -396,6 +396,28 @@ export const rootRouteMap: AppRoute = {
                             path: 'agents/:agentId',
                             index: true,
                             children: {
+                                aiCostManagement: {
+                                    path: 'cost-management',
+                                    index: true,
+                                    children: {
+                                        unpricedRequests: {
+                                            path: 'unpriced-requests',
+                                            index: true,
+                                            children: {},
+                                        },
+                                        budgets: {
+                                            path: 'budgets',
+                                            index: true,
+                                            children: {
+                                                view: {
+                                                    path: 'view/:budgetName',
+                                                    index: true,
+                                                    children: {},
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
                                 edit: {
                                     path: 'edit',
                                     index: true,

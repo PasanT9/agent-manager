@@ -21,15 +21,14 @@
 // `load`, which keeps them in their own chunk.
 import { ChartColumnStacked, Wallet } from "@wso2/oxygen-ui-icons-react";
 import { useFeatureManagement } from "@agent-management-platform/feature-management";
-import type { ComponentType } from "react";
 import {
   absoluteRouteMap,
   PLUGIN_API_VERSION,
-  PLUGIN_MOUNT_POINTS,
   type PluginManifest,
 } from "@agent-management-platform/types";
 
 const orgNav = absoluteRouteMap.children.org.children;
+const agentNav = orgNav.projects.children.agents.children;
 
 /** Cost Management shows cost and budgets; reading either opens it. */
 const useCostAccess = () => {
@@ -67,34 +66,19 @@ export const aiCostManagementPlugin: PluginManifest = {
       load: loadPage,
     },
     {
-      // The project overview, below its agents.
-      type: "panel",
-      id: "project-overview-cost",
-      useActivation: useCostRead,
-      mountPoint: PLUGIN_MOUNT_POINTS.projectOverviewMain,
-      order: 20,
-      load: () =>
-        import("./panels/OverviewCostPanels").then((m) => ({
-          default: m.ProjectCostSection as ComponentType,
-        })),
+      type: "route",
+      id: "agent-page",
+      level: "agent",
+      path: agentNav.aiCostManagement.path + "/*",
+      load: loadPage,
     },
-    {
-      // The agent overview, below the agent's identity (30) and above traces (70).
-      type: "panel",
-      id: "agent-overview-cost",
-      useActivation: useCostRead,
-      mountPoint: PLUGIN_MOUNT_POINTS.agentOverviewEnvironment,
-      order: 40,
-      load: () =>
-        import("./panels/OverviewCostPanels").then((m) => ({
-          default: m.AgentCostSection as ComponentType,
-        })),
-    },
-    ...(["org", "project"] as const).flatMap((level) => {
+    ...(["org", "project", "agent"] as const).flatMap((level) => {
       const page =
         level === "org"
           ? orgNav.aiCostManagement
-          : orgNav.projects.children.aiCostManagement;
+          : level === "project"
+            ? orgNav.projects.children.aiCostManagement
+            : agentNav.aiCostManagement;
       return [
         {
           type: "nav-item" as const,

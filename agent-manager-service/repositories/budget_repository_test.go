@@ -46,8 +46,8 @@ func gatewayBudget(ouID string, gatewayID uuid.UUID, name, amount string) models
 func budgetConfig(displayName, amount string) models.BudgetConfig {
 	return models.BudgetConfig{
 		DisplayName: displayName, Status: "active",
-		Limit:     models.BudgetLimit{Amount: amount, Currency: "USD", Period: "month", Action: "allow"},
-		Consumers: []models.BudgetConsumer{}, Exemptions: []models.BudgetExemption{},
+		Limit:   models.BudgetLimit{Amount: amount, Currency: "USD", Period: "month", Action: "allow"},
+		Filters: []models.BudgetFilter{}, Exemptions: []models.BudgetExemption{},
 	}
 }
 
@@ -341,7 +341,7 @@ func TestBudgetRepository_BudgetsUsingRefuseDeletes(t *testing.T) {
 
 	openai := "openai"
 	cfg := budgetConfig("OpenAI monthly", "1000")
-	cfg.Resource = &models.BudgetResource{Type: "llmProvider", Allocation: "shared", ID: &openai}
+	cfg.Filters = []models.BudgetFilter{{Type: "llmProvider", ID: &openai}}
 	cfg.Warnings = &models.BudgetWarnings{Thresholds: []int32{80}, Channels: []string{channel.Name}}
 	b := models.Budget{OrgID: ou, Origin: models.BudgetOriginControlPlane, Configuration: cfg}
 	require.NoError(t, repo.CreateForControlPlane(ctx, &b, "openai-monthly"))

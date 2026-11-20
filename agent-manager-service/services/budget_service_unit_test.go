@@ -80,11 +80,13 @@ func budgetTestRequest() budgetRequest {
 		Name:        "api-platform-per-agent-openai",
 		DisplayName: strPtr("API Platform, per agent on OpenAI"),
 		Description: strPtr("Every agent in API Platform gets $100 a month on OpenAI."),
-		Limit:       spec.BudgetLimit{Amount: "100.00", Period: "month", Action: "block"},
-		Resource:    &spec.BudgetResource{Type: "llmProvider", Id: strPtr("openai")},
-		Consumers: []spec.BudgetConsumer{
+		Limit: spec.BudgetLimit{
+			Amount: "100.00", Period: "month", Action: "block",
+			SplitBy: &spec.BudgetSplit{Type: "attribute", Expression: strPtr(budgetEmailExpr)},
+		},
+		Filters: []spec.BudgetFilter{
+			{Type: "llmProvider", Id: strPtr("openai")},
 			{Type: "attribute", Expression: strPtr(budgetGroupExpr)},
-			{Type: "attribute", Allocation: strPtr("separate"), Expression: strPtr(budgetEmailExpr)},
 		},
 		Exemptions: []spec.BudgetExemption{{Type: "attribute", Expression: strPtr(budgetAdminExpr)}},
 		Warnings:   &spec.BudgetWarnings{Thresholds: []int32{80, 100}, Channels: []string{"finance-email"}},
@@ -109,7 +111,7 @@ func asKind(req budgetRequest) spec.Budget {
 		ApiVersion: budgetAPIVersion, Kind: models.KindBudget, Metadata: spec.BudgetMetadata{Name: req.Name},
 		Spec: spec.BudgetSpec{
 			DisplayName: req.DisplayName, Description: req.Description, Status: req.Status, Limit: req.Limit,
-			Resource: req.Resource, Consumers: req.Consumers, Exemptions: req.Exemptions, Warnings: req.Warnings,
+			Filters: req.Filters, Exemptions: req.Exemptions, Warnings: req.Warnings,
 		},
 	}
 	annotations := map[string]string{}
@@ -122,6 +124,7 @@ func asKind(req budgetRequest) spec.Budget {
 	if len(annotations) > 0 {
 		kind.Metadata.Annotations = &annotations
 	}
+	kind.Metadata.Labels = req.Labels
 	return kind
 }
 
@@ -313,11 +316,13 @@ func TestBudgetService_CreateStoresTheBudgetKindWithDefaults(t *testing.T) {
 		"displayName": "API Platform, per agent on OpenAI",
 		"description": "Every agent in API Platform gets $100 a month on OpenAI.",
 		"status": "active",
-		"limit": {"amount": "100.00", "currency": "USD", "period": "month", "action": "block", "blockAt": 100},
-		"resource": {"type": "llmProvider", "allocation": "shared", "id": "openai"},
-		"consumers": [
-			{"type": "attribute", "allocation": "shared", "expression": "'research' in request.Auth.Claims[\"groups\"]"},
-			{"type": "attribute", "allocation": "separate", "expression": "request.Auth.Claims[\"email\"]"}
+		"limit": {
+			"amount": "100.00", "currency": "USD", "period": "month", "action": "block", "blockAt": 100,
+			"splitBy": {"type": "attribute", "expression": "request.Auth.Claims[\"email\"]"}
+		},
+		"filters": [
+			{"type": "llmProvider", "id": "openai"},
+			{"type": "attribute", "expression": "'research' in request.Auth.Claims[\"groups\"]"}
 		],
 		"exemptions": [{"type": "attribute", "expression": "request.Auth.Claims[\"role\"] == \"admin\""}],
 		"warnings": {"thresholds": [80, 100], "channels": ["finance-email"]}
@@ -345,8 +350,9 @@ func TestBudgetService_CreateAllowsAMinimalBudget(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Nil(t, resp.Spec.Limit.BlockAt, "blockAt is for block only")
-	assert.Empty(t, resp.Spec.Consumers)
-	assert.NotNil(t, resp.Spec.Consumers, "consumers is always a list")
+	assert.Empty(t, resp.Spec.Filters)
+	assert.NotNil(t, resp.Spec.Filters, "filters is always a list")
+	assert.Nil(t, resp.Spec.Limit.SplitBy, "no splitBy: one shared limit")
 	assert.Nil(t, resp.Status.CreatedBy)
 }
 
@@ -362,21 +368,27 @@ func TestBudgetService_CreateRefusesInvalidPayloads(t *testing.T) {
 		{"zero amount", func(r *budgetRequest) { r.Limit.Amount = "0.00" }, utils.ErrCodeValidation, "limit.amount"},
 		{"three decimals", func(r *budgetRequest) { r.Limit.Amount = "1.005" }, utils.ErrCodeValidation, "limit.amount"},
 		{"exponent amount", func(r *budgetRequest) { r.Limit.Amount = "1e1000000" }, utils.ErrCodeValidation, "limit.amount"},
-		{"consumer expression does not compile", func(r *budgetRequest) {
-			r.Consumers[0].Expression = strPtr("request.Headers[")
-		}, utils.ErrCodeInvalidExpression, "consumers[0].expression"},
-		{"shared consumer expression returns a string", func(r *budgetRequest) {
-			r.Consumers[0].Expression = strPtr("'research'")
-		}, utils.ErrCodeInvalidExpression, "consumers[0].expression"},
-		{"separate consumer expression returns bool", func(r *budgetRequest) {
-			r.Consumers[1].Expression = strPtr("1 == 1")
-		}, utils.ErrCodeInvalidExpression, "consumers[1].expression"},
+		{"filter expression does not compile", func(r *budgetRequest) {
+			r.Filters[1].Expression = strPtr("request.Headers[")
+		}, utils.ErrCodeInvalidExpression, "filters[1].expression"},
+		{"filter expression returns a string", func(r *budgetRequest) {
+			r.Filters[1].Expression = strPtr("'research'")
+		}, utils.ErrCodeInvalidExpression, "filters[1].expression"},
+		{"splitBy expression returns bool", func(r *budgetRequest) {
+			r.Limit.SplitBy.Expression = strPtr("1 == 1")
+		}, utils.ErrCodeInvalidExpression, "limit.splitBy.expression"},
+		{"splitBy expression does not compile", func(r *budgetRequest) {
+			r.Limit.SplitBy.Expression = strPtr("request.Auth.Claims[")
+		}, utils.ErrCodeInvalidExpression, "limit.splitBy.expression"},
 		{"exemption expression does not compile", func(r *budgetRequest) {
 			r.Exemptions[0].Expression = strPtr("request.Auth.Subject ==")
 		}, utils.ErrCodeInvalidExpression, "exemptions[0].expression"},
-		{"long consumer expression", func(r *budgetRequest) {
-			r.Consumers[0].Expression = strPtr("true || " + strings.Repeat("x", maxBudgetExpression))
-		}, utils.ErrCodeValidation, "consumers[0].expression"},
+		{"long filter expression", func(r *budgetRequest) {
+			r.Filters[1].Expression = strPtr("true || " + strings.Repeat("x", maxBudgetExpression))
+		}, utils.ErrCodeValidation, "filters[1].expression"},
+		{"long splitBy expression", func(r *budgetRequest) {
+			r.Limit.SplitBy.Expression = strPtr("'x' + " + strings.Repeat("x", maxBudgetExpression))
+		}, utils.ErrCodeValidation, "limit.splitBy.expression"},
 		{"long exemption expression", func(r *budgetRequest) {
 			r.Exemptions[0].Expression = strPtr("true || " + strings.Repeat("x", maxBudgetExpression))
 		}, utils.ErrCodeValidation, "exemptions[0].expression"},
@@ -387,36 +399,60 @@ func TestBudgetService_CreateRefusesInvalidPayloads(t *testing.T) {
 		{"blockAt with allow", func(r *budgetRequest) {
 			r.Limit.Action, r.Limit.BlockAt = "allow", budgetI32(90)
 		}, utils.ErrCodeValidation, "limit.blockAt"},
-		{"separate resource with id", func(r *budgetRequest) {
-			r.Resource.Allocation = strPtr("separate")
-		}, utils.ErrCodeValidation, "resource.id"},
+		{"unknown splitBy type", func(r *budgetRequest) {
+			r.Limit.SplitBy = &spec.BudgetSplit{Type: "team"}
+		}, utils.ErrCodeValidation, "limit.splitBy.type"},
+		{"attribute splitBy without expression", func(r *budgetRequest) {
+			r.Limit.SplitBy.Expression = nil
+		}, utils.ErrCodeValidation, "limit.splitBy.expression"},
+		{"agent splitBy with expression", func(r *budgetRequest) {
+			r.Limit.SplitBy.Type = "agent"
+		}, utils.ErrCodeValidation, "limit.splitBy.expression"},
+		{"splitBy also a filter", func(r *budgetRequest) {
+			r.Limit.SplitBy = &spec.BudgetSplit{Type: "llmProvider"}
+		}, utils.ErrCodeValidation, "limit.splitBy.type"},
 		{"unknown project", func(r *budgetRequest) {
-			r.Consumers = append(r.Consumers, spec.BudgetConsumer{Type: "project", Id: strPtr("other")})
-		}, utils.ErrCodeReferenceNotFound, "consumers[2].id"},
-		{"named agent without its project", func(r *budgetRequest) {
-			r.Consumers = []spec.BudgetConsumer{{Type: "agent", Id: strPtr("hotel-booking")}}
-		}, utils.ErrCodeValidation, "consumers[0].project"},
-		{"project on a separate agent", func(r *budgetRequest) {
-			r.Consumers = []spec.BudgetConsumer{{Type: "agent", Allocation: strPtr("separate"), Project: strPtr("api-platform")}}
-		}, utils.ErrCodeValidation, "consumers[0].project"},
+			r.Filters = append(r.Filters, spec.BudgetFilter{Type: "project", Id: strPtr("other")})
+		}, utils.ErrCodeReferenceNotFound, "filters[2].id"},
+		{"agent without its project", func(r *budgetRequest) {
+			r.Filters = []spec.BudgetFilter{{Type: "agent", Id: strPtr("hotel-booking")}}
+		}, utils.ErrCodeValidation, "filters[0].project"},
+		{"project on a project filter", func(r *budgetRequest) {
+			r.Filters = []spec.BudgetFilter{{Type: "project", Id: strPtr("api-platform"), Project: strPtr("api-platform")}}
+		}, utils.ErrCodeValidation, "filters[0].project"},
 		{"unknown agent", func(r *budgetRequest) {
-			r.Consumers = []spec.BudgetConsumer{{Type: "agent", Project: strPtr("api-platform"), Id: strPtr("nope")}}
-		}, utils.ErrCodeReferenceNotFound, "consumers[0].id"},
-		{"shared api key without its name", func(r *budgetRequest) {
-			r.Consumers = []spec.BudgetConsumer{{Type: "apiKey"}}
-		}, utils.ErrCodeValidation, "consumers[0].id"},
+			r.Filters = []spec.BudgetFilter{{Type: "agent", Project: strPtr("api-platform"), Id: strPtr("nope")}}
+		}, utils.ErrCodeReferenceNotFound, "filters[0].id"},
+		{"agent with only its project", func(r *budgetRequest) {
+			r.Filters = []spec.BudgetFilter{{Type: "agent", Project: strPtr("api-platform")}}
+		}, utils.ErrCodeValidation, "filters[0].project"},
+		{"llmProvider without id", func(r *budgetRequest) { r.Filters[0].Id = nil }, utils.ErrCodeValidation, "filters[0].id"},
+		{"api key with an empty id", func(r *budgetRequest) {
+			r.Filters = []spec.BudgetFilter{{Type: "apiKey", Id: strPtr(" ")}}
+		}, utils.ErrCodeValidation, "filters[0].id"},
+		{"id-less project used twice", func(r *budgetRequest) {
+			r.Filters = []spec.BudgetFilter{{Type: "project"}, {Type: "project", Id: strPtr("api-platform")}}
+		}, utils.ErrCodeValidation, "filters[1].type"},
 		{"project used twice", func(r *budgetRequest) {
-			r.Consumers = []spec.BudgetConsumer{{Type: "project", Id: strPtr("api-platform")}, {Type: "project", Allocation: strPtr("separate")}}
-		}, utils.ErrCodeValidation, "consumers[1].type"},
-		{"unknown consumer type", func(r *budgetRequest) {
-			r.Consumers = []spec.BudgetConsumer{{Type: "team"}}
-		}, utils.ErrCodeValidation, "consumers[0].type"},
+			r.Filters = []spec.BudgetFilter{{Type: "project", Id: strPtr("api-platform")}, {Type: "project", Id: strPtr("api-platform")}}
+		}, utils.ErrCodeValidation, "filters[1].type"},
+		{"unknown filter type", func(r *budgetRequest) {
+			r.Filters = []spec.BudgetFilter{{Type: "team"}}
+		}, utils.ErrCodeValidation, "filters[0].type"},
 		{"attribute without expression", func(r *budgetRequest) {
-			r.Consumers = append(r.Consumers, spec.BudgetConsumer{Type: "attribute"})
-		}, utils.ErrCodeValidation, "consumers[2].expression"},
+			r.Filters = append(r.Filters, spec.BudgetFilter{Type: "attribute"})
+		}, utils.ErrCodeValidation, "filters[2].expression"},
 		{"attribute with id", func(r *budgetRequest) {
-			r.Consumers[0].Id = strPtr("x")
-		}, utils.ErrCodeValidation, "consumers[0].id"},
+			r.Filters[1].Id = strPtr("x")
+		}, utils.ErrCodeValidation, "filters[1].id"},
+		{"expression on an id filter", func(r *budgetRequest) {
+			r.Filters[0].Expression = strPtr("true")
+		}, utils.ErrCodeValidation, "filters[0].expression"},
+		{"too many filters", func(r *budgetRequest) {
+			for len(r.Filters) <= maxBudgetFilters {
+				r.Filters = append(r.Filters, spec.BudgetFilter{Type: "attribute", Expression: strPtr(budgetGroupExpr)})
+			}
+		}, utils.ErrCodeValidation, "filters"},
 		{"unknown exempt agent", func(r *budgetRequest) {
 			r.Exemptions = []spec.BudgetExemption{{Type: "agent", Project: strPtr("api-platform"), Id: strPtr("nope")}}
 		}, utils.ErrCodeReferenceNotFound, "exemptions[0].id"},
@@ -429,7 +465,7 @@ func TestBudgetService_CreateRefusesInvalidPayloads(t *testing.T) {
 		{"repeated channel", func(r *budgetRequest) {
 			r.Warnings.Channels = []string{"finance-email", "finance-email"}
 		}, utils.ErrCodeValidation, "warnings.channels[1]"},
-		{"unknown provider", func(r *budgetRequest) { r.Resource.Id = strPtr("anthropic") }, utils.ErrCodeReferenceNotFound, "resource.id"},
+		{"unknown provider", func(r *budgetRequest) { r.Filters[0].Id = strPtr("anthropic") }, utils.ErrCodeReferenceNotFound, "filters[0].id"},
 		{"unknown channel", func(r *budgetRequest) {
 			r.Warnings.Channels = []string{"pagerduty"}
 		}, utils.ErrCodeChannelNotAvailable, "warnings.channels[0]"},
@@ -495,9 +531,11 @@ func TestGatewayBudgetConfigMapsTheKindsSpec(t *testing.T) {
 		"apiVersion": "gateway.api-platform.wso2.com/v1", "kind": "Budget",
 		"metadata": {"name": "research-monthly"},
 		"spec": {
-			"limit": {"amount": "500.00", "period": "month", "action": "block", "blockAt": 95},
-			"resource": {"type": "llmProvider", "id": "openai"},
-			"consumers": [{"type": "attribute", "expression": "'research' in request.Auth.Claims[\"groups\"]"}]
+			"limit": {"amount": "500.00", "period": "month", "action": "block", "blockAt": 95, "splitBy": {"type": "agent"}},
+			"filters": [
+				{"type": "llmProvider", "id": "openai"},
+				{"type": "attribute", "expression": "'research' in request.Auth.Claims[\"groups\"]"}
+			]
 		}
 	}`))
 	require.NoError(t, err)
@@ -506,9 +544,15 @@ func TestGatewayBudgetConfigMapsTheKindsSpec(t *testing.T) {
 	assert.Equal(t, "active", cfg.Status)
 	assert.Equal(t, "USD", cfg.Limit.Currency)
 	assert.Equal(t, int32(95), *cfg.Limit.BlockAt)
-	assert.Equal(t, "shared", cfg.Resource.Allocation)
-	assert.Equal(t, "shared", cfg.Consumers[0].Allocation)
+	assert.Equal(t, &models.BudgetSplit{Type: "agent"}, cfg.Limit.SplitBy)
+	require.Len(t, cfg.Filters, 2)
+	assert.Equal(t, "openai", *cfg.Filters[0].ID)
+	assert.Equal(t, "attribute", cfg.Filters[1].Type)
 	assert.NotNil(t, cfg.Exemptions)
+
+	cfg, _, err = gatewayBudgetConfig("all", json.RawMessage(`{"spec": {"limit": {"amount": "1", "period": "day", "action": "allow"}}}`))
+	require.NoError(t, err)
+	assert.NotNil(t, cfg.Filters, "no filters: an empty list, all LLM usage")
 
 	_, _, err = gatewayBudgetConfig("x", json.RawMessage(`not json`))
 	assert.Error(t, err)
@@ -548,25 +592,24 @@ func TestBudgetService_ListFiltersAndPages(t *testing.T) {
 		createTestBudget(t, env, n)
 	}
 	other := env.store["c"]
-	other.Configuration.Resource = nil
-	other.Configuration.Consumers = []models.BudgetConsumer{}
+	other.Configuration.Filters = []models.BudgetFilter{}
 	other.Configuration.Exemptions = []models.BudgetExemption{}
 	env.store["c"] = other
 
-	page, err := env.svc.List(context.Background(), budgetTestOrg, "", nil, 2, 0)
+	page, err := env.svc.List(context.Background(), budgetTestOrg, "", nil, nil, "", "", 2, 0)
 	require.NoError(t, err)
 	assert.Equal(t, int32(3), page.Total)
 	assert.Equal(t, int32(2), page.Limit)
 	require.Len(t, page.Budgets, 2)
 	assert.Equal(t, "a", page.Budgets[0].Metadata.Name)
 
-	page, err = env.svc.List(context.Background(), budgetTestOrg, "", nil, 0, 2)
+	page, err = env.svc.List(context.Background(), budgetTestOrg, "", nil, nil, "", "", 0, 2)
 	require.NoError(t, err)
 	assert.Equal(t, int32(20), page.Limit, "default page size")
 	require.Len(t, page.Budgets, 1)
 	assert.Equal(t, "c", page.Budgets[0].Metadata.Name)
 
-	page, err = env.svc.List(context.Background(), budgetTestOrg, "", nil, 20, 10)
+	page, err = env.svc.List(context.Background(), budgetTestOrg, "", nil, nil, "", "", 20, 10)
 	require.NoError(t, err)
 	assert.Empty(t, page.Budgets)
 	assert.Equal(t, int32(3), page.Total)
@@ -577,19 +620,19 @@ func TestBudgetService_ListFiltersAndPages(t *testing.T) {
 		"agent:hotel-booking":  0,
 		"llmProvider:other":    0,
 	} {
-		page, err = env.svc.List(context.Background(), budgetTestOrg, "", []string{filter}, 20, 0)
+		page, err = env.svc.List(context.Background(), budgetTestOrg, "", []string{filter}, nil, "", "", 20, 0)
 		require.NoError(t, err)
 		assert.Len(t, page.Budgets, want, filter)
 	}
-	page, err = env.svc.List(context.Background(), budgetTestOrg, "", []string{"project:api-platform", "llmProvider:other"}, 20, 0)
+	page, err = env.svc.List(context.Background(), budgetTestOrg, "", []string{"project:api-platform", "llmProvider:other"}, nil, "", "", 20, 0)
 	require.NoError(t, err)
 	assert.Empty(t, page.Budgets, "filters combine with AND")
 
 	for _, bad := range [][]string{{"team:a"}, {"project"}, {"project:"}} {
-		_, err = env.svc.List(context.Background(), budgetTestOrg, "", bad, 20, 0)
+		_, err = env.svc.List(context.Background(), budgetTestOrg, "", bad, nil, "", "", 20, 0)
 		assert.Equal(t, utils.ErrCodeValidation, budgetErrorCode(t, err), bad)
 	}
-	_, err = env.svc.List(context.Background(), budgetTestOrg, "", nil, 101, 0)
+	_, err = env.svc.List(context.Background(), budgetTestOrg, "", nil, nil, "", "", 101, 0)
 	assert.Equal(t, utils.ErrCodeValidation, budgetErrorCode(t, err))
 }
 
@@ -612,8 +655,9 @@ func TestBudgetService_UpdateReplacesTheEditableFields(t *testing.T) {
 	assert.Equal(t, int32(90), *resp.Spec.Limit.BlockAt)
 	assert.Equal(t, "month", resp.Spec.Limit.Period, "period is fixed")
 	assert.Equal(t, "USD", *resp.Spec.Limit.Currency, "currency is fixed")
-	assert.Len(t, resp.Spec.Consumers, 2, "consumers are fixed")
-	assert.Equal(t, "openai", *resp.Spec.Resource.Id, "resource is fixed")
+	assert.Len(t, resp.Spec.Filters, 2, "filters are fixed")
+	assert.Equal(t, "openai", *resp.Spec.Filters[0].Id, "filters are fixed")
+	assert.Equal(t, "attribute", resp.Spec.Limit.SplitBy.Type, "splitBy is fixed")
 	assert.Equal(t, "inactive", env.store["team-a"].Configuration.Status)
 
 	resp, err = env.update(context.Background(), budgetTestOrg, "team-a", budgetUpdateRequest{
@@ -624,28 +668,30 @@ func TestBudgetService_UpdateReplacesTheEditableFields(t *testing.T) {
 	assert.Nil(t, resp.Spec.Limit.BlockAt)
 }
 
-func TestFixedFieldsUnchanged_AllProviderResourceFormsAreEquivalent(t *testing.T) {
-	shared := budgetAllocationShared
-	explicit := &models.BudgetResource{Type: budgetTypeLLMProvider, Allocation: budgetAllocationShared}
-	request := budgetRequest{
-		Limit: spec.BudgetLimit{Period: "month"},
-		Resource: &spec.BudgetResource{
-			Type: budgetTypeLLMProvider, Allocation: &shared,
-		},
-	}
-	stored := &models.Budget{Configuration: models.BudgetConfig{Limit: models.BudgetLimit{Period: "month"}}}
+func TestFixedFieldsUnchanged_FiltersAndSplitBy(t *testing.T) {
+	stored := &models.Budget{Configuration: models.BudgetConfig{
+		Limit:   models.BudgetLimit{Period: "month"},
+		Filters: []models.BudgetFilter{},
+	}}
+	request := budgetRequest{Limit: spec.BudgetLimit{Period: "month"}}
+	require.NoError(t, fixedFieldsUnchanged(stored, request), "no filters: omitted and empty are the same")
+	request.Filters = []spec.BudgetFilter{}
 	require.NoError(t, fixedFieldsUnchanged(stored, request))
 
-	stored.Configuration.Resource = explicit
-	request.Resource = nil
-	require.NoError(t, fixedFieldsUnchanged(stored, request))
-
-	request.Resource = &spec.BudgetResource{
-		Type: budgetTypeLLMProvider, Allocation: &shared, Id: strPtr("openai"),
-	}
+	request.Filters = []spec.BudgetFilter{{Type: "llmProvider", Id: strPtr("openai")}}
 	err := fixedFieldsUnchanged(stored, request)
 	require.Error(t, err)
-	assert.Equal(t, utils.ErrCodeValidation, budgetErrorCode(t, err), "a real resource change remains forbidden")
+	var be *BudgetError
+	require.ErrorAs(t, err, &be)
+	assert.Equal(t, "spec.filters", be.Field, "filters cannot change")
+
+	request.Filters = nil
+	request.Limit.SplitBy = &spec.BudgetSplit{Type: "agent"}
+	require.ErrorAs(t, fixedFieldsUnchanged(stored, request), &be)
+	assert.Equal(t, "spec.limit.splitBy", be.Field, "splitBy cannot change")
+
+	stored.Configuration.Limit.SplitBy = &models.BudgetSplit{Type: "agent"}
+	require.NoError(t, fixedFieldsUnchanged(stored, request))
 }
 
 func TestBudgetService_UpdateRefusals(t *testing.T) {
@@ -734,16 +780,16 @@ func TestBudgetService_SendsBudgetsToGateways(t *testing.T) {
 	assert.Len(t, env.sender.sent, 3, "a refused request sends nothing")
 }
 
-func TestBuildBudgetKind_ForGatewayNamesAResource(t *testing.T) {
+func TestBuildBudgetKind_ForGatewayKeepsTheShape(t *testing.T) {
 	cfg := models.BudgetConfig{
 		DisplayName: "Org", Status: "active",
-		Limit:     models.BudgetLimit{Amount: "10", Currency: "USD", Period: "day", Action: "allow"},
-		Consumers: []models.BudgetConsumer{}, Exemptions: []models.BudgetExemption{},
+		Limit:   models.BudgetLimit{Amount: "10", Currency: "USD", Period: "day", Action: "allow", SplitBy: &models.BudgetSplit{Type: "agent"}},
+		Filters: []models.BudgetFilter{}, Exemptions: []models.BudgetExemption{},
 	}
 	gw, err := json.Marshal(BuildBudgetKind("org", budgetTestOrgName, cfg, true))
 	require.NoError(t, err)
-	assert.Contains(t, string(gw), `"resource":{"type":"llmProvider","allocation":"shared"}`, "every provider, shared")
-	assert.Nil(t, cfg.Resource, "the stored budget is not changed")
+	assert.Contains(t, string(gw), `"splitBy":{"type":"agent"}`)
+	assert.Contains(t, string(gw), `"filters":[]`, "no filters: all LLM usage")
 }
 
 func TestBudgetService_GatewayBudgetsTakeOnlyAgentManagerFields(t *testing.T) {
@@ -755,7 +801,7 @@ func TestBudgetService_GatewayBudgetsTakeOnlyAgentManagerFields(t *testing.T) {
 			DisplayName: "from-gateway", Status: "active",
 			// As a gateway pushes it: no blockAt means block at 100%.
 			Limit:      models.BudgetLimit{Amount: "500.00", Currency: "USD", Period: "month", Action: "block"},
-			Consumers:  []models.BudgetConsumer{{Type: "attribute", Allocation: "shared", Expression: strPtr(budgetGroupExpr)}},
+			Filters:    []models.BudgetFilter{{Type: "attribute", Expression: strPtr(budgetGroupExpr)}},
 			Exemptions: []models.BudgetExemption{},
 		},
 	}
@@ -801,25 +847,43 @@ func TestBudgetService_GatewayBudgetsTakeOnlyAgentManagerFields(t *testing.T) {
 func TestBudgetService_ProjectAgentAndAPIKeyBudgets(t *testing.T) {
 	env := newBudgetTestEnv(t)
 	req := budgetTestRequest()
-	req.Consumers = []spec.BudgetConsumer{
-		{Type: "project", Id: strPtr("api-platform")},
+	req.Limit.SplitBy = &spec.BudgetSplit{Type: "apiKey"}
+	req.Filters = []spec.BudgetFilter{
 		{Type: "agent", Project: strPtr("api-platform"), Id: strPtr("hotel-booking")},
-		{Type: "apiKey", Allocation: strPtr("separate")},
 	}
 	req.Exemptions = []spec.BudgetExemption{{Type: "attribute", Expression: strPtr(budgetAdminExpr)}}
 	resp, err := env.create(context.Background(), budgetTestOrg, "alice", req)
 	require.NoError(t, err)
-	require.Len(t, resp.Spec.Consumers, 3)
-	require.NotNil(t, env.created[0].Configuration.Consumers[1].Project, "the agent is stored with its project")
-	assert.Equal(t, "api-platform", *resp.Spec.Consumers[1].Project, "and returned with it")
+	require.Len(t, resp.Spec.Filters, 1, "an agent filter carries its project: no project filter is added")
+	require.NotNil(t, env.created[0].Configuration.Filters[0].Project, "the agent is stored with its project")
+	assert.Equal(t, "api-platform", *resp.Spec.Filters[0].Project, "and returned with it")
+	assert.Equal(t, "apiKey", resp.Spec.Limit.SplitBy.Type)
 
 	kind := BuildBudgetKind(resp.Metadata.Name, budgetTestOrgName, env.created[0].Configuration, true)
-	agent := kind.Spec.Consumers[1]
+	agent := kind.Spec.Filters[0]
 	require.NotNil(t, agent.Project, "gateways get the agent with its project")
 	assert.Equal(t, "api-platform", *agent.Project)
 	assert.Equal(t, "hotel-booking", *agent.ID)
 
-	page, err := env.svc.List(context.Background(), budgetTestOrg, "", []string{"agent:hotel-booking", "project:api-platform"}, 20, 0)
+	for _, filters := range [][]string{
+		{"agent:hotel-booking", "project:api-platform"},
+		{"project:api-platform"},
+	} {
+		page, err := env.svc.List(context.Background(), budgetTestOrg, "", filters, nil, "", "", 20, 0)
+		require.NoError(t, err)
+		assert.Len(t, page.Budgets, 1, "an agent filter's project matches project:%v", filters)
+	}
+
+	req = budgetTestRequest()
+	req.Name = "api-platform-project"
+	req.Limit.SplitBy = nil
+	req.Filters = []spec.BudgetFilter{{Type: "project", Id: strPtr("api-platform")}, {Type: "apiKey", Id: strPtr("ci-pipeline")}}
+	_, err = env.create(context.Background(), budgetTestOrg, "alice", req)
+	require.NoError(t, err)
+	page, err := env.svc.List(context.Background(), budgetTestOrg, "", []string{"project:api-platform"}, nil, "", "", 20, 0)
+	require.NoError(t, err)
+	assert.Len(t, page.Budgets, 2, "a project filter matches too")
+	page, err = env.svc.List(context.Background(), budgetTestOrg, "", []string{"apiKey:ci-pipeline"}, nil, "", "", 20, 0)
 	require.NoError(t, err)
 	assert.Len(t, page.Budgets, 1)
 }
@@ -861,7 +925,7 @@ func TestBudgetService_CurrentPeriodSumsThisPeriodsSpend(t *testing.T) {
 	assert.Equal(t, spec.BudgetCurrentPeriod{PeriodStart: "2026-11-01", Spent: "100.15", UnpricedRequests: 3}, *got.Status.CurrentPeriod,
 		"October's row counts as $0")
 
-	list, err := env.svc.List(context.Background(), budgetTestOrg, "", nil, 20, 0)
+	list, err := env.svc.List(context.Background(), budgetTestOrg, "", nil, nil, "", "", 20, 0)
 	require.NoError(t, err)
 	spent := map[string]string{}
 	for _, r := range list.Budgets {
@@ -903,16 +967,130 @@ func TestBudgetService_UsageListsAllowancesByHighestSpend(t *testing.T) {
 	assert.Equal(t, utils.ErrCodeValidation, budgetErrorCode(t, err))
 }
 
-// A budget stored before consumers took a project gets its agent's project from its
-// project consumer, in responses and in the kind gateways get.
-func TestWithAgentProjects_FillsOlderBudgets(t *testing.T) {
-	project, agent := "api-platform", "hotel-booking"
-	older := []models.BudgetConsumer{
-		{Type: budgetTypeProject, Allocation: budgetAllocationShared, ID: &project},
-		{Type: budgetTypeAgent, Allocation: budgetAllocationShared, ID: &agent},
+func TestBudgetService_ListSearchesStatusAndAgent(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	ctx := context.Background()
+	str := func(s string) *string { return &s }
+	for _, n := range []string{"shop-weekly", "payments-daily", "returns-only", "other-agent"} {
+		createTestBudget(t, env, n)
 	}
-	got := withAgentProjects(older)
-	require.NotNil(t, got[1].Project)
-	assert.Equal(t, project, *got[1].Project)
-	assert.Nil(t, older[1].Project, "the stored consumers are not changed")
+	set := func(name, display, status string, filters ...models.BudgetFilter) {
+		b := env.store[name]
+		b.Configuration.DisplayName, b.Configuration.Status = display, status
+		b.Configuration.Filters, b.Configuration.Exemptions = filters, []models.BudgetExemption{}
+		env.store[name] = b
+	}
+	set("shop-weekly", "Shop weekly", "active", models.BudgetFilter{Type: "project", ID: str("online-shop")})
+	set("payments-daily", "Payments daily", "inactive")
+	set("returns-only", "Returns bot", "active",
+		models.BudgetFilter{Type: "agent", Project: str("online-shop"), ID: str("returns-bot")})
+	set("other-agent", "Checkout bot", "active",
+		models.BudgetFilter{Type: "agent", Project: str("online-shop"), ID: str("checkout")})
+
+	names := func(filters []string, search, status string) []string {
+		page, err := env.svc.List(ctx, budgetTestOrg, "", filters, nil, search, status, 20, 0)
+		require.NoError(t, err)
+		out := []string{}
+		for _, b := range page.Budgets {
+			out = append(out, b.Metadata.Name)
+		}
+		return out
+	}
+	assert.Equal(t, []string{"shop-weekly"}, names(nil, " SHOP ", ""), "display name, any case")
+	assert.Equal(t, []string{"payments-daily"}, names(nil, "payments-d", ""), "name")
+	assert.Equal(t, []string{"payments-daily"}, names(nil, "", "inactive"))
+	assert.Equal(t, []string{"other-agent", "returns-only", "shop-weekly"}, names(nil, "", "active"), "by display name")
+	assert.Equal(t, []string{"returns-only", "shop-weekly"}, names([]string{"agent:online-shop/returns-bot"}, "", ""),
+		"the agent's own budget and its project's budget that names no agent")
+
+	_, err := env.svc.List(ctx, budgetTestOrg, "", nil, nil, "", "paused", 20, 0)
+	assert.Equal(t, utils.ErrCodeValidation, budgetErrorCode(t, err))
+}
+
+func TestBudgetService_IdLessFiltersMatchAnyValue(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	req := budgetTestRequest()
+	req.Limit.SplitBy = &spec.BudgetSplit{Type: "llmProvider"}
+	req.Filters = []spec.BudgetFilter{{Type: "project"}, {Type: "agent"}, {Type: "apiKey"}}
+	resp, err := env.create(context.Background(), budgetTestOrg, "alice", req)
+	require.NoError(t, err, "no id is any project, agent or API key; no reference is checked")
+	stored := env.created[0].Configuration.Filters
+	require.Len(t, stored, 3)
+	for _, f := range stored {
+		assert.Nil(t, f.ID, "%s is stored without an id", f.Type)
+		assert.Nil(t, f.Project, "%s is stored without a project", f.Type)
+	}
+	assert.Equal(t, "llmProvider", resp.Spec.Limit.SplitBy.Type)
+	assert.Empty(t, budgetProject(&env.created[0].Configuration), "an id-less project filter names no project")
+
+	for _, filter := range []string{"project:api-platform", "agent:hotel-booking", "apiKey:ci-pipeline"} {
+		page, err := env.svc.List(context.Background(), budgetTestOrg, "", []string{filter}, nil, "", "", 20, 0)
+		require.NoError(t, err)
+		assert.Empty(t, page.Budgets, "an id-less filter names no value: %s", filter)
+	}
+}
+
+func TestBudgetCountsAgent_AnyAgent(t *testing.T) {
+	str := func(s string) *string { return &s }
+	anyAgent := models.BudgetFilter{Type: "agent"}
+	cases := []struct {
+		name    string
+		filters []models.BudgetFilter
+		want    bool
+	}{
+		{"any agent, no project: every agent", []models.BudgetFilter{anyAgent}, true},
+		{"any agent of the agent's project", []models.BudgetFilter{{Type: "project", ID: str("online-shop")}, anyAgent}, true},
+		{"any agent of another project", []models.BudgetFilter{{Type: "project", ID: str("support")}, anyAgent}, false},
+		{"any agent of any project", []models.BudgetFilter{{Type: "project"}, anyAgent}, true},
+		{"any project, no agent filter", []models.BudgetFilter{{Type: "project"}}, false},
+		{"another agent", []models.BudgetFilter{{Type: "agent", Project: str("online-shop"), ID: str("checkout")}}, false},
+	}
+	for _, tc := range cases {
+		c := &models.BudgetConfig{Filters: tc.filters}
+		assert.Equal(t, tc.want, budgetCountsAgent(c, "online-shop", "returns-bot"), tc.name)
+	}
+}
+
+func TestBudgetService_AnIdLessFilterMayBeSplitByItsType(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	req := budgetTestRequest()
+	req.Filters = []spec.BudgetFilter{{Type: "agent"}}
+	req.Limit.SplitBy = &spec.BudgetSplit{Type: "agent"}
+	resp, err := env.create(context.Background(), budgetTestOrg, "alice", req)
+	require.NoError(t, err, "any agent, one limit for each agent")
+	assert.Equal(t, "agent", resp.Spec.Limit.SplitBy.Type)
+}
+
+func TestBudgetService_LabelsAreStoredFilteredAndSearched(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	ctx := context.Background()
+	req := budgetTestRequest()
+	req.Labels = []string{"finance", "prod"}
+	resp, err := env.create(ctx, budgetTestOrg, "alice", req)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"finance", "prod"}, resp.Metadata.Labels)
+
+	raw, err := json.Marshal(models.NewBudgetDocument(env.created[0].Name, "", env.created[0].Configuration))
+	require.NoError(t, err)
+	doc := string(raw)
+	assert.Contains(t, doc, `"metadata":{"name":"`+env.created[0].Name+`","labels":["finance","prod"]`, "stored under metadata.labels")
+	assert.NotContains(t, doc, `"spec":{"labels"`)
+
+	list := func(labels []string, search string) int {
+		page, err := env.svc.List(ctx, budgetTestOrg, "", nil, labels, search, "", 20, 0)
+		require.NoError(t, err)
+		return len(page.Budgets)
+	}
+	assert.Equal(t, 1, list([]string{"finance"}, ""))
+	assert.Equal(t, 1, list([]string{"finance", "prod"}, ""), "every label must match")
+	assert.Equal(t, 0, list([]string{"finance", "dev"}, ""))
+	assert.Equal(t, 1, list(nil, "FIN"), "search matches a label, any case")
+
+	for _, bad := range [][]string{{"two words"}, {"finance", "finance"}, {"-dash"}, {"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"}} {
+		r := budgetTestRequest()
+		r.Name = "bad-labels"
+		r.Labels = bad
+		_, err = env.create(ctx, budgetTestOrg, "alice", r)
+		assert.Equal(t, utils.ErrCodeValidation, budgetErrorCode(t, err), "%v", bad)
+	}
 }

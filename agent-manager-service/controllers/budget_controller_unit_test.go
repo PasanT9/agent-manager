@@ -57,9 +57,8 @@ spec:
     amount: "100.00"
     period: month
     action: block
-  consumers:
-    - type: agent
-      allocation: separate
+    splitBy:
+      type: agent
 status:
   origin: gateway_api
 `
@@ -96,4 +95,14 @@ func TestBudgetController_RefusesUnknownFields(t *testing.T) {
 	c.UpdateBudget(w, req)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Nil(t, budgets.got)
+}
+
+func TestBudgetController_RefusesALimitBelowOne(t *testing.T) {
+	c := NewBudgetController(&kindCapturingBudgets{})
+	eleven := "label=a&label=b&label=c&label=d&label=e&label=f&label=g&label=h&label=i&label=j&label=k"
+	for _, q := range []string{"limit=0", "limit=-1", "offset=-1", eleven} {
+		w := httptest.NewRecorder()
+		c.ListBudgets(w, httptest.NewRequest(http.MethodGet, "/orgs/acme/budgets?"+q, nil))
+		assert.Equal(t, http.StatusBadRequest, w.Code, q)
+	}
 }

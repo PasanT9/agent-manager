@@ -14,45 +14,40 @@ import (
 	"encoding/json"
 )
 
-// checks if the BudgetConsumer type satisfies the MappedNullable interface at compile time
-var _ MappedNullable = &BudgetConsumer{}
+// checks if the BudgetFilter type satisfies the MappedNullable interface at compile time
+var _ MappedNullable = &BudgetFilter{}
 
-// BudgetConsumer struct for BudgetConsumer
-type BudgetConsumer struct {
-	Type       string  `json:"type"`
-	Allocation *string `json:"allocation,omitempty"`
-	// Handle, or API key name; required when shared, except for attribute
+// BudgetFilter struct for BudgetFilter
+type BudgetFilter struct {
+	Type string `json:"type"`
+	// Handle, or API key name. Required for llmProvider; omitted for project, agent or apiKey = any (usage carrying one); not for attribute
 	Id *string `json:"id,omitempty"`
-	// The agent's project; required for a shared agent (agent names are unique only per project)
+	// agent only: the agent's project (agent names are unique only per project); given with id, or both omitted (any agent)
 	Project *string `json:"project,omitempty"`
-	// attribute only: CEL, bool when shared, string or list(string) when separate
+	// attribute only, required: CEL returning bool
 	Expression *string `json:"expression,omitempty"`
 }
 
-// NewBudgetConsumer instantiates a new BudgetConsumer object
+// NewBudgetFilter instantiates a new BudgetFilter object
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewBudgetConsumer(type_ string) *BudgetConsumer {
-	this := BudgetConsumer{}
+func NewBudgetFilter(type_ string) *BudgetFilter {
+	this := BudgetFilter{}
 	this.Type = type_
-	var allocation string = "shared"
-	this.Allocation = &allocation
 	return &this
 }
 
-// NewBudgetConsumerWithDefaults instantiates a new BudgetConsumer object
+// NewBudgetFilterWithDefaults instantiates a new BudgetFilter object
 // This constructor will only assign default values to properties that have it defined,
 // but it doesn't guarantee that properties required by API are set
-func NewBudgetConsumerWithDefaults() *BudgetConsumer {
-	this := BudgetConsumer{}
-	var allocation string = "shared"
-	this.Allocation = &allocation
+func NewBudgetFilterWithDefaults() *BudgetFilter {
+	this := BudgetFilter{}
 	return &this
 }
 
 // GetType returns the Type field value
-func (o *BudgetConsumer) GetType() string {
+func (o *BudgetFilter) GetType() string {
 	if o == nil {
 		var ret string
 		return ret
@@ -63,7 +58,7 @@ func (o *BudgetConsumer) GetType() string {
 
 // GetTypeOk returns a tuple with the Type field value
 // and a boolean to check if the value has been set.
-func (o *BudgetConsumer) GetTypeOk() (*string, bool) {
+func (o *BudgetFilter) GetTypeOk() (*string, bool) {
 	if o == nil {
 		return nil, false
 	}
@@ -71,44 +66,12 @@ func (o *BudgetConsumer) GetTypeOk() (*string, bool) {
 }
 
 // SetType sets field value
-func (o *BudgetConsumer) SetType(v string) {
+func (o *BudgetFilter) SetType(v string) {
 	o.Type = v
 }
 
-// GetAllocation returns the Allocation field value if set, zero value otherwise.
-func (o *BudgetConsumer) GetAllocation() string {
-	if o == nil || IsNil(o.Allocation) {
-		var ret string
-		return ret
-	}
-	return *o.Allocation
-}
-
-// GetAllocationOk returns a tuple with the Allocation field value if set, nil otherwise
-// and a boolean to check if the value has been set.
-func (o *BudgetConsumer) GetAllocationOk() (*string, bool) {
-	if o == nil || IsNil(o.Allocation) {
-		return nil, false
-	}
-	return o.Allocation, true
-}
-
-// HasAllocation returns a boolean if a field has been set.
-func (o *BudgetConsumer) HasAllocation() bool {
-	if o != nil && !IsNil(o.Allocation) {
-		return true
-	}
-
-	return false
-}
-
-// SetAllocation gets a reference to the given string and assigns it to the Allocation field.
-func (o *BudgetConsumer) SetAllocation(v string) {
-	o.Allocation = &v
-}
-
 // GetId returns the Id field value if set, zero value otherwise.
-func (o *BudgetConsumer) GetId() string {
+func (o *BudgetFilter) GetId() string {
 	if o == nil || IsNil(o.Id) {
 		var ret string
 		return ret
@@ -118,7 +81,7 @@ func (o *BudgetConsumer) GetId() string {
 
 // GetIdOk returns a tuple with the Id field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *BudgetConsumer) GetIdOk() (*string, bool) {
+func (o *BudgetFilter) GetIdOk() (*string, bool) {
 	if o == nil || IsNil(o.Id) {
 		return nil, false
 	}
@@ -126,7 +89,7 @@ func (o *BudgetConsumer) GetIdOk() (*string, bool) {
 }
 
 // HasId returns a boolean if a field has been set.
-func (o *BudgetConsumer) HasId() bool {
+func (o *BudgetFilter) HasId() bool {
 	if o != nil && !IsNil(o.Id) {
 		return true
 	}
@@ -135,12 +98,12 @@ func (o *BudgetConsumer) HasId() bool {
 }
 
 // SetId gets a reference to the given string and assigns it to the Id field.
-func (o *BudgetConsumer) SetId(v string) {
+func (o *BudgetFilter) SetId(v string) {
 	o.Id = &v
 }
 
 // GetProject returns the Project field value if set, zero value otherwise.
-func (o *BudgetConsumer) GetProject() string {
+func (o *BudgetFilter) GetProject() string {
 	if o == nil || IsNil(o.Project) {
 		var ret string
 		return ret
@@ -150,7 +113,7 @@ func (o *BudgetConsumer) GetProject() string {
 
 // GetProjectOk returns a tuple with the Project field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *BudgetConsumer) GetProjectOk() (*string, bool) {
+func (o *BudgetFilter) GetProjectOk() (*string, bool) {
 	if o == nil || IsNil(o.Project) {
 		return nil, false
 	}
@@ -158,7 +121,7 @@ func (o *BudgetConsumer) GetProjectOk() (*string, bool) {
 }
 
 // HasProject returns a boolean if a field has been set.
-func (o *BudgetConsumer) HasProject() bool {
+func (o *BudgetFilter) HasProject() bool {
 	if o != nil && !IsNil(o.Project) {
 		return true
 	}
@@ -167,12 +130,12 @@ func (o *BudgetConsumer) HasProject() bool {
 }
 
 // SetProject gets a reference to the given string and assigns it to the Project field.
-func (o *BudgetConsumer) SetProject(v string) {
+func (o *BudgetFilter) SetProject(v string) {
 	o.Project = &v
 }
 
 // GetExpression returns the Expression field value if set, zero value otherwise.
-func (o *BudgetConsumer) GetExpression() string {
+func (o *BudgetFilter) GetExpression() string {
 	if o == nil || IsNil(o.Expression) {
 		var ret string
 		return ret
@@ -182,7 +145,7 @@ func (o *BudgetConsumer) GetExpression() string {
 
 // GetExpressionOk returns a tuple with the Expression field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *BudgetConsumer) GetExpressionOk() (*string, bool) {
+func (o *BudgetFilter) GetExpressionOk() (*string, bool) {
 	if o == nil || IsNil(o.Expression) {
 		return nil, false
 	}
@@ -190,7 +153,7 @@ func (o *BudgetConsumer) GetExpressionOk() (*string, bool) {
 }
 
 // HasExpression returns a boolean if a field has been set.
-func (o *BudgetConsumer) HasExpression() bool {
+func (o *BudgetFilter) HasExpression() bool {
 	if o != nil && !IsNil(o.Expression) {
 		return true
 	}
@@ -199,11 +162,11 @@ func (o *BudgetConsumer) HasExpression() bool {
 }
 
 // SetExpression gets a reference to the given string and assigns it to the Expression field.
-func (o *BudgetConsumer) SetExpression(v string) {
+func (o *BudgetFilter) SetExpression(v string) {
 	o.Expression = &v
 }
 
-func (o BudgetConsumer) MarshalJSON() ([]byte, error) {
+func (o BudgetFilter) MarshalJSON() ([]byte, error) {
 	toSerialize, err := o.ToMap()
 	if err != nil {
 		return []byte{}, err
@@ -211,12 +174,9 @@ func (o BudgetConsumer) MarshalJSON() ([]byte, error) {
 	return json.Marshal(toSerialize)
 }
 
-func (o BudgetConsumer) ToMap() (map[string]interface{}, error) {
+func (o BudgetFilter) ToMap() (map[string]interface{}, error) {
 	toSerialize := map[string]interface{}{}
 	toSerialize["type"] = o.Type
-	if !IsNil(o.Allocation) {
-		toSerialize["allocation"] = o.Allocation
-	}
 	if !IsNil(o.Id) {
 		toSerialize["id"] = o.Id
 	}
@@ -229,38 +189,38 @@ func (o BudgetConsumer) ToMap() (map[string]interface{}, error) {
 	return toSerialize, nil
 }
 
-type NullableBudgetConsumer struct {
-	value *BudgetConsumer
+type NullableBudgetFilter struct {
+	value *BudgetFilter
 	isSet bool
 }
 
-func (v NullableBudgetConsumer) Get() *BudgetConsumer {
+func (v NullableBudgetFilter) Get() *BudgetFilter {
 	return v.value
 }
 
-func (v *NullableBudgetConsumer) Set(val *BudgetConsumer) {
+func (v *NullableBudgetFilter) Set(val *BudgetFilter) {
 	v.value = val
 	v.isSet = true
 }
 
-func (v NullableBudgetConsumer) IsSet() bool {
+func (v NullableBudgetFilter) IsSet() bool {
 	return v.isSet
 }
 
-func (v *NullableBudgetConsumer) Unset() {
+func (v *NullableBudgetFilter) Unset() {
 	v.value = nil
 	v.isSet = false
 }
 
-func NewNullableBudgetConsumer(val *BudgetConsumer) *NullableBudgetConsumer {
-	return &NullableBudgetConsumer{value: val, isSet: true}
+func NewNullableBudgetFilter(val *BudgetFilter) *NullableBudgetFilter {
+	return &NullableBudgetFilter{value: val, isSet: true}
 }
 
-func (v NullableBudgetConsumer) MarshalJSON() ([]byte, error) {
+func (v NullableBudgetFilter) MarshalJSON() ([]byte, error) {
 	return json.Marshal(v.value)
 }
 
-func (v *NullableBudgetConsumer) UnmarshalJSON(src []byte) error {
+func (v *NullableBudgetFilter) UnmarshalJSON(src []byte) error {
 	v.isSet = true
 	return json.Unmarshal(src, &v.value)
 }

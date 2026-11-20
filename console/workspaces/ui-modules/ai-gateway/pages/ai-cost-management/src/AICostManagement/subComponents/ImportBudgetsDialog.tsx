@@ -168,8 +168,7 @@ export function ImportBudgetsDialog({
       <DialogContent>
         <Stack spacing={2}>
           <Typography variant="body2" color="text.secondary">
-            Upload a CSV file containing up to 500 budgets. All rows are
-            validated before import.
+            Upload a CSV of up to 500 budgets. Every row is checked first.
           </Typography>
           <Box>
             <Link
@@ -245,9 +244,7 @@ export function ImportBudgetsDialog({
               }}
               SelectProps={{ id: "duplicate-budget-handling" }}
               helperText={
-                canUpdate
-                  ? undefined
-                  : "Updating existing budgets requires permission to edit budgets."
+                canUpdate ? undefined : "Needs permission to edit budgets."
               }
             >
               {ON_EXISTING.map((o) => (
@@ -381,7 +378,7 @@ export function ImportBudgetsDialog({
         </Stack>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2.5 }}>
-        <Button onClick={close} disabled={save.isPending}>
+        <Button variant="outlined" onClick={close} disabled={save.isPending}>
           Cancel
         </Button>
         <Button
