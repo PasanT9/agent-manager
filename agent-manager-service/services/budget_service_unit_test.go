@@ -1094,3 +1094,19 @@ func TestBudgetService_LabelsAreStoredFilteredAndSearched(t *testing.T) {
 		assert.Equal(t, utils.ErrCodeValidation, budgetErrorCode(t, err), "%v", bad)
 	}
 }
+
+func TestBudgetService_RefusesAnExpressionTooCostlyForGateways(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	list := "[" + strings.Repeat("1,", 99) + "1]"
+	costly := list + ".all(a, " + list + ".all(b, " + list + ".all(c, a == b)))"
+	req := budgetTestRequest()
+	req.Filters = append(req.Filters, spec.BudgetFilter{Type: "attribute", Expression: &costly})
+	_, err := env.create(context.Background(), budgetTestOrg, "alice", req)
+	assert.Equal(t, utils.ErrCodeInvalidExpression, budgetErrorCode(t, err))
+
+	cheap := `'R&D' in request.Auth.Claims["groups"]`
+	req = budgetTestRequest()
+	req.Filters = append(req.Filters, spec.BudgetFilter{Type: "attribute", Expression: &cheap})
+	_, err = env.create(context.Background(), budgetTestOrg, "alice", req)
+	require.NoError(t, err, "a claim check on an empty request errors, but is not too costly")
+}

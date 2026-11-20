@@ -109,16 +109,12 @@ function Tile({
 
 /**
  * "Advanced analytics", opening the deployment's analytics dashboard (Moesif or any
- * other tool) in a new tab; a plain note when the deployment names none.
+ * other tool) in a new tab; hidden when the deployment names none.
  */
 function AnalyticsLink() {
   const url = globalConfig?.analyticsDashboardUrl?.trim();
   if (!url) {
-    return (
-      <Typography variant="body2" color="text.secondary">
-        Advanced analytics isn&apos;t set up
-      </Typography>
-    );
+    return null;
   }
   // Leaves the AI Control Plane, as the console's other external links do.
   return (

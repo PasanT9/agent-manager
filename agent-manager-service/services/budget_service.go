@@ -132,7 +132,29 @@ func checkBudgetExpression(field, expression string, split bool) error {
 	case !split && out != types.BoolType:
 		return invalid("%s must return bool, not %s.", field, out)
 	}
+	if tooCostly(env, ast) {
+		return invalid("%s is too costly to run on every request.", field)
+	}
 	return nil
+}
+
+// maxBudgetExpressionCost is the gateway's cost limit for one budget expression per request
+// (system-policies/budget maxExpressionCost): above it the gateway stops the expression and
+// the budget counts nothing.
+const maxBudgetExpressionCost = 10000
+
+// tooCostly runs the expression once on an empty request under the gateway's cost limit.
+// Claims are known only when a request arrives, so a static estimate cannot bound most
+// expressions; but one that exceeds the limit with no input (nested macros over large
+// literal lists) always will, and the gateway would skip it. Other errors (a claim that
+// is not there) are expected here and ignored.
+func tooCostly(env *cel.Env, ast *cel.Ast) bool {
+	prg, err := env.Program(ast, cel.CostLimit(maxBudgetExpressionCost))
+	if err != nil {
+		return false
+	}
+	_, _, err = prg.Eval(map[string]any{"request": map[string]any{}})
+	return err != nil && strings.Contains(err.Error(), "cost limit exceeded")
 }
 
 func unsupportedConsumer(field, typ string) error {
