@@ -70,6 +70,7 @@ const (
 	csvExemptions        = "exemptions"
 	csvThresholds        = "thresholds"
 	csvChannels          = "channels"
+	csvLabels            = "labels"
 )
 
 // csvAnyValue in the project, agent or apiKey column is the id-less filter (any value).
@@ -80,7 +81,7 @@ var (
 		csvName, csvProjectID, csvDisplayName, csvDescription,
 		csvAmount, csvPeriod, csvAction, csvBlockAt, csvSplitBy, csvSplitByExpression,
 		csvProvider, csvProject, csvAgent, csvAPIKey,
-		csvAttributes, csvExemptions, csvThresholds, csvChannels,
+		csvAttributes, csvExemptions, csvThresholds, csvChannels, csvLabels,
 	}
 	budgetImportRequired = []string{csvName, csvAmount, csvPeriod, csvAction}
 
@@ -353,6 +354,10 @@ func budgetRequestFromCSV(cells map[string]string, row *importRow) budgetRequest
 		}
 		req.Warnings = warnings
 	}
+	if v := cells[csvLabels]; v != "" {
+		// One-word labels separated by ';', e.g. shop;finance.
+		req.Labels = csvList(v)
+	}
 	return req
 }
 
@@ -382,6 +387,8 @@ func budgetCSVColumn(field string, req budgetRequest) string {
 		return field
 	case field == "metadata.annotations":
 		return csvProjectID
+	case field == "metadata.labels":
+		return csvLabels
 	case field == "limit.splitBy.expression":
 		return csvSplitByExpression
 	case strings.HasPrefix(field, "limit.splitBy"):
@@ -509,7 +516,7 @@ func updatedConfig(stored, incoming models.BudgetConfig) models.BudgetConfig {
 	out := stored
 	out.DisplayName, out.Description = incoming.DisplayName, incoming.Description
 	out.Limit.Amount, out.Limit.Action, out.Limit.BlockAt = incoming.Limit.Amount, incoming.Limit.Action, incoming.Limit.BlockAt
-	out.Exemptions, out.Warnings = incoming.Exemptions, incoming.Warnings
+	out.Exemptions, out.Warnings, out.Labels = incoming.Exemptions, incoming.Warnings, incoming.Labels
 	return out
 }
 

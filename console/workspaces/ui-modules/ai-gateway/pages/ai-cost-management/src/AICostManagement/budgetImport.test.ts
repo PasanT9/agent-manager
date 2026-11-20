@@ -100,7 +100,7 @@ describe("budgetImport", () => {
 
   it("offers a template with every column and the same count in each row", () => {
     const [header, ...rows] = IMPORT_TEMPLATE.trim().split("\n");
-    expect(header.split(",")).toHaveLength(18);
-    rows.forEach((r) => expect(r.split(",")).toHaveLength(18));
+    expect(header.split(",")).toHaveLength(19);
+    rows.forEach((r) => expect(r.split(",")).toHaveLength(19));
   });
 });

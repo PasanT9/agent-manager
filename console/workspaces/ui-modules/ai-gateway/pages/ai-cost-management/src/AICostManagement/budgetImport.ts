@@ -27,9 +27,9 @@ export const IMPORT_MAX_BYTES = 1024 * 1024;
 
 /** Every column the import reads, in order, with two example rows to edit. */
 export const IMPORT_TEMPLATE = [
-  "name,projectId,displayName,description,amount,period,action,blockAt,splitBy,splitByExpression,llmProvider,project,agent,apiKey,attributes,exemptions,thresholds,channels",
-  "org-monthly-ceiling,,Organization monthly ceiling,All LLM spend,5000.00,month,block,95,,,,,,,,,80;100,finance-webhook",
-  "online-shop-each-agent,online-shop,Each Online Shop agent,,50.00,week,block,,agent,,mock-openai,online-shop,,,,,100,finance-webhook",
+  "name,projectId,displayName,description,amount,period,action,blockAt,splitBy,splitByExpression,llmProvider,project,agent,apiKey,attributes,exemptions,thresholds,channels,labels",
+  "org-monthly-ceiling,,Organization monthly ceiling,All LLM spend,5000.00,month,block,95,,,,,,,,,80;100,finance-webhook,finance",
+  "online-shop-each-agent,online-shop,Each Online Shop agent,,50.00,week,block,,agent,,mock-openai,online-shop,,,,,100,finance-webhook,shop;agents",
   "",
 ].join("\n");
 

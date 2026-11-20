@@ -354,3 +354,20 @@ func TestBudgetImport_AStarIsTheIdLessFilter(t *testing.T) {
 	require.Len(t, result.Results, 1)
 	assert.NotEmpty(t, result.Results[0].Errors, "an llmProvider filter always names its provider")
 }
+
+func TestBudgetImport_ReadsLabelsAndPointsAtABadOne(t *testing.T) {
+	env := newBudgetTestEnv(t)
+	file := "name,amount,period,action,labels\n" +
+		"labelled,5,day,block,shop; finance\n"
+	result := importBudgets(t, env, file, false)
+	require.Len(t, result.Results, 1)
+	assert.Empty(t, result.Results[0].Errors)
+	require.Len(t, env.created, 1)
+	assert.Equal(t, []string{"shop", "finance"}, env.created[0].Configuration.Labels)
+
+	env = newBudgetTestEnv(t)
+	result = importBudgets(t, env, "name,amount,period,action,labels\nbad-label,5,day,block,two words\n", true)
+	require.Len(t, result.Results, 1)
+	require.NotEmpty(t, result.Results[0].Errors)
+	assert.Equal(t, "labels", *result.Results[0].Errors[0].Column, "the error points at the labels cell")
+}
