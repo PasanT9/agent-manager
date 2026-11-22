@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -84,14 +85,14 @@ func (r *budgetUsageRepository) Record(ctx context.Context, rows []models.Budget
 	})
 	var queued []models.EventDelivery
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, u := range batch {
-			stored, changed, err := mergeUsageRow(tx, u)
-			if err != nil {
-				return err
-			}
-			if !changed || warn == nil {
-				continue
-			}
+		changed, err := writeUsageBatch(tx, batch)
+		if err != nil {
+			return err
+		}
+		if warn == nil {
+			return nil
+		}
+		for _, stored := range changed {
 			more, err := queueDeliveries(tx, warn(stored))
 			if err != nil {
 				return err
@@ -100,56 +101,161 @@ func (r *budgetUsageRepository) Record(ctx context.Context, rows []models.Budget
 		}
 		return nil
 	})
+	return queued, err
+}
+
+// usageBatchSize bounds one multi-row insert (8 columns; SQL Server allows 2,100 parameters).
+const usageBatchSize = 200
+
+type usageRowKey struct {
+	budget, allowance uuid.UUID
+	period            int64
+}
+
+func usageRowKeyOf(u models.BudgetUsage) usageRowKey {
+	return usageRowKey{u.BudgetID, u.AllowanceID, u.PeriodStart.UTC().UnixMicro()}
+}
+
+// writeUsageBatch writes a batch of reported totals with one read and, per row that is
+// new or higher, one write: new rows in multi-row inserts, higher ones by a conditional
+// update on the value just read, with no row lock. A row another writer changed in
+// between is read again and merged; a row another writer inserted first is merged into.
+// It returns every row as stored after a change, for the warnings.
+func writeUsageBatch(tx *gorm.DB, batch []models.BudgetUsage) ([]models.BudgetUsage, error) {
+	stored, err := storedUsage(tx, batch)
 	if err != nil {
 		return nil, err
 	}
-	return queued, nil
-}
-
-// mergeUsageRow merges one report into its period's row under the row's lock, and
-// returns the stored row and whether it changed.
-func mergeUsageRow(tx *gorm.DB, u models.BudgetUsage) (models.BudgetUsage, bool, error) {
-	// A report updates only its own period's row; earlier periods are kept.
-	const where = "budget_id = ? AND allowance_id = ? AND period_start = ?"
-	args := []any{u.BudgetID, u.AllowanceID, u.PeriodStart}
-	locked, err := dbx.LockRows(tx, "budget_usage", "spent", where, args...)
-	if err != nil {
-		return u, false, err
+	var inserts []models.BudgetUsage
+	type update struct{ current, merged models.BudgetUsage }
+	var updates []update
+	for _, u := range batch {
+		current, ok := stored[usageRowKeyOf(u)]
+		if !ok {
+			inserts = append(inserts, u)
+			continue
+		}
+		if merged, changed := mergeUsage(current, u); changed {
+			updates = append(updates, update{current, merged})
+		}
 	}
-	if locked == 0 {
-		stored := u
-		inserted, err := dbx.InsertIfAbsent(tx, &stored)
+	var changed []models.BudgetUsage
+	for start := 0; start < len(inserts); start += usageBatchSize {
+		chunk := inserts[start:min(start+usageBatchSize, len(inserts))]
+		inserted, err := dbx.InsertIfAbsent(tx, &chunk)
 		if err != nil {
-			return u, false, err
+			return nil, err
 		}
 		if inserted {
-			return stored, true, nil
+			changed = append(changed, chunk...)
+			continue
 		}
-		// Another report inserted it first: merge under its lock.
-		if err := dbx.LockRow(tx, "budget_usage", "spent", where, args...); err != nil {
-			return u, false, err
+		// Another writer inserted one of them first: row by row, merging into those.
+		for _, u := range chunk {
+			row := u
+			inserted, err := dbx.InsertIfAbsent(tx, &row)
+			if err != nil {
+				return nil, err
+			}
+			if inserted {
+				changed = append(changed, row)
+				continue
+			}
+			merged, ok, err := mergeUsageRetrying(tx, u)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				changed = append(changed, merged)
+			}
 		}
 	}
-	var current models.BudgetUsage
-	if err := tx.Where(where, args...).Take(&current).Error; err != nil {
-		return u, false, err
+	for _, up := range updates {
+		ok, err := updateUsageIf(tx, up.current, up.merged)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			changed = append(changed, up.merged)
+			continue
+		}
+		merged, ok, err := mergeUsageRetrying(tx, up.merged)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			changed = append(changed, merged)
+		}
 	}
-	merged, changed := mergeUsage(current, u)
-	if !changed {
-		return current, false, nil
-	}
-	if err := tx.Model(&models.BudgetUsage{}).Where(where, args...).Updates(map[string]any{
-		"allowance":         dbx.JSON(merged.Allowance),
-		"spent":             merged.Spent,
-		"unpriced_requests": merged.UnpricedRequests,
-		"updated_at":        merged.UpdatedAt,
-	}).Error; err != nil {
-		return u, false, err
-	}
-	return merged, true, nil
+	return changed, nil
 }
 
-// mergeUsage merges a report into the stored row and reports whether anything changed.
+// storedUsage reads the stored rows of the batch's allowances in one query per chunk.
+func storedUsage(tx *gorm.DB, batch []models.BudgetUsage) (map[usageRowKey]models.BudgetUsage, error) {
+	budgetSet := map[uuid.UUID]bool{}
+	periodSet := map[int64]time.Time{}
+	for _, u := range batch {
+		budgetSet[u.BudgetID] = true
+		periodSet[u.PeriodStart.UTC().UnixMicro()] = u.PeriodStart.UTC()
+	}
+	budgets := make([]uuid.UUID, 0, len(budgetSet))
+	for id := range budgetSet {
+		budgets = append(budgets, id)
+	}
+	periods := make([]time.Time, 0, len(periodSet))
+	for _, t := range periodSet {
+		periods = append(periods, t)
+	}
+	out := make(map[usageRowKey]models.BudgetUsage, len(batch))
+	for _, chunk := range dbx.Chunks(budgets) {
+		var rows []models.BudgetUsage
+		if err := tx.Where("budget_id IN ? AND period_start IN ?", chunk, periods).Find(&rows).Error; err != nil {
+			return nil, fmt.Errorf("failed to read budget usage: %w", err)
+		}
+		for _, row := range rows {
+			out[usageRowKeyOf(row)] = row
+		}
+	}
+	return out, nil
+}
+
+// updateUsageIf raises a row to merged only if it still holds current; false when another
+// writer changed it in between.
+func updateUsageIf(tx *gorm.DB, current, merged models.BudgetUsage) (bool, error) {
+	res := tx.Model(&models.BudgetUsage{}).
+		Where("budget_id = ? AND allowance_id = ? AND period_start = ? AND spent = ? AND unpriced_requests = ?",
+			current.BudgetID, current.AllowanceID, current.PeriodStart, current.Spent, current.UnpricedRequests).
+		Updates(map[string]any{
+			"allowance":         dbx.JSON(merged.Allowance),
+			"spent":             merged.Spent,
+			"unpriced_requests": merged.UnpricedRequests,
+			"updated_at":        merged.UpdatedAt,
+		})
+	return res.RowsAffected == 1, res.Error
+}
+
+// mergeUsageRetrying reads a row another writer just changed and merges the report into
+// it, a few times; false when the stored row is already as high.
+func mergeUsageRetrying(tx *gorm.DB, report models.BudgetUsage) (models.BudgetUsage, bool, error) {
+	for range 5 {
+		var current models.BudgetUsage
+		err := tx.Where("budget_id = ? AND allowance_id = ? AND period_start = ?",
+			report.BudgetID, report.AllowanceID, report.PeriodStart).Take(&current).Error
+		if err != nil {
+			return report, false, err
+		}
+		merged, changed := mergeUsage(current, report)
+		if !changed {
+			return current, false, nil
+		}
+		ok, err := updateUsageIf(tx, current, merged)
+		if err != nil || ok {
+			return merged, ok, err
+		}
+	}
+	return report, false, fmt.Errorf("budget usage %s/%s kept changing while it was written", report.BudgetID, report.AllowanceID)
+}
+
 func mergeUsage(current, report models.BudgetUsage) (models.BudgetUsage, bool) {
 	switch {
 	case report.PeriodStart.Before(current.PeriodStart):

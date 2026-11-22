@@ -64,6 +64,10 @@ type Config struct {
 	OtelIngest OtelIngestConfig
 	// A2ACardFetchDialAddr, when set, is the host:port every platform card fetch dials instead of its URL host.
 	A2ACardFetchDialAddr string
+	// BudgetUsageFlushSeconds is how often each replica writes the budget and cost totals gateways report
+	// (BUDGET_USAGE_FLUSH_SECONDS, default 2; 0 or less uses the default): reports are coalesced in memory,
+	// latest total per key, in between.
+	BudgetUsageFlushSeconds int
 
 	// JWT Signing configuration for agent API tokens
 	JWTSigning JWTSigningConfig

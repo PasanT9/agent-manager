@@ -21,6 +21,7 @@ package repositories
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -138,4 +139,57 @@ func TestBudgetUsageRepository_ForBudgets(t *testing.T) {
 	none, err := repo.ForBudgets(ctx, ou, nil)
 	require.NoError(t, err)
 	assert.Empty(t, none)
+}
+
+func TestBudgetUsageRepository_ABatchKeepsTheHighestUnderConcurrentWriters(t *testing.T) {
+	gdb := db.GetDB()
+	ctx := context.Background()
+	ou := dbtest.Org(t, gdb)
+	budgetID := createArtifact(t, gdb, ou, models.KindBudget, "batch-writers")
+	repo := NewBudgetUsageRepository(gdb)
+	november := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+
+	// 300 allowances: more than one multi-row insert, some already stored.
+	allowances := make([]uuid.UUID, 300)
+	for i := range allowances {
+		allowances[i] = uuid.New()
+	}
+	batch := func(spent string) []models.BudgetUsage {
+		rows := make([]models.BudgetUsage, len(allowances))
+		for i, id := range allowances {
+			rows[i] = models.BudgetUsage{
+				BudgetID: budgetID, AllowanceID: id, OUID: ou, Allowance: map[string]string{},
+				PeriodStart: november, Spent: spent,
+			}
+		}
+		return rows
+	}
+	_, err := repo.Record(ctx, batch("1.00")[:50], nil)
+	require.NoError(t, err)
+
+	// Several replicas write the same allowances at once with different totals.
+	var wg sync.WaitGroup
+	for _, spent := range []string{"2.00", "9.50", "4.25", "9.49", "7.00"} {
+		wg.Add(1)
+		go func(spent string) {
+			defer wg.Done()
+			_, err := repo.Record(ctx, batch(spent), nil)
+			assert.NoError(t, err)
+		}(spent)
+	}
+	wg.Wait()
+
+	rows, err := repo.ForBudget(ctx, budgetID)
+	require.NoError(t, err)
+	require.Len(t, rows, len(allowances), "one row per allowance and period, never a duplicate")
+	for _, row := range rows {
+		assert.Equal(t, "9.50", row.Spent, "every row keeps the highest total any writer reported")
+	}
+
+	// A lower total later changes nothing.
+	_, err = repo.Record(ctx, batch("3.00"), nil)
+	require.NoError(t, err)
+	rows, err = repo.ForBudget(ctx, budgetID)
+	require.NoError(t, err)
+	assert.Equal(t, "9.50", rows[0].Spent)
 }

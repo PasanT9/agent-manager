@@ -22,6 +22,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"github.com/wso2/agent-manager/agent-manager-service/db/dbx"
@@ -75,53 +76,142 @@ func (r *costUsageRepository) Record(ctx context.Context, rows []models.CostUsag
 		return a.CostKey.String() < b.CostKey.String()
 	})
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, u := range batch {
-			if err := mergeCostRow(tx, u); err != nil {
-				return err
-			}
-		}
-		return nil
+		return writeCostBatch(tx, batch)
 	})
 }
 
-// mergeCostRow merges one report into its row under the row's lock.
-func mergeCostRow(tx *gorm.DB, u models.CostUsage) error {
-	const where = "org_id = ? AND month = ? AND cost_key = ?"
-	args := []any{u.OUID, u.Month, u.CostKey}
-	locked, err := dbx.LockRows(tx, "cost_usage", "cost", where, args...)
-	if err != nil {
-		return err
+type costRowKey struct {
+	ou    string
+	month int64
+	key   uuid.UUID
+}
+
+func costRowKeyOf(u models.CostUsage) costRowKey {
+	return costRowKey{u.OUID, u.Month.UTC().UnixMicro(), u.CostKey}
+}
+
+// writeCostBatch writes a batch of reported totals as writeUsageBatch does: one read,
+// multi-row inserts for new rows and a conditional update for each higher one.
+func writeCostBatch(tx *gorm.DB, batch []models.CostUsage) error {
+	stored := map[costRowKey]models.CostUsage{}
+	byOU := map[string]map[int64]time.Time{}
+	for _, u := range batch {
+		if byOU[u.OUID] == nil {
+			byOU[u.OUID] = map[int64]time.Time{}
+		}
+		byOU[u.OUID][u.Month.UTC().UnixMicro()] = u.Month.UTC()
 	}
-	if locked == 0 {
-		stored := u
-		inserted, err := dbx.InsertIfAbsent(tx, &stored)
+	for ou, monthSet := range byOU {
+		months := make([]time.Time, 0, len(monthSet))
+		for _, m := range monthSet {
+			months = append(months, m)
+		}
+		var keys []uuid.UUID
+		for _, u := range batch {
+			if u.OUID == ou {
+				keys = append(keys, u.CostKey)
+			}
+		}
+		for _, chunk := range dbx.Chunks(keys) {
+			var rows []models.CostUsage
+			if err := tx.Where("org_id = ? AND month IN ? AND cost_key IN ?", ou, months, chunk).Find(&rows).Error; err != nil {
+				return fmt.Errorf("failed to read cost usage: %w", err)
+			}
+			for _, row := range rows {
+				stored[costRowKeyOf(row)] = row
+			}
+		}
+	}
+	var inserts []models.CostUsage
+	for _, u := range batch {
+		current, ok := stored[costRowKeyOf(u)]
+		if !ok {
+			inserts = append(inserts, u)
+			continue
+		}
+		if updates := costIncrease(current, u); len(updates) > 0 {
+			ok, err := updateCostIf(tx, current, updates)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				if err := mergeCostRetrying(tx, u); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for start := 0; start < len(inserts); start += usageBatchSize {
+		chunk := inserts[start:min(start+usageBatchSize, len(inserts))]
+		inserted, err := dbx.InsertIfAbsent(tx, &chunk)
 		if err != nil || inserted {
-			return err
+			if err != nil {
+				return err
+			}
+			continue
 		}
-		// Another report inserted it first: merge under its lock.
-		if err := dbx.LockRow(tx, "cost_usage", "cost", where, args...); err != nil {
-			return err
+		for _, u := range chunk {
+			row := u
+			inserted, err := dbx.InsertIfAbsent(tx, &row)
+			if err != nil {
+				return err
+			}
+			if !inserted {
+				if err := mergeCostRetrying(tx, u); err != nil {
+					return err
+				}
+			}
 		}
 	}
-	var current models.CostUsage
-	if err := tx.Where(where, args...).Take(&current).Error; err != nil {
-		return err
-	}
+	return nil
+}
+
+// costIncrease returns the fields of report higher than current; none when no change.
+func costIncrease(current, report models.CostUsage) map[string]any {
 	updates := map[string]any{}
-	if greater(u.Cost, current.Cost) {
-		updates["cost"] = u.Cost
+	if greater(report.Cost, current.Cost) {
+		updates["cost"] = report.Cost
 	}
-	if u.MissingPriceRequests > current.MissingPriceRequests {
-		updates["missing_price_requests"] = u.MissingPriceRequests
+	if report.MissingPriceRequests > current.MissingPriceRequests {
+		updates["missing_price_requests"] = report.MissingPriceRequests
 	}
-	if u.UsageUnavailableRequests > current.UsageUnavailableRequests {
-		updates["usage_unavailable_requests"] = u.UsageUnavailableRequests
+	if report.UsageUnavailableRequests > current.UsageUnavailableRequests {
+		updates["usage_unavailable_requests"] = report.UsageUnavailableRequests
 	}
-	if len(updates) == 0 {
-		return nil
+	if len(updates) > 0 {
+		updates["updated_at"] = report.UpdatedAt
 	}
-	updates["updated_at"] = u.UpdatedAt
-	return tx.Model(&models.CostUsage{}).Where(where, args...).Updates(updates).Error
+	return updates
+}
+
+// updateCostIf applies updates only if the row still holds current.
+func updateCostIf(tx *gorm.DB, current models.CostUsage, updates map[string]any) (bool, error) {
+	res := tx.Model(&models.CostUsage{}).
+		Where("org_id = ? AND month = ? AND cost_key = ? AND cost = ? AND missing_price_requests = ? AND usage_unavailable_requests = ?",
+			current.OUID, current.Month, current.CostKey, current.Cost, current.MissingPriceRequests, current.UsageUnavailableRequests).
+		Updates(updates)
+	return res.RowsAffected == 1, res.Error
+}
+
+// mergeCostRetrying reads a row another writer just changed and merges the report in.
+func mergeCostRetrying(tx *gorm.DB, report models.CostUsage) error {
+	for range 5 {
+		var current models.CostUsage
+		err := tx.Where("org_id = ? AND month = ? AND cost_key = ?", report.OUID, report.Month, report.CostKey).
+			Take(&current).Error
+		if err != nil {
+			return err
+		}
+		updates := costIncrease(current, report)
+		if len(updates) == 0 {
+			return nil
+		}
+		ok, err := updateCostIf(tx, current, updates)
+		if err != nil || ok {
+			return err
+		}
+	}
+	return fmt.Errorf("cost usage %s kept changing while it was written", report.CostKey)
 }
 
 func (r *costUsageRepository) Since(ctx context.Context, ouID string, from time.Time) ([]models.CostUsage, error) {

@@ -336,5 +336,26 @@ func TestBudgetWarnings_StartedUsageIsRecordedByTheWorker(t *testing.T) {
 	defer func() { require.NoError(t, env.svc.Stop()) }()
 
 	env.svc.HandleUsage(ctx, "gw-1", usagePayload(t, supportAgentUsage("80.14")))
-	assert.Eventually(t, func() bool { return len(env.usage.RecordCalls()) == 1 }, 2*time.Second, 10*time.Millisecond)
+	assert.Eventually(t, func() bool { return len(env.usage.RecordCalls()) == 1 }, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestBudgetWarnings_ReportsAreCoalescedAndWrittenOncePerFlush(t *testing.T) {
+	env := newWarningsEnv(t)
+	env.svc.flush = time.Hour // only Stop writes, so every report below is coalesced
+	ctx := context.Background()
+	require.NoError(t, env.svc.Start(ctx))
+
+	// Two gateways report the same allowance; one lags behind the other.
+	for _, spent := range []string{"10.00", "45.50", "30.00", "80.14", "79.00"} {
+		env.svc.HandleUsage(ctx, "gw-1", usagePayload(t, supportAgentUsage(spent)))
+		env.svc.HandleUsage(ctx, "gw-2", usagePayload(t, supportAgentUsage("12.00")))
+	}
+	assert.Empty(t, env.usage.RecordCalls(), "nothing is written before the flush")
+
+	require.NoError(t, env.svc.Stop())
+	calls := env.usage.RecordCalls()
+	require.Len(t, calls, 1, "ten reports for one allowance are one write")
+	require.Len(t, calls[0].Rows, 1)
+	assert.Equal(t, "80.14", calls[0].Rows[0].Spent, "the highest total reported is written")
+	assert.Equal(t, int64(3), calls[0].Rows[0].UnpricedRequests)
 }

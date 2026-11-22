@@ -32,6 +32,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/wso2/agent-manager/agent-manager-service/config"
 	"github.com/wso2/agent-manager/agent-manager-service/events"
 	"github.com/wso2/agent-manager/agent-manager-service/models"
 	"github.com/wso2/agent-manager/agent-manager-service/repositories"
@@ -81,25 +82,33 @@ type BudgetWarningService struct {
 	bus      events.Bus
 	costs    CostRecorder
 
-	// Usage messages wait here for the worker Start runs, so a gateway's connection never
-	// waits on the database. Before Start (tests), HandleUsage records inline.
-	queue    chan usageMessage
+	// Reports are coalesced here, per organization, latest total per allowance and cost key,
+	// and written every flush interval, so the database load follows how many totals
+	// changed, not how many reports, gateways or requests there were (Interfaces 4.2). A
+	// gateway's connection never waits on the database. Before Start (tests), HandleUsage
+	// records inline.
+	mu       sync.Mutex
+	pending  map[string]*pendingUsage
+	ouOf     sync.Map // gateway UUID -> organization; a gateway never changes organization
+	flush    time.Duration
 	started  atomic.Bool
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	done     sync.WaitGroup
 }
 
-// usageMessage is one gateway's usage message, waiting to be recorded.
-type usageMessage struct {
-	gatewayID string
-	payload   json.RawMessage
+// pendingUsage is one organization's totals waiting to be written: the highest total
+// reported for each allowance period and each cost month and key.
+type pendingUsage struct {
+	allowances map[allowanceUsageKey]GatewayAllowanceUsage
+	costs      map[costUsageKey]GatewayCostUsage
 }
 
-// usageQueueSize is how many usage messages may wait. Gateways send about one a second
-// each and resend every total of the last 10 minutes every minute, so one dropped when
-// the queue is full is recorded with the next resend.
-const usageQueueSize = 256
+type allowanceUsageKey struct{ budget, allowance, period string }
+type costUsageKey struct{ month, key string }
+
+// defaultUsageFlush is the flush interval when the configuration sets none.
+const defaultUsageFlush = 2 * time.Second
 
 // NewBudgetWarningService creates a BudgetWarningService. bus is nil when events are off
 // (EVENTS_MODE): spend is still recorded, and no warning is queued, since nothing could
@@ -112,33 +121,42 @@ func NewBudgetWarningService(
 	bus events.Bus,
 	costs CostRecorder,
 ) *BudgetWarningService {
+	flush := defaultUsageFlush
+	if cfg := config.GetConfig(); cfg != nil && cfg.BudgetUsageFlushSeconds > 0 {
+		flush = time.Duration(cfg.BudgetUsageFlushSeconds) * time.Second
+	}
 	return &BudgetWarningService{
 		budgets: budgets, usage: usage, events: eventRepo, gateways: gateways, bus: bus, costs: costs,
-		queue: make(chan usageMessage, usageQueueSize), stopCh: make(chan struct{}),
+		pending: map[string]*pendingUsage{}, flush: flush, stopCh: make(chan struct{}),
 	}
 }
 
-// Start records queued usage messages, one at a time, until Stop.
+// Start writes the coalesced totals every flush interval until Stop, and once more then.
 func (s *BudgetWarningService) Start(ctx context.Context) error {
 	s.started.Store(true)
 	s.done.Add(1)
 	go func() {
 		defer s.done.Done()
+		ticker := time.NewTicker(s.flush)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
+				s.writePending(context.WithoutCancel(ctx))
 				return
 			case <-s.stopCh:
+				s.writePending(ctx)
 				return
-			case m := <-s.queue:
-				s.RecordUsage(ctx, m.gatewayID, m.payload)
+			case <-ticker.C:
+				s.writePending(ctx)
 			}
 		}
 	}()
 	return nil
 }
 
-// Stop stops the worker; usage messages still queued are dropped, and gateways resend them.
+// Stop writes what is pending and stops. Totals a crashed replica never wrote reach
+// another one: its gateways reconnect there and send every current total again.
 func (s *BudgetWarningService) Stop() error {
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
@@ -147,17 +165,102 @@ func (s *BudgetWarningService) Stop() error {
 	return nil
 }
 
-// HandleUsage takes a gateway's usage message from its connection: queued for the worker
-// once started, recorded inline before that.
+// HandleUsage takes a gateway's usage message from its connection: coalesced into the
+// pending totals once started (no database work), recorded inline before that.
 func (s *BudgetWarningService) HandleUsage(ctx context.Context, gatewayID string, payload json.RawMessage) {
 	if !s.started.Load() {
 		s.RecordUsage(ctx, gatewayID, payload)
 		return
 	}
-	select {
-	case s.queue <- usageMessage{gatewayID: gatewayID, payload: payload}:
-	default:
-		slog.Warn("Budget usage queue is full; the gateway's next resend records it", "gatewayID", gatewayID)
+	log := slog.With("gatewayID", gatewayID)
+	var msg GatewayUsageMessage
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		log.Error("Failed to parse budget usage", "error", err)
+		return
+	}
+	ouID, ok := s.orgOf(gatewayID, log)
+	if !ok {
+		return
+	}
+	log.Debug("Budget usage received", "allowances", len(msg.Allowances), "costs", len(msg.Costs))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.pending[ouID]
+	if p == nil {
+		p = &pendingUsage{allowances: map[allowanceUsageKey]GatewayAllowanceUsage{}, costs: map[costUsageKey]GatewayCostUsage{}}
+		s.pending[ouID] = p
+	}
+	for _, a := range msg.Allowances {
+		k := allowanceUsageKey{a.Budget, a.AllowanceUUID, a.PeriodStart}
+		if old, seen := p.allowances[k]; seen {
+			if !decimalGreater(a.Spent, old.Spent) {
+				a.Spent = old.Spent
+			}
+			a.UnpricedRequests = max(a.UnpricedRequests, old.UnpricedRequests)
+		}
+		p.allowances[k] = a
+	}
+	for _, c := range msg.Costs {
+		k := costUsageKey{c.Month, c.CostKey}
+		if old, seen := p.costs[k]; seen {
+			if !decimalGreater(c.Cost, old.Cost) {
+				c.Cost = old.Cost
+			}
+			c.MissingPriceRequests = max(c.MissingPriceRequests, old.MissingPriceRequests)
+			c.UsageUnavailableRequests = max(c.UsageUnavailableRequests, old.UsageUnavailableRequests)
+		}
+		p.costs[k] = c
+	}
+}
+
+// decimalGreater reports whether decimal a is greater than decimal b; unreadable is 0.
+func decimalGreater(a, b string) bool {
+	x, ok := new(big.Rat).SetString(a)
+	if !ok {
+		x = new(big.Rat)
+	}
+	y, ok := new(big.Rat).SetString(b)
+	if !ok {
+		y = new(big.Rat)
+	}
+	return x.Cmp(y) > 0
+}
+
+// orgOf returns the organization of a gateway, read once and then kept.
+func (s *BudgetWarningService) orgOf(gatewayID string, log *slog.Logger) (string, bool) {
+	if ou, ok := s.ouOf.Load(gatewayID); ok {
+		return ou.(string), true
+	}
+	gateway, err := s.gateways.GetByUUID(gatewayID)
+	if err != nil || gateway == nil {
+		log.Error("Failed to find the gateway of a budget usage report", "error", err)
+		return "", false
+	}
+	s.ouOf.Store(gatewayID, gateway.OUID)
+	return gateway.OUID, true
+}
+
+// writePending writes every organization's coalesced totals: one batch per table.
+func (s *BudgetWarningService) writePending(ctx context.Context) {
+	s.mu.Lock()
+	pending := s.pending
+	s.pending = map[string]*pendingUsage{}
+	s.mu.Unlock()
+	for ouID, p := range pending {
+		msg := GatewayUsageMessage{
+			Allowances: make([]GatewayAllowanceUsage, 0, len(p.allowances)),
+			Costs:      make([]GatewayCostUsage, 0, len(p.costs)),
+		}
+		for _, a := range p.allowances {
+			msg.Allowances = append(msg.Allowances, a)
+		}
+		for _, c := range p.costs {
+			msg.Costs = append(msg.Costs, c)
+		}
+		started := time.Now()
+		s.recordForOrg(ctx, ouID, msg, slog.With("orgId", ouID))
+		slog.Debug("Budget usage written", "orgId", ouID, "allowances", len(msg.Allowances),
+			"costs", len(msg.Costs), "took", time.Since(started))
 	}
 }
 
@@ -171,12 +274,18 @@ func (s *BudgetWarningService) RecordUsage(ctx context.Context, gatewayID string
 		log.Error("Failed to parse budget usage", "error", err)
 		return
 	}
-	gateway, err := s.gateways.GetByUUID(gatewayID)
-	if err != nil || gateway == nil {
-		log.Error("Failed to find the gateway of a budget usage report", "error", err)
+	ouID, ok := s.orgOf(gatewayID, log)
+	if !ok {
 		return
 	}
-	ouID := gateway.OUID
+	s.recordForOrg(ctx, ouID, msg, log)
+}
+
+// recordForOrg writes an organization's totals: its costs in one transaction and its
+// allowances in another. An allowance whose budget is unknown or whose fields are invalid
+// is skipped and logged; the gateway sends totals again.
+func (s *BudgetWarningService) recordForOrg(ctx context.Context, ouID string, msg GatewayUsageMessage, log *slog.Logger) {
+	var err error
 	if len(msg.Costs) > 0 && s.costs != nil {
 		s.costs.RecordCosts(ctx, ouID, msg.Costs)
 	}

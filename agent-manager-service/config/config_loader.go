@@ -178,6 +178,7 @@ func loadEnvs() {
 		))
 	}
 	config.OtelIngest = OtelIngestConfig{UpstreamURL: r.readOptionalString("OTEL_INGEST_UPSTREAM_URL", "")}
+	config.BudgetUsageFlushSeconds = int(r.readOptionalInt64("BUDGET_USAGE_FLUSH_SECONDS", 2))
 	config.A2ACardFetchDialAddr = r.readOptionalString("A2A_CARD_FETCH_DIAL_ADDR", "")
 	if addr := config.A2ACardFetchDialAddr; addr != "" {
 		if host, port, err := net.SplitHostPort(addr); err != nil {
