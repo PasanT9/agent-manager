@@ -19,6 +19,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -288,8 +289,9 @@ type recordedCosts struct {
 	costs []GatewayCostUsage
 }
 
-func (r *recordedCosts) RecordCosts(_ context.Context, ouID string, costs []GatewayCostUsage) {
+func (r *recordedCosts) RecordCosts(_ context.Context, ouID string, costs []GatewayCostUsage) error {
 	r.ouID, r.costs = ouID, append(r.costs, costs...)
+	return nil
 }
 
 // A usage message's costs (AI cost stats) are recorded for the gateway's organization,
@@ -358,4 +360,27 @@ func TestBudgetWarnings_ReportsAreCoalescedAndWrittenOncePerFlush(t *testing.T) 
 	require.Len(t, calls[0].Rows, 1)
 	assert.Equal(t, "80.14", calls[0].Rows[0].Spent, "the highest total reported is written")
 	assert.Equal(t, int64(3), calls[0].Rows[0].UnpricedRequests)
+}
+
+func TestBudgetWarnings_TotalsAFailedWriteLostAreWrittenByTheNextFlush(t *testing.T) {
+	env := newWarningsEnv(t)
+	env.svc.flush = time.Hour // flushes are driven by hand below
+	ctx := context.Background()
+	require.NoError(t, env.svc.Start(ctx))
+	defer func() { require.NoError(t, env.svc.Stop()) }()
+
+	written := env.usage.RecordFunc
+	env.usage.RecordFunc = func(context.Context, []models.BudgetUsage, func(models.BudgetUsage) []models.EventDelivery) ([]models.EventDelivery, error) {
+		return nil, errors.New("database unavailable")
+	}
+	env.svc.HandleUsage(ctx, "gw-1", usagePayload(t, supportAgentUsage("80.14")))
+	env.svc.writePending(ctx)
+	assert.Empty(t, env.rows, "the write failed")
+
+	// The gateway sends nothing more; the next flush still writes the total.
+	env.usage.RecordFunc = written
+	env.svc.writePending(ctx)
+	row, ok := env.rows[uuid.MustParse("5d6e2c1a-8f3b-5c47-a1d9-7e2b4c6f0a83")]
+	require.True(t, ok, "the kept total is written by the next flush")
+	assert.Equal(t, "80.14", row.Spent)
 }

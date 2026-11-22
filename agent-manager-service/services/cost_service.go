@@ -80,7 +80,7 @@ type GatewayCostUsage struct {
 
 // CostRecorder stores the cost totals gateways report.
 type CostRecorder interface {
-	RecordCosts(ctx context.Context, ouID string, costs []GatewayCostUsage)
+	RecordCosts(ctx context.Context, ouID string, costs []GatewayCostUsage) error
 }
 
 // CostService keeps and reports AI cost stats.
@@ -108,7 +108,7 @@ func NewCostService(repo repositories.CostUsageRepository) CostService {
 	return &costService{repo: repo, now: time.Now, stopCh: make(chan struct{})}
 }
 
-func (s *costService) RecordCosts(ctx context.Context, ouID string, costs []GatewayCostUsage) {
+func (s *costService) RecordCosts(ctx context.Context, ouID string, costs []GatewayCostUsage) error {
 	rows := make([]models.CostUsage, 0, len(costs))
 	first := costFirstMonth(s.now())
 	for _, c := range costs {
@@ -122,10 +122,12 @@ func (s *costService) RecordCosts(ctx context.Context, ouID string, costs []Gate
 		}
 		rows = append(rows, row)
 	}
-	// One transaction per message; a failure is healed by the gateway's next resend.
+	// One transaction per flush; on failure the caller keeps the totals for the next one.
 	if err := s.repo.Record(ctx, rows); err != nil {
 		slog.Error("Failed to record cost usage", "rows", len(rows), "error", err)
+		return err
 	}
+	return nil
 }
 
 // costRow maps a gateway's report onto its row.

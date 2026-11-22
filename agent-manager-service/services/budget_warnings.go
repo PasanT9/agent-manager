@@ -183,6 +183,11 @@ func (s *BudgetWarningService) HandleUsage(ctx context.Context, gatewayID string
 		return
 	}
 	log.Debug("Budget usage received", "allowances", len(msg.Allowances), "costs", len(msg.Costs))
+	s.coalesce(ouID, msg)
+}
+
+// coalesce merges totals into the organization's pending ones, keeping the higher.
+func (s *BudgetWarningService) coalesce(ouID string, msg GatewayUsageMessage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p := s.pending[ouID]
@@ -258,7 +263,17 @@ func (s *BudgetWarningService) writePending(ctx context.Context) {
 			msg.Costs = append(msg.Costs, c)
 		}
 		started := time.Now()
-		s.recordForOrg(ctx, ouID, msg, slog.With("orgId", ouID))
+		result := s.recordForOrg(ctx, ouID, msg, slog.With("orgId", ouID))
+		if result.costsFailed || result.allowancesFailed {
+			keep := GatewayUsageMessage{}
+			if result.costsFailed {
+				keep.Costs = msg.Costs
+			}
+			if result.allowancesFailed {
+				keep.Allowances = msg.Allowances
+			}
+			s.coalesce(ouID, keep)
+		}
 		slog.Debug("Budget usage written", "orgId", ouID, "allowances", len(msg.Allowances),
 			"costs", len(msg.Costs), "took", time.Since(started))
 	}
@@ -284,10 +299,11 @@ func (s *BudgetWarningService) RecordUsage(ctx context.Context, gatewayID string
 // recordForOrg writes an organization's totals: its costs in one transaction and its
 // allowances in another. An allowance whose budget is unknown or whose fields are invalid
 // is skipped and logged; the gateway sends totals again.
-func (s *BudgetWarningService) recordForOrg(ctx context.Context, ouID string, msg GatewayUsageMessage, log *slog.Logger) {
+func (s *BudgetWarningService) recordForOrg(ctx context.Context, ouID string, msg GatewayUsageMessage, log *slog.Logger) usageWriteResult {
 	var err error
+	var result usageWriteResult
 	if len(msg.Costs) > 0 && s.costs != nil {
-		s.costs.RecordCosts(ctx, ouID, msg.Costs)
+		result.costsFailed = s.costs.RecordCosts(ctx, ouID, msg.Costs) != nil
 	}
 	budgets := map[string]*models.Budget{}
 	byID := map[uuid.UUID]*models.Budget{}
@@ -300,7 +316,8 @@ func (s *BudgetWarningService) recordForOrg(ctx context.Context, ouID string, ms
 				b = nil
 			} else if err != nil {
 				log.Error("Failed to load a budget for its usage", "budget", a.Budget, "error", err)
-				return
+				result.allowancesFailed = true
+				return result
 			}
 			budgets[a.Budget] = b
 			if b != nil {
@@ -318,7 +335,14 @@ func (s *BudgetWarningService) recordForOrg(ctx context.Context, ouID string, ms
 		}
 		rows = append(rows, usage)
 	}
-	s.record(ctx, byID, rows, log)
+	result.allowancesFailed = !s.record(ctx, byID, rows, log)
+	return result
+}
+
+// usageWriteResult says which of an organization's totals were not written; the caller
+// keeps them for the next flush, since a quiet gateway may not report them again.
+type usageWriteResult struct {
+	costsFailed, allowancesFailed bool
 }
 
 // usageRow validates one reported allowance.
@@ -362,9 +386,9 @@ func allowanceValues(labels map[string]string) map[string]string {
 // cross. Each budget's notification channels are loaded once.
 func (s *BudgetWarningService) record(ctx context.Context, budgets map[uuid.UUID]*models.Budget,
 	rows []models.BudgetUsage, log *slog.Logger,
-) {
+) bool {
 	if len(rows) == 0 {
-		return
+		return true
 	}
 	payloads := map[string][]byte{}
 	var warn func(models.BudgetUsage) []models.EventDelivery
@@ -390,9 +414,10 @@ func (s *BudgetWarningService) record(ctx context.Context, budgets map[uuid.UUID
 	queued, err := s.usage.Record(ctx, rows, warn)
 	if err != nil {
 		log.Error("Failed to record budget usage", "allowances", len(rows), "error", err)
-		return
+		return false
 	}
 	s.enqueue(ctx, queued, payloads, log)
+	return true
 }
 
 // CheckBudget queues the warnings a budget's stored spend already crosses: after an

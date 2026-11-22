@@ -190,13 +190,19 @@ func writeUsageBatch(tx *gorm.DB, batch []models.BudgetUsage) ([]models.BudgetUs
 	return changed, nil
 }
 
-// storedUsage reads the stored rows of the batch's allowances in one query per chunk.
+// storedUsage reads the stored rows of the batch's allowances, and only those, in one query
+// per chunk of allowances: a budget split many ways is not read whole for one change.
 func storedUsage(tx *gorm.DB, batch []models.BudgetUsage) (map[usageRowKey]models.BudgetUsage, error) {
-	budgetSet := map[uuid.UUID]bool{}
+	allowanceSet, budgetSet := map[uuid.UUID]bool{}, map[uuid.UUID]bool{}
 	periodSet := map[int64]time.Time{}
 	for _, u := range batch {
+		allowanceSet[u.AllowanceID] = true
 		budgetSet[u.BudgetID] = true
 		periodSet[u.PeriodStart.UTC().UnixMicro()] = u.PeriodStart.UTC()
+	}
+	allowances := make([]uuid.UUID, 0, len(allowanceSet))
+	for id := range allowanceSet {
+		allowances = append(allowances, id)
 	}
 	budgets := make([]uuid.UUID, 0, len(budgetSet))
 	for id := range budgetSet {
@@ -207,9 +213,11 @@ func storedUsage(tx *gorm.DB, batch []models.BudgetUsage) (map[usageRowKey]model
 		periods = append(periods, t)
 	}
 	out := make(map[usageRowKey]models.BudgetUsage, len(batch))
-	for _, chunk := range dbx.Chunks(budgets) {
+	for _, chunk := range dbx.Chunks(allowances) {
 		var rows []models.BudgetUsage
-		if err := tx.Where("budget_id IN ? AND period_start IN ?", chunk, periods).Find(&rows).Error; err != nil {
+		// budget_id leads the primary key, so the lookup uses it.
+		if err := tx.Where("budget_id IN ? AND allowance_id IN ? AND period_start IN ?", budgets, chunk, periods).
+			Find(&rows).Error; err != nil {
 			return nil, fmt.Errorf("failed to read budget usage: %w", err)
 		}
 		for _, row := range rows {

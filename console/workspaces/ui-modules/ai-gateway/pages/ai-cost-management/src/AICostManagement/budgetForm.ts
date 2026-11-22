@@ -211,13 +211,24 @@ export function formFromBudget(budget: Budget): BudgetFormState {
   };
 }
 
+/** Whether a filter row is sent: All LLM providers is no provider filter (every request
+ * has one), and a Team, User or custom attribute row without an expression counts every
+ * value (it is there to split the limit by). */
+function filterRowSent(r: FilterRow): boolean {
+  return (
+    !(r.type === "llmProvider" && r.id === ANY) &&
+    !(isCelKind(r.type) && !r.expression.trim())
+  );
+}
+
+/** The form row of each sent filter, by its index in the request's `filters`. */
+export function sentFilterRows(rows: FilterRow[]): number[] {
+  return rows.flatMap((r, i) => (filterRowSent(r) ? [i] : []));
+}
+
 function filtersFor(rows: FilterRow[]): BudgetFilter[] {
-  // All LLM providers is no provider filter: every request has one. A Team, User or
-  // custom attribute row without an expression counts every value: it is there to split
-  // the limit by.
   return rows
-    .filter((r) => !(r.type === "llmProvider" && r.id === ANY))
-    .filter((r) => !(isCelKind(r.type) && !r.expression.trim()))
+    .filter(filterRowSent)
     .map((r) =>
       isCelKind(r.type)
         ? { type: "attribute", expression: r.expression.trim() }
@@ -383,13 +394,20 @@ export type BudgetFormErrors = Partial<Record<string, string>>;
  * next to the field. Errors about the filter or exemption lists as a whole, or a field
  * the form has no input for, come back as "filters", "exemptions" or "form".
  */
-export function formFieldOf(serverField: string | undefined): string {
+export function formFieldOf(
+  serverField: string | undefined,
+  filterRows?: number[],
+): string {
   const f = (serverField ?? "").replace(/^spec\./, "");
   const exemption = /^exemptions\[(\d+)\]/.exec(f);
   if (exemption) return `exemptions.${exemption[1]}`;
   if (f.startsWith("exemptions")) return "exemptions";
   const filter = /^filters\[(\d+)\]/.exec(f);
-  if (filter) return `filters.${filter[1]}`;
+  if (filter) {
+    // Rows the form does not send shift the request's indexes; map back to the form row.
+    const row = filterRows ? filterRows[Number(filter[1])] : Number(filter[1]);
+    return row === undefined ? "filters" : `filters.${row}`;
+  }
   if (f.startsWith("filters")) return "filters";
   if (f.startsWith("limit.splitBy")) return "splitBy";
   if (f.startsWith("warnings.thresholds")) return "thresholds";
@@ -403,7 +421,10 @@ export function formFieldOf(serverField: string | undefined): string {
 }
 
 /** The message and field of a failed save, from the API client's error. */
-export function serverFieldError(error: unknown): {
+export function serverFieldError(
+  error: unknown,
+  filterRows?: number[],
+): {
   field: string;
   message: string;
 } {
@@ -422,7 +443,10 @@ export function serverFieldError(error: unknown): {
     body?.message ??
     (error as { message?: string })?.message ??
     "The budget couldn't be saved.";
-  return { field: formFieldOf(body?.additionalData?.field), message };
+  return {
+    field: formFieldOf(body?.additionalData?.field, filterRows),
+    message,
+  };
 }
 
 /** "agent", "API key": what the limit is split by, in a sentence. */

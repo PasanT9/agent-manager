@@ -30,6 +30,7 @@ import {
   handleFor,
   newExemption,
   newFilter,
+  sentFilterRows,
   validateBudgetForm,
   type BudgetFormState,
 } from "./budgetForm";
@@ -357,6 +358,35 @@ describe("budgetForm", () => {
         "filters.1",
         "splitBy",
       ].sort(),
+    );
+  });
+
+  it("points a server error on a sent filter at its form row", () => {
+    const rows = [
+      { type: "llmProvider" as const, id: ANY, project: "", expression: "" },
+      {
+        type: "project" as const,
+        id: "online-shop",
+        project: "",
+        expression: "",
+      },
+      {
+        type: "agent" as const,
+        id: "bad",
+        project: "online-shop",
+        expression: "",
+      },
+    ];
+    // All LLM providers is not sent, so the request's filters[1] is the agent (row 2).
+    expect(formFieldOf("spec.filters[1].id", sentFilterRows(rows))).toBe(
+      "filters.2",
+    );
+    expect(formFieldOf("spec.filters[0].id", sentFilterRows(rows))).toBe(
+      "filters.1",
+    );
+    // A filter the form did not send (added by the server) points at the filters.
+    expect(formFieldOf("spec.filters[5].id", sentFilterRows(rows))).toBe(
+      "filters",
     );
   });
 });

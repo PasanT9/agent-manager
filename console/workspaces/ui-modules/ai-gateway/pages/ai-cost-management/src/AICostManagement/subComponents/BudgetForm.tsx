@@ -91,6 +91,7 @@ import {
   startFromQuery,
   duplicateNameError,
   isBudgetNotFound,
+  sentFilterRows,
   serverFieldError,
   validateBudgetForm,
   type BudgetFormErrors,
@@ -912,7 +913,10 @@ export function BudgetWizard({
   };
 
   const onSaveError = (err: unknown) => {
-    const { field, message } = serverFieldError(err);
+    const { field, message } = serverFieldError(
+      err,
+      sentFilterRows(form.filters),
+    );
     setServerErrors({ [field]: message });
     setStep(stepOfField(field));
     setFailedChecks((n) => n + 1);
