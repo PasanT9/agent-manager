@@ -67,7 +67,7 @@ func TestCostUsageRepository_RecordSinceAndDeleteBefore(t *testing.T) {
 	assert.Equal(t, "api-platform", *byMonth[time.November].Project)
 	assert.Equal(t, "10", byMonth[time.October].Cost)
 
-	deleted, err := repo.DeleteBefore(ctx, november.AddDate(0, -2, 0))
+	deleted, err := repo.DeleteBefore(ctx, ou, november.AddDate(0, -2, 0))
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, deleted, int64(1))
 	all, err := repo.Since(ctx, ou, time.Time{})

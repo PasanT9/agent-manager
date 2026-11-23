@@ -46,9 +46,6 @@ const costMonths = 3
 // costCurrency is the currency of every cost; prices are in USD.
 const costCurrency = "USD"
 
-// costRetentionInterval is how often months older than costMonths are deleted.
-const costRetentionInterval = 24 * time.Hour
-
 // Cost group and filter types.
 const (
 	costByOrganization = "organization"
@@ -90,22 +87,22 @@ type CostService interface {
 	// groupBy, limited by every filter (type:value[,value...]). orgName is the organization's
 	// handle, the id of its one entry when grouped by organization.
 	Costs(ctx context.Context, ouID, orgName, groupBy string, filters []string) (*spec.CostReport, error)
-	// Start deletes months older than the kept ones once a day until Stop.
-	Start(ctx context.Context) error
-	Stop() error
 }
 
 type costService struct {
-	repo     repositories.CostUsageRepository
-	now      func() time.Time
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	done     sync.WaitGroup
+	repo repositories.CostUsageRepository
+	now  func() time.Time
+
+	// keptFrom is, per organization, the first kept month this replica has already
+	// deleted the older ones before: the delete runs once when a new month starts, on the
+	// organization's first write in it, not on a schedule.
+	mu       sync.Mutex
+	keptFrom map[string]time.Time
 }
 
 // NewCostService creates a CostService.
 func NewCostService(repo repositories.CostUsageRepository) CostService {
-	return &costService{repo: repo, now: time.Now, stopCh: make(chan struct{})}
+	return &costService{repo: repo, now: time.Now, keptFrom: map[string]time.Time{}}
 }
 
 func (s *costService) RecordCosts(ctx context.Context, ouID string, costs []GatewayCostUsage) error {
@@ -127,7 +124,31 @@ func (s *costService) RecordCosts(ctx context.Context, ouID string, costs []Gate
 		slog.Error("Failed to record cost usage", "rows", len(rows), "error", err)
 		return err
 	}
+	s.dropOldMonths(ctx, ouID, first)
 	return nil
+}
+
+// dropOldMonths deletes the organization's months before first, once per new first
+// month: when a month starts, the oldest kept one goes. A failure is tried again with the
+// next write.
+func (s *costService) dropOldMonths(ctx context.Context, ouID string, first time.Time) {
+	s.mu.Lock()
+	done := s.keptFrom[ouID].Equal(first)
+	s.mu.Unlock()
+	if done {
+		return
+	}
+	deleted, err := s.repo.DeleteBefore(ctx, ouID, first)
+	if err != nil {
+		slog.Error("Failed to delete cost usage older than the kept months", "orgId", ouID, "error", err)
+		return
+	}
+	s.mu.Lock()
+	s.keptFrom[ouID] = first
+	s.mu.Unlock()
+	if deleted > 0 {
+		slog.Info("Deleted cost usage older than the kept months", "orgId", ouID, "rows", deleted)
+	}
 }
 
 // costRow maps a gateway's report onto its row.
@@ -372,46 +393,6 @@ func costGroupName(g *costTotals) string {
 		}
 	}
 	return strings.Join(parts, "/")
-}
-
-func (s *costService) Start(ctx context.Context) error {
-	s.done.Add(1)
-	go func() {
-		defer s.done.Done()
-		ticker := time.NewTicker(costRetentionInterval)
-		defer ticker.Stop()
-		for {
-			s.deleteOld(ctx)
-			select {
-			case <-ctx.Done():
-				return
-			case <-s.stopCh:
-				return
-			case <-ticker.C:
-			}
-		}
-	}()
-	return nil
-}
-
-// deleteOld deletes the months older than the kept ones.
-func (s *costService) deleteOld(ctx context.Context) {
-	deleted, err := s.repo.DeleteBefore(ctx, costFirstMonth(s.now()))
-	if err != nil {
-		slog.Error("Failed to delete old cost usage", "error", err)
-		return
-	}
-	if deleted > 0 {
-		slog.Info("Deleted cost usage older than the kept months", "rows", deleted)
-	}
-}
-
-func (s *costService) Stop() error {
-	s.stopOnce.Do(func() {
-		close(s.stopCh)
-		s.done.Wait()
-	})
-	return nil
 }
 
 // usdString is an amount of USD as the API returns it: exact to six decimals (a request

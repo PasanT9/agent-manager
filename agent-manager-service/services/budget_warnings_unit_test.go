@@ -384,3 +384,27 @@ func TestBudgetWarnings_TotalsAFailedWriteLostAreWrittenByTheNextFlush(t *testin
 	require.True(t, ok, "the kept total is written by the next flush")
 	assert.Equal(t, "80.14", row.Spent)
 }
+
+func TestBudgetWarnings_AFlushThatCannotLoadChannelsHoldsTheBudgetsUsageForTheNext(t *testing.T) {
+	env := newWarningsEnv(t)
+	env.svc.flush = time.Hour // flushes are driven by hand below
+	ctx := context.Background()
+	require.NoError(t, env.svc.Start(ctx))
+	defer func() { require.NoError(t, env.svc.Stop()) }()
+
+	loaded := env.events.ListDestinationsFunc
+	env.events.ListDestinationsFunc = func(context.Context, string) ([]models.EventDestination, error) {
+		return nil, errors.New("database unavailable")
+	}
+	env.svc.HandleUsage(ctx, "gw-1", usagePayload(t, supportAgentUsage("80.14")))
+	env.svc.writePending(ctx)
+	assert.Empty(t, env.rows, "the total is not written without its warning")
+	assert.Empty(t, env.queued)
+
+	// The budget now blocks, so the gateway sends nothing more; the next flush still warns.
+	env.events.ListDestinationsFunc = loaded
+	env.svc.writePending(ctx)
+	_, ok := env.rows[uuid.MustParse("5d6e2c1a-8f3b-5c47-a1d9-7e2b4c6f0a83")]
+	require.True(t, ok, "the held total is written by the next flush")
+	assert.NotEmpty(t, env.queued, "with its warning")
+}

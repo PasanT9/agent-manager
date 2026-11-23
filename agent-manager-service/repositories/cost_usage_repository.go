@@ -27,6 +27,7 @@ import (
 
 	"github.com/wso2/agent-manager/agent-manager-service/db/dbx"
 	"github.com/wso2/agent-manager/agent-manager-service/models"
+	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
 
 // CostUsageRepository keeps what LLM traffic cost per month and combination of values
@@ -39,9 +40,9 @@ type CostUsageRepository interface {
 	Record(ctx context.Context, rows []models.CostUsage) error
 	// Since returns the organization's rows from the month starting at from.
 	Since(ctx context.Context, ouID string, from time.Time) ([]models.CostUsage, error)
-	// DeleteBefore deletes every organization's rows of months before before, and
-	// returns how many went.
-	DeleteBefore(ctx context.Context, before time.Time) (int64, error)
+	// DeleteBefore deletes the organization's rows of months before before, and returns
+	// how many went.
+	DeleteBefore(ctx context.Context, ouID string, before time.Time) (int64, error)
 }
 
 type costUsageRepository struct {
@@ -169,7 +170,7 @@ func writeCostBatch(tx *gorm.DB, batch []models.CostUsage) error {
 // costIncrease returns the fields of report higher than current; none when no change.
 func costIncrease(current, report models.CostUsage) map[string]any {
 	updates := map[string]any{}
-	if greater(report.Cost, current.Cost) {
+	if utils.DecimalGreater(report.Cost, current.Cost) {
 		updates["cost"] = report.Cost
 	}
 	if report.MissingPriceRequests > current.MissingPriceRequests {
@@ -222,8 +223,8 @@ func (r *costUsageRepository) Since(ctx context.Context, ouID string, from time.
 	return rows, nil
 }
 
-func (r *costUsageRepository) DeleteBefore(ctx context.Context, before time.Time) (int64, error) {
-	res := r.db.WithContext(ctx).Where("month < ?", before.UTC()).Delete(&models.CostUsage{})
+func (r *costUsageRepository) DeleteBefore(ctx context.Context, ouID string, before time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).Where("org_id = ? AND month < ?", ouID, before.UTC()).Delete(&models.CostUsage{})
 	if res.Error != nil {
 		return 0, fmt.Errorf("failed to delete old cost usage: %w", res.Error)
 	}

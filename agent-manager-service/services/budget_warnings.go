@@ -198,7 +198,7 @@ func (s *BudgetWarningService) coalesce(ouID string, msg GatewayUsageMessage) {
 	for _, a := range msg.Allowances {
 		k := allowanceUsageKey{a.Budget, a.AllowanceUUID, a.PeriodStart}
 		if old, seen := p.allowances[k]; seen {
-			if !decimalGreater(a.Spent, old.Spent) {
+			if !utils.DecimalGreater(a.Spent, old.Spent) {
 				a.Spent = old.Spent
 			}
 			a.UnpricedRequests = max(a.UnpricedRequests, old.UnpricedRequests)
@@ -208,7 +208,7 @@ func (s *BudgetWarningService) coalesce(ouID string, msg GatewayUsageMessage) {
 	for _, c := range msg.Costs {
 		k := costUsageKey{c.Month, c.CostKey}
 		if old, seen := p.costs[k]; seen {
-			if !decimalGreater(c.Cost, old.Cost) {
+			if !utils.DecimalGreater(c.Cost, old.Cost) {
 				c.Cost = old.Cost
 			}
 			c.MissingPriceRequests = max(c.MissingPriceRequests, old.MissingPriceRequests)
@@ -216,19 +216,6 @@ func (s *BudgetWarningService) coalesce(ouID string, msg GatewayUsageMessage) {
 		}
 		p.costs[k] = c
 	}
-}
-
-// decimalGreater reports whether decimal a is greater than decimal b; unreadable is 0.
-func decimalGreater(a, b string) bool {
-	x, ok := new(big.Rat).SetString(a)
-	if !ok {
-		x = new(big.Rat)
-	}
-	y, ok := new(big.Rat).SetString(b)
-	if !ok {
-		y = new(big.Rat)
-	}
-	return x.Cmp(y) > 0
 }
 
 // orgOf returns the organization of a gateway, read once and then kept.
@@ -264,13 +251,10 @@ func (s *BudgetWarningService) writePending(ctx context.Context) {
 		}
 		started := time.Now()
 		result := s.recordForOrg(ctx, ouID, msg, slog.With("orgId", ouID))
-		if result.costsFailed || result.allowancesFailed {
-			keep := GatewayUsageMessage{}
+		if result.costsFailed || len(result.heldAllowances) > 0 {
+			keep := GatewayUsageMessage{Allowances: result.heldAllowances}
 			if result.costsFailed {
 				keep.Costs = msg.Costs
-			}
-			if result.allowancesFailed {
-				keep.Allowances = msg.Allowances
 			}
 			s.coalesce(ouID, keep)
 		}
@@ -316,7 +300,7 @@ func (s *BudgetWarningService) recordForOrg(ctx context.Context, ouID string, ms
 				b = nil
 			} else if err != nil {
 				log.Error("Failed to load a budget for its usage", "budget", a.Budget, "error", err)
-				result.allowancesFailed = true
+				result.heldAllowances = msg.Allowances
 				return result
 			}
 			budgets[a.Budget] = b
@@ -335,14 +319,25 @@ func (s *BudgetWarningService) recordForOrg(ctx context.Context, ouID string, ms
 		}
 		rows = append(rows, usage)
 	}
-	result.allowancesFailed = !s.record(ctx, byID, rows, log)
+	held, ok := s.record(ctx, byID, rows, log)
+	switch {
+	case !ok:
+		result.heldAllowances = msg.Allowances
+	case len(held) > 0:
+		for _, a := range msg.Allowances {
+			if held[a.Budget] {
+				result.heldAllowances = append(result.heldAllowances, a)
+			}
+		}
+	}
 	return result
 }
 
 // usageWriteResult says which of an organization's totals were not written; the caller
 // keeps them for the next flush, since a quiet gateway may not report them again.
 type usageWriteResult struct {
-	costsFailed, allowancesFailed bool
+	costsFailed    bool
+	heldAllowances []GatewayAllowanceUsage
 }
 
 // usageRow validates one reported allowance.
@@ -386,9 +381,9 @@ func allowanceValues(labels map[string]string) map[string]string {
 // cross. Each budget's notification channels are loaded once.
 func (s *BudgetWarningService) record(ctx context.Context, budgets map[uuid.UUID]*models.Budget,
 	rows []models.BudgetUsage, log *slog.Logger,
-) bool {
+) (held map[string]bool, ok bool) {
 	if len(rows) == 0 {
-		return true
+		return nil, true
 	}
 	payloads := map[string][]byte{}
 	var warn func(models.BudgetUsage) []models.EventDelivery
@@ -397,11 +392,29 @@ func (s *BudgetWarningService) record(ctx context.Context, budgets map[uuid.UUID
 		for id, b := range budgets {
 			found, err := s.channels(ctx, b)
 			if err != nil {
-				// Spend is still recorded; the warning is sent when the next total arrives.
-				log.Error("Failed to load a budget's notification channels", "budget", b.Name, "error", err)
+				// Its totals wait for the next flush: written now, a crossing would be recorded
+				// without its warning, and a budget that blocks may never report a next total.
+				log.Error("Failed to load a budget's notification channels; its usage waits for the next flush",
+					"budget", b.Name, "error", err)
+				if held == nil {
+					held = map[string]bool{}
+				}
+				held[b.Name] = true
 				continue
 			}
 			channels[id] = found
+		}
+		if len(held) > 0 {
+			kept := rows[:0:0]
+			for _, r := range rows {
+				if b := budgets[r.BudgetID]; b == nil || !held[b.Name] {
+					kept = append(kept, r)
+				}
+			}
+			rows = kept
+			if len(rows) == 0 {
+				return held, true
+			}
 		}
 		warn = func(stored models.BudgetUsage) []models.EventDelivery {
 			b := budgets[stored.BudgetID]
@@ -414,10 +427,10 @@ func (s *BudgetWarningService) record(ctx context.Context, budgets map[uuid.UUID
 	queued, err := s.usage.Record(ctx, rows, warn)
 	if err != nil {
 		log.Error("Failed to record budget usage", "allowances", len(rows), "error", err)
-		return false
+		return held, false
 	}
 	s.enqueue(ctx, queued, payloads, log)
-	return true
+	return held, true
 }
 
 // CheckBudget queues the warnings a budget's stored spend already crosses: after an

@@ -62,7 +62,7 @@ func newCostTestService(rows []models.CostUsage) (*costService, *repomocks.CostU
 			return out, nil
 		},
 		RecordFunc:       func(context.Context, []models.CostUsage) error { return nil },
-		DeleteBeforeFunc: func(context.Context, time.Time) (int64, error) { return 0, nil },
+		DeleteBeforeFunc: func(context.Context, string, time.Time) (int64, error) { return 0, nil },
 	}
 	s := NewCostService(repo).(*costService)
 	s.now = func() time.Time { return costTestNow }
@@ -197,11 +197,25 @@ func TestCostService_RecordsReportsAndSkipsBadOrOldOnes(t *testing.T) {
 	assert.Equal(t, int64(3), row.MissingPriceRequests)
 }
 
-func TestCostService_DeletesMonthsOlderThanTheKeptOnes(t *testing.T) {
+func TestCostService_ANewMonthDropsTheOldestOnceOnTheFirstWrite(t *testing.T) {
 	s, repo := newCostTestService(nil)
-	s.deleteOld(context.Background())
-	require.Len(t, repo.DeleteBeforeCalls(), 1)
+	report := func() {
+		require.NoError(t, s.RecordCosts(context.Background(), budgetTestOrg, []GatewayCostUsage{
+			{Month: s.now().UTC().Format("2006-01") + "-01", CostKey: uuid.New().String(), LLMProvider: "openai", Cost: "1"},
+		}))
+	}
+	report()
+	report()
+	require.Len(t, repo.DeleteBeforeCalls(), 1, "deleted once per month, on the organization's first write")
+	assert.Equal(t, budgetTestOrg, repo.DeleteBeforeCalls()[0].OuID)
 	assert.Equal(t, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), repo.DeleteBeforeCalls()[0].Before)
+
+	// December starts: the first write drops September.
+	s.now = func() time.Time { return time.Date(2026, 12, 1, 0, 5, 0, 0, time.UTC) }
+	report()
+	report()
+	require.Len(t, repo.DeleteBeforeCalls(), 2)
+	assert.Equal(t, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), repo.DeleteBeforeCalls()[1].Before)
 }
 
 func TestUSDString_KeepsFractionsOfACent(t *testing.T) {

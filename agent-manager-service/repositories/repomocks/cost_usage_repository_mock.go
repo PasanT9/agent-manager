@@ -17,7 +17,7 @@ import (
 //
 //		// make and configure a mocked repositories.CostUsageRepository
 //		mockedCostUsageRepository := &CostUsageRepositoryMock{
-//			DeleteBeforeFunc: func(ctx context.Context, before time.Time) (int64, error) {
+//			DeleteBeforeFunc: func(ctx context.Context, ouID string, before time.Time) (int64, error) {
 //				panic("mock out the DeleteBefore method")
 //			},
 //			RecordFunc: func(ctx context.Context, rows []models.CostUsage) error {
@@ -34,7 +34,7 @@ import (
 //	}
 type CostUsageRepositoryMock struct {
 	// DeleteBeforeFunc mocks the DeleteBefore method.
-	DeleteBeforeFunc func(ctx context.Context, before time.Time) (int64, error)
+	DeleteBeforeFunc func(ctx context.Context, ouID string, before time.Time) (int64, error)
 
 	// RecordFunc mocks the Record method.
 	RecordFunc func(ctx context.Context, rows []models.CostUsage) error
@@ -48,6 +48,8 @@ type CostUsageRepositoryMock struct {
 		DeleteBefore []struct {
 			// Ctx is the ctx argument value.
 			Ctx context.Context
+			// OuID is the ouID argument value.
+			OuID string
 			// Before is the before argument value.
 			Before time.Time
 		}
@@ -74,21 +76,23 @@ type CostUsageRepositoryMock struct {
 }
 
 // DeleteBefore calls DeleteBeforeFunc.
-func (mock *CostUsageRepositoryMock) DeleteBefore(ctx context.Context, before time.Time) (int64, error) {
+func (mock *CostUsageRepositoryMock) DeleteBefore(ctx context.Context, ouID string, before time.Time) (int64, error) {
 	if mock.DeleteBeforeFunc == nil {
 		panic("CostUsageRepositoryMock.DeleteBeforeFunc: method is nil but CostUsageRepository.DeleteBefore was just called")
 	}
 	callInfo := struct {
 		Ctx    context.Context
+		OuID   string
 		Before time.Time
 	}{
 		Ctx:    ctx,
+		OuID:   ouID,
 		Before: before,
 	}
 	mock.lockDeleteBefore.Lock()
 	mock.calls.DeleteBefore = append(mock.calls.DeleteBefore, callInfo)
 	mock.lockDeleteBefore.Unlock()
-	return mock.DeleteBeforeFunc(ctx, before)
+	return mock.DeleteBeforeFunc(ctx, ouID, before)
 }
 
 // DeleteBeforeCalls gets all the calls that were made to DeleteBefore.
@@ -97,10 +101,12 @@ func (mock *CostUsageRepositoryMock) DeleteBefore(ctx context.Context, before ti
 //	len(mockedCostUsageRepository.DeleteBeforeCalls())
 func (mock *CostUsageRepositoryMock) DeleteBeforeCalls() []struct {
 	Ctx    context.Context
+	OuID   string
 	Before time.Time
 } {
 	var calls []struct {
 		Ctx    context.Context
+		OuID   string
 		Before time.Time
 	}
 	mock.lockDeleteBefore.RLock()

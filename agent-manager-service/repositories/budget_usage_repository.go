@@ -19,7 +19,6 @@ package repositories
 import (
 	"context"
 	"fmt"
-	"math/big"
 	"sort"
 	"time"
 
@@ -28,6 +27,7 @@ import (
 
 	"github.com/wso2/agent-manager/agent-manager-service/db/dbx"
 	"github.com/wso2/agent-manager/agent-manager-service/models"
+	"github.com/wso2/agent-manager/agent-manager-service/utils"
 )
 
 // BudgetUsageRepository keeps each budget allowance's spend in its current period
@@ -272,7 +272,7 @@ func mergeUsage(current, report models.BudgetUsage) (models.BudgetUsage, bool) {
 		return report, true
 	}
 	merged, changed := current, false
-	if greater(report.Spent, current.Spent) {
+	if utils.DecimalGreater(report.Spent, current.Spent) {
 		merged.Spent, changed = report.Spent, true
 	}
 	if report.UnpricedRequests > current.UnpricedRequests {
@@ -285,19 +285,6 @@ func mergeUsage(current, report models.BudgetUsage) (models.BudgetUsage, bool) {
 		}
 	}
 	return merged, changed
-}
-
-// greater reports whether decimal a is greater than decimal b; an unreadable value is 0.
-func greater(a, b string) bool {
-	x, ok := new(big.Rat).SetString(a)
-	if !ok {
-		x = new(big.Rat)
-	}
-	y, ok := new(big.Rat).SetString(b)
-	if !ok {
-		y = new(big.Rat)
-	}
-	return x.Cmp(y) > 0
 }
 
 // ForBudget returns each of a budget's allowances in its latest period.
